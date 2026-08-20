@@ -128,7 +128,7 @@ python scripts\filter_selector_stage1.py `
   --input-dir data\cypherbench_schema_grounding_full `
   --output-dir data\cypherbench_schema_grounding_full_final `
   --target-rows 3200 `
-  --seed 13 `
+  --seed 42 `
   --overwrite
 ```
 

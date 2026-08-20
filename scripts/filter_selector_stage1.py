@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
         default=3200,
         help="Total selector-train rows. Must divide evenly across graphs and labels. Default: 3200.",
     )
-    parser.add_argument("--seed", type=int, default=13)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 

@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap per source/split, useful for inspection and smoke tests.",
     )
-    parser.add_argument("--seed", type=int, default=13)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 

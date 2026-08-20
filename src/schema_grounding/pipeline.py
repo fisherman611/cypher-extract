@@ -141,7 +141,7 @@ def build_dataset(
     strict: bool = True,
     negative_ratio: float | None = None,
     max_examples: int | None = None,
-    seed: int = 13,
+    seed: int = 42,
     overwrite: bool = False,
 ) -> dict[str, object]:
     """Build JSONL training data and return the reproducibility manifest.
