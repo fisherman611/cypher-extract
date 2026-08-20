@@ -149,6 +149,20 @@ class SubSchemaExtractionTest(unittest.TestCase):
         )
         self.assertEqual(set(result.node_unit_ids), {"node:Person", "node:Movie"})
 
+    def test_adjacent_relation_patterns_are_all_extracted(self) -> None:
+        result = extract_subschema(
+            "MATCH (m:Movie)<-[:ACTED_IN]-(p:Person)-[:LIVES_IN]->(c:City) RETURN p",
+            self.schema,
+        )
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {"relation:Person|ACTED_IN|Movie", "relation:Person|LIVES_IN|City"},
+        )
+        self.assertEqual(
+            set(result.node_unit_ids), {"node:Person", "node:Movie", "node:City"}
+        )
+
     def test_label_predicate_resolves_unlabelled_node(self) -> None:
         result = extract_subschema(
             "MATCH (p) WHERE p:Person RETURN p.name", self.schema
@@ -251,17 +265,16 @@ class PipelineAuditTest(unittest.TestCase):
                 json.dumps({"entities": [{"label": "Person", "properties": {}}], "relations": []}),
                 encoding="utf-8",
             )
-            (source_directory / "dev.json").write_text(
+            (source_directory / "dev.jsonl").write_text(
                 json.dumps(
-                    [
-                        {
-                            "qid": "dev-sample",
-                            "graph": "demo",
-                            "nl_question": "List all people.",
-                            "gold_cypher": "MATCH (p:Person) RETURN p",
-                        }
-                    ]
-                ),
+                    {
+                        "qid": "dev-sample",
+                        "graph": "demo",
+                        "nl_question": "List all people.",
+                        "gold_cypher": "MATCH (p:Person) RETURN p",
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             output_directory = Path(temporary_directory) / "output"

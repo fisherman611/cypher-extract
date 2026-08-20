@@ -35,6 +35,17 @@ class BenchmarkExample:
 
 
 def _load_json(path: Path) -> list[dict[str, Any]]:
+    if path.suffix == ".jsonl":
+        records: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError(f"Expected a JSON object on line {line_number} in {path}")
+                records.append(record)
+        return records
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, list):
@@ -50,24 +61,54 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _parse_cypherbench_prompt_record(record: Mapping[str, Any]) -> tuple[str, dict[str, Any], str]:
+    """Extract question, schema, and gold Cypher from CypherBench prompt JSONL."""
+
+    prompt = str(record.get("user_prompt", ""))
+    question_prefix = "QUESTION:\n"
+    schema_prefix = "\n\nSCHEMA:\n"
+    generation_prefix = "\n\nGenerate a Cypher query"
+    if not prompt.startswith(question_prefix) or schema_prefix not in prompt:
+        raise ValueError("Unsupported CypherBench prompt record format")
+    question, remainder = prompt[len(question_prefix) :].split(schema_prefix, 1)
+    schema_text = remainder.split(generation_prefix, 1)[0]
+    schema_payload = json.loads(schema_text)
+    if not isinstance(schema_payload, dict):
+        raise ValueError("Expected CypherBench prompt schema to be a JSON object")
+    response = json.loads(str(record.get("response", "")))
+    if not isinstance(response, dict) or not isinstance(response.get("cypher"), str):
+        raise ValueError("Expected CypherBench prompt response to contain a Cypher string")
+    return question, schema_payload, response["cypher"]
+
+
 def _split_file(root: Path, source_dir: str, split: str) -> Path:
     mapping = {
-        "train": "train.json",
-        "dev": "dev.json",
-        "val": "dev.json",
-        "test": "test.json",
+        "train": ("train.jsonl", "train.json"),
+        "dev": ("dev.jsonl", "dev.json"),
+        "val": ("dev.jsonl", "dev.json"),
+        "test": ("test.jsonl", "test.json"),
     }
+    if source_dir in {"Mind_the_query", "Neo4j_Text2Cypher"}:
+        # These JSONL files are prompt/response exports without usable graph
+        # metadata. The structured JSON files retain the schema needed for
+        # canonicalization and gold sub-schema extraction.
+        mapping = {
+            "train": ("train.json", "train.jsonl"),
+            "dev": ("dev.json", "dev.jsonl"),
+            "val": ("dev.json", "dev.jsonl"),
+            "test": ("test.json", "test.jsonl"),
+        }
     if source_dir == "Mind_the_query" and split == "train":
-        if not (root / source_dir / "train.json").exists() and (root / source_dir / "train_val.json").exists():
-            mapping["train"] = "train_val.json"
+        mapping["train"] = ("train.json", "train_val.json", "train.jsonl")
     if split not in mapping:
         raise ValueError(
             f"{source_dir} has no structured '{split}' split. Supported splits: train, dev (or val), test."
         )
-    path = root / source_dir / mapping[split]
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
+    for filename in mapping[split]:
+        path = root / source_dir / filename
+        if path.exists():
+            return path
+    raise FileNotFoundError(root / source_dir / mapping[split][0])
 
 
 def _normalise_graph(value: Any) -> str:
@@ -121,18 +162,27 @@ def iter_benchmark_examples(
     for index, record in enumerate(records):
         graph = _normalise_graph(record.get("graph"))
         raw_schema: str | None = None
+        cypher = str(record.get("gold_cypher", ""))
         if source == "cypherbench":
-            cache_key = graph
-            schema_path = benchmarks_root / directory / "graphs" / "schemas" / f"{graph}_schema.json"
+            if "user_prompt" in record:
+                question, schema_payload, cypher = _parse_cypherbench_prompt_record(record)
+                graph = _normalise_graph(schema_payload.get("name"))
+                cache_key = graph
+                schema_reference = f"{records_path.name}[{index}].user_prompt.SCHEMA"
+                schema_loader = lambda: from_cypherbench(schema_payload, graph)
+            else:
+                cache_key = graph
+                schema_path = benchmarks_root / directory / "graphs" / "schemas" / f"{graph}_schema.json"
+                question = str(record.get("nl_question", ""))
+                schema_reference = str(schema_path.relative_to(benchmarks_root))
+                schema_loader = lambda: from_cypherbench(_load_json_object(schema_path), graph)
             schema, issues, normalization_error = _load_normalized_schema(
                 schema_cache,
                 cache_key,
                 source,
                 graph,
-                lambda: from_cypherbench(_load_json_object(schema_path), graph),
+                schema_loader,
             )
-            question = str(record.get("nl_question", ""))
-            schema_reference = str(schema_path.relative_to(benchmarks_root))
         elif source == "mind_the_query":
             cache_key = graph
             schema_path = benchmarks_root / directory / "graphs" / "schemas" / f"{graph}.json"
@@ -171,7 +221,7 @@ def iter_benchmark_examples(
             split=split,
             graph=graph,
             question=question.strip(),
-            cypher=str(record.get("gold_cypher", "")).strip(),
+            cypher=cypher.strip(),
             schema=schema,
             schema_reference=schema_reference,
             raw_schema=raw_schema,

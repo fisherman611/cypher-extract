@@ -22,6 +22,12 @@ _RELATION_PATTERN_RE = re.compile(
     r"\((?P<left>[^()]*)\)\s*(?:(?P<left_arrow><-)|-)\s*"
     r"\[(?P<relation>[^\]]*)\]\s*(?:(?P<right_arrow>->)|-)\s*\((?P<right>[^()]*)\)"
 )
+# Relation patterns can share a node in a chain, for example
+# ``(a)-[:FIRST]->(b)-[:SECOND]->(c)``.  A regular ``finditer`` over the
+# pattern above consumes ``(b)`` while matching the first relation and would
+# therefore skip the second.  Look ahead so every opening node can start a
+# match while retaining the named capture groups used by the parser.
+_OVERLAPPING_RELATION_PATTERN_RE = re.compile(r"(?=" + _RELATION_PATTERN_RE.pattern + r")")
 _IDENTIFIER = r"`[^`]+`|[A-Za-z_][A-Za-z0-9_]*"
 _VARIABLE_RE = re.compile(rf"^\s*(?P<variable>{_IDENTIFIER})\s*(?::|\{{|$)")
 _LABEL_RE = re.compile(rf":\s*(?P<label>{_IDENTIFIER})")
@@ -186,7 +192,7 @@ def _find_node_patterns(query: str) -> list[NodePattern]:
 def _find_relation_patterns(query: str) -> list[RelationPattern]:
     patterns: list[RelationPattern] = []
     masked_query = _mask_string_literals(query)
-    for match in _RELATION_PATTERN_RE.finditer(masked_query):
+    for match in _OVERLAPPING_RELATION_PATTERN_RE.finditer(masked_query):
         direction = "in" if match.group("left_arrow") else "out" if match.group("right_arrow") else "undirected"
         patterns.append(
             RelationPattern(

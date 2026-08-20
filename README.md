@@ -75,110 +75,48 @@ python scripts/build_schema_grounding_data.py \
 
 ### 2. CypherBench (Train, Dev, Test)
 
-Tạo đầy đủ cả 3 tập `train`, `dev`, `test` cho CypherBench với negative sampling (4:1):
+CypherBench dùng các file prompt/response có schema nhúng: `train.jsonl`,
+`dev.jsonl`, và `test.jsonl`. Tạo đủ ba split trong một output directory:
 
-```bash
-python scripts/build_schema_grounding_data.py \
-  --sources cypherbench \
-  --splits train,dev,test \
-  --output-dir data/cypherbench_grounding_4neg \
-  --negative-ratio 4
+```powershell
+python scripts\build_schema_grounding_data.py `
+  --benchmarks-root benchmarks `
+  --sources cypherbench `
+  --splits train,dev,test `
+  --output-dir data\cypherbench_schema_grounding_full `
+  --overwrite
 ```
 
-Nếu muốn giữ **100% negative units** (Full - không sampling):
+### 3. Neo4j Text2Cypher (Train, Test)
 
-```bash
-python scripts/build_schema_grounding_data.py \
-  --sources cypherbench \
-  --splits train,dev,test \
-  --output-dir data/cypherbench_grounding_full
+Neo4j Text2Cypher dùng `train.json` và `test.json`, vì các file `.jsonl` chỉ là
+prompt/response export và không chứa schema cần cho sub-schema extraction.
+
+```powershell
+python scripts\build_schema_grounding_data.py `
+  --benchmarks-root benchmarks `
+  --sources neo4j_text2cypher `
+  --splits train,test `
+  --output-dir data\neo4j_text2cypher_schema_grounding_full `
+  --overwrite
 ```
 
-Hoặc tạo riêng từng tập theo nhu cầu:
+### 4. Mind-the-Query (Train, Test)
 
-```bash
-# Chỉ tập Train
-python scripts/build_schema_grounding_data.py \
-  --sources cypherbench \
-  --splits train \
-  --output-dir data/cypherbench_train \
-  --negative-ratio 4
+Mind-the-Query dùng `train_val.json` và `test.json` vì các JSONL tương ứng
+không mang schema metadata.
 
-# Chỉ tập Dev (Validation)
-python scripts/build_schema_grounding_data.py \
-  --sources cypherbench \
-  --splits dev \
-  --output-dir data/cypherbench_dev \
-  --negative-ratio 4
-
-# Chỉ tập Test (Offline Evaluation)
-python scripts/build_schema_grounding_data.py \
-  --sources cypherbench \
-  --splits test \
-  --output-dir data/cypherbench_test \
-  --negative-ratio 4
+```powershell
+python scripts\build_schema_grounding_data.py `
+  --benchmarks-root benchmarks `
+  --sources mind_the_query `
+  --splits train,test `
+  --output-dir data\mind_the_query_schema_grounding_full `
+  --overwrite
 ```
 
----
-
-### 3. Neo4j Text2Cypher (Train, Dev, Test)
-
-Tạo dữ liệu riêng cho `neo4j_text2cypher` (khuyên dùng `--negative-ratio 4` do full schema có số lượng node/relation rất lớn):
-
-```bash
-# Tạo cả 3 tập train, dev, test
-python scripts/build_schema_grounding_data.py \
-  --sources neo4j_text2cypher \
-  --splits train,dev,test \
-  --output-dir data/neo4j_grounding_4neg \
-  --negative-ratio 4
-
-# Chỉ tập Train
-python scripts/build_schema_grounding_data.py \
-  --sources neo4j_text2cypher \
-  --splits train \
-  --output-dir data/neo4j_train_4neg \
-  --negative-ratio 4
-
-# Chỉ tập Dev (Validation)
-python scripts/build_schema_grounding_data.py \
-  --sources neo4j_text2cypher \
-  --splits dev \
-  --output-dir data/neo4j_dev_4neg \
-  --negative-ratio 4
-
-# Chỉ tập Test
-python scripts/build_schema_grounding_data.py \
-  --sources neo4j_text2cypher \
-  --splits test \
-  --output-dir data/neo4j_test_4neg \
-  --negative-ratio 4
-```
-
----
-
-### 4. Mind-the-Query (Train, Dev, Test)
-
-```bash
-# Tạo cả 3 tập train, dev, test
-python scripts/build_schema_grounding_data.py \
-  --sources mind_the_query \
-  --splits train,dev,test \
-  --output-dir data/mind_the_query_grounding_4neg \
-  --negative-ratio 4
-```
-
----
-
-### 5. Tạo toàn bộ 3 Benchmarks cùng lúc
-
-```bash
-# Tạo cả 3 nguồn (cypherbench, mind_the_query, neo4j_text2cypher)
-python scripts/build_schema_grounding_data.py \
-  --splits train,dev,test \
-  --output-dir data/all_benchmarks_grounding_4neg \
-  --negative-ratio 4
-```
+Chỉ thêm `--negative-ratio N` khi muốn giới hạn số negative schema unit cho mỗi
+positive unit trong `selection_<split>.jsonl`; nó không thay đổi generation data.
 
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
