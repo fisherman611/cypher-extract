@@ -55,54 +55,134 @@ python -m unittest discover -s tests -v
 
 Xem toàn bộ tham số:
 
-```powershell
-python scripts\build_schema_grounding_data.py --help
+```bash
+python scripts/build_schema_grounding_data.py --help
 ```
 
-Smoke test với 25 mẫu train của **mỗi** benchmark. Dùng `--negative-ratio 4`
-để giới hạn tối đa bốn negative unit cho mỗi positive unit:
+### 1. Smoke test (Kiểm tra nhanh)
 
-```powershell
-python scripts\build_schema_grounding_data.py `
-  --output-dir $env:TEMP\schema-grounding-smoke `
-  --max-examples 25 `
+Chạy thử 25 mẫu của **mỗi** benchmark (`cypherbench`, `mind_the_query`, `neo4j_text2cypher`):
+
+```bash
+python scripts/build_schema_grounding_data.py \
+  --output-dir /tmp/schema-grounding-smoke \
+  --max-examples 25 \
+  --negative-ratio 4 \
+  --overwrite
+```
+
+---
+
+### 2. CypherBench (Train, Dev, Test)
+
+Tạo đầy đủ cả 3 tập `train`, `dev`, `test` cho CypherBench với negative sampling (4:1):
+
+```bash
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits train,dev,test \
+  --output-dir data/cypherbench_grounding_4neg \
   --negative-ratio 4
 ```
 
-Tạo corpus train đầy đủ từ cả ba benchmark, giữ mọi schema unit negative:
+Nếu muốn giữ **100% negative units** (Full - không sampling):
 
-```powershell
-python scripts\build_schema_grounding_data.py `
-  --output-dir data\schema_grounding
+```bash
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits train,dev,test \
+  --output-dir data/cypherbench_grounding_full
 ```
 
-Nếu chỉ cần corpus CypherBench để train, chỉ định nguồn một cách tường minh:
+Hoặc tạo riêng từng tập theo nhu cầu:
 
-```powershell
-python scripts\build_schema_grounding_data.py `
-  --sources cypherbench `
-  --output-dir data\cypherbench_schema_grounding
-```
+```bash
+# Chỉ tập Train
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits train \
+  --output-dir data/cypherbench_train \
+  --negative-ratio 4
 
-Tạo corpus train với negative sampling, phù hợp khi full schema lớn:
+# Chỉ tập Dev (Validation)
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits dev \
+  --output-dir data/cypherbench_dev \
+  --negative-ratio 4
 
-```powershell
-python scripts\build_schema_grounding_data.py `
-  --output-dir data\schema_grounding_4neg `
+# Chỉ tập Test (Offline Evaluation)
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits test \
+  --output-dir data/cypherbench_test \
   --negative-ratio 4
 ```
 
-Tạo dữ liệu test để đánh giá offline selector/generator. Không trộn output này
-vào dữ liệu SFT train:
+---
 
-```powershell
-python scripts\build_schema_grounding_data.py `
-  --splits test `
-  --output-dir data\schema_grounding_test
+### 3. Neo4j Text2Cypher (Train, Dev, Test)
+
+Tạo dữ liệu riêng cho `neo4j_text2cypher` (khuyên dùng `--negative-ratio 4` do full schema có số lượng node/relation rất lớn):
+
+```bash
+# Tạo cả 3 tập train, dev, test
+python scripts/build_schema_grounding_data.py \
+  --sources neo4j_text2cypher \
+  --splits train,dev,test \
+  --output-dir data/neo4j_grounding_4neg \
+  --negative-ratio 4
+
+# Chỉ tập Train
+python scripts/build_schema_grounding_data.py \
+  --sources neo4j_text2cypher \
+  --splits train \
+  --output-dir data/neo4j_train_4neg \
+  --negative-ratio 4
+
+# Chỉ tập Dev (Validation)
+python scripts/build_schema_grounding_data.py \
+  --sources neo4j_text2cypher \
+  --splits dev \
+  --output-dir data/neo4j_dev_4neg \
+  --negative-ratio 4
+
+# Chỉ tập Test
+python scripts/build_schema_grounding_data.py \
+  --sources neo4j_text2cypher \
+  --splits test \
+  --output-dir data/neo4j_test_4neg \
+  --negative-ratio 4
 ```
 
-Lệnh từ chối ghi đè output cũ. Chỉ thêm `--overwrite` khi chủ động muốn tạo lại
-toàn bộ các file trong output directory.
+---
+
+### 4. Mind-the-Query (Train, Dev, Test)
+
+```bash
+# Tạo cả 3 tập train, dev, test
+python scripts/build_schema_grounding_data.py \
+  --sources mind_the_query \
+  --splits train,dev,test \
+  --output-dir data/mind_the_query_grounding_4neg \
+  --negative-ratio 4
+```
+
+---
+
+### 5. Tạo toàn bộ 3 Benchmarks cùng lúc
+
+```bash
+# Tạo cả 3 nguồn (cypherbench, mind_the_query, neo4j_text2cypher)
+python scripts/build_schema_grounding_data.py \
+  --splits train,dev,test \
+  --output-dir data/all_benchmarks_grounding_4neg \
+  --negative-ratio 4
+```
+
+> **Lưu ý:**
+> - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
+> - Tham số `--negative-ratio` chỉ tác động đến tập `selection_<split>.jsonl` (Task A) để cân bằng tỷ lệ nhãn `0` và `1`; tập `generation_<split>.jsonl` (Task B) luôn giữ nguyên gold sub-schema.
 
 ## Output format
 

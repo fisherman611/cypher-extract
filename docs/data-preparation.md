@@ -92,28 +92,41 @@ relationship trùng type ở các vị trí khác nhau không bị gộp nhầm.
 
 ## Chạy pipeline
 
-Smoke test, ba benchmark, 25 mẫu train cho mỗi benchmark:
+Smoke test, ba benchmark, 25 mẫu cho mỗi benchmark:
 
-```powershell
-python scripts/build_schema_grounding_data.py `
-  --output-dir $env:TEMP/schema-grounding-smoke `
-  --max-examples 25
+```bash
+python scripts/build_schema_grounding_data.py \
+  --output-dir /tmp/schema-grounding-smoke \
+  --max-examples 25 \
+  --negative-ratio 4 \
+  --overwrite
 ```
 
-Tạo corpus train đầy đủ và giữ mọi negative unit:
+Tạo trọn bộ `train,dev,test` cho CypherBench (negative sampling 4:1):
 
-```powershell
-python scripts/build_schema_grounding_data.py `
-  --output-dir data/schema_grounding
-```
-
-Giới hạn tối đa 4 negative units trên mỗi positive unit:
-
-```powershell
-python scripts/build_schema_grounding_data.py `
-  --output-dir data/schema_grounding_4neg `
+```bash
+python scripts/build_schema_grounding_data.py \
+  --sources cypherbench \
+  --splits train,dev,test \
+  --output-dir data/cypherbench_grounding_4neg \
   --negative-ratio 4
 ```
 
-Output cũ không bị ghi đè trừ khi truyền `--overwrite`. Test split được hỗ trợ
-để đánh giá selector offline, nhưng không nên được trộn vào SFT training data.
+Tạo corpus train đầy đủ từ cả ba benchmark, giữ mọi negative unit:
+
+```bash
+python scripts/build_schema_grounding_data.py \
+  --output-dir data/schema_grounding \
+  --splits train
+```
+
+Tạo cả 3 split (train, dev, test) cho toàn bộ 3 benchmark:
+
+```bash
+python scripts/build_schema_grounding_data.py \
+  --splits train,dev,test \
+  --output-dir data/all_benchmarks_grounding_4neg \
+  --negative-ratio 4
+```
+
+Output cũ không bị ghi đè trừ khi truyền `--overwrite`. Split `dev` và `test` được dùng để đánh giá selector/generator offline, không nên trộn vào SFT training data.

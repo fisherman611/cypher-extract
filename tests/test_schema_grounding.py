@@ -241,6 +241,40 @@ class PipelineAuditTest(unittest.TestCase):
                 "normalization_issues_train.jsonl",
             )
 
+    def test_dev_split_build(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "benchmarks"
+            source_directory = root / "Cypherbench"
+            source_directory.mkdir(parents=True)
+            (source_directory / "graphs" / "schemas").mkdir(parents=True)
+            (source_directory / "graphs" / "schemas" / "demo_schema.json").write_text(
+                json.dumps({"entities": [{"label": "Person", "properties": {}}], "relations": []}),
+                encoding="utf-8",
+            )
+            (source_directory / "dev.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "qid": "dev-sample",
+                            "graph": "demo",
+                            "nl_question": "List all people.",
+                            "gold_cypher": "MATCH (p:Person) RETURN p",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            output_directory = Path(temporary_directory) / "output"
+            manifest = build_dataset(
+                benchmarks_root=root,
+                output_dir=output_directory,
+                sources=("cypherbench",),
+                splits=("dev",),
+            )
+            self.assertEqual(manifest["counts"]["cypherbench/dev"]["generation_examples"], 1)
+            self.assertTrue((output_directory / "generation_dev.jsonl").exists())
+            self.assertTrue((output_directory / "selection_dev.jsonl").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

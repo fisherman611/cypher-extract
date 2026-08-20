@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         "--splits",
         type=_csv,
         default=("train",),
-        help="Comma-separated structured benchmark splits. Default: train.",
+        help="Comma-separated structured benchmark splits: train, dev, test. Default: train.",
     )
     parser.add_argument(
         "--allow-partial-coverage",

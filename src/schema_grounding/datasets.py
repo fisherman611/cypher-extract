@@ -51,15 +51,18 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 
 
 def _split_file(root: Path, source_dir: str, split: str) -> Path:
-    mapping = {"train": "train.json", "test": "test.json"}
-    # Mind-the-Query's released structured training file is named train_val.json.
-    # It remains a source training split here; downstream users can make an
-    # additional validation split without losing the schema/graph metadata.
-    if source_dir == "Mind_the_query":
-        mapping["train"] = "train_val.json"
+    mapping = {
+        "train": "train.json",
+        "dev": "dev.json",
+        "val": "dev.json",
+        "test": "test.json",
+    }
+    if source_dir == "Mind_the_query" and split == "train":
+        if not (root / source_dir / "train.json").exists() and (root / source_dir / "train_val.json").exists():
+            mapping["train"] = "train_val.json"
     if split not in mapping:
         raise ValueError(
-            f"{source_dir} has no structured '{split}' split. Supported splits: train, test."
+            f"{source_dir} has no structured '{split}' split. Supported splits: train, dev (or val), test."
         )
     path = root / source_dir / mapping[split]
     if not path.exists():
