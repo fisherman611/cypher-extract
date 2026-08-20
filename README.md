@@ -118,6 +118,23 @@ python scripts\build_schema_grounding_data.py `
 Chỉ thêm `--negative-ratio N` khi muốn giới hạn số negative schema unit cho mỗi
 positive unit trong `selection_<split>.jsonl`; nó không thay đổi generation data.
 
+### Lọc selector stage-1
+
+Tạo tập selector nhỏ, cân bằng theo graph và nhãn, đồng thời cover mọi schema
+unit × label quan sát được trong `selection_train.jsonl`:
+
+```powershell
+python scripts\filter_selector_stage1.py `
+  --input-dir data\cypherbench_schema_grounding_full `
+  --output-dir data\cypherbench_schema_grounding_full_final `
+  --target-rows 3200 `
+  --seed 13 `
+  --overwrite
+```
+
+Script giữ nguyên generation data và selection dev/test; chỉ thay
+`selection_train.jsonl` và cập nhật manifest với policy lọc.
+
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
 > - Tham số `--negative-ratio` chỉ tác động đến tập `selection_<split>.jsonl` (Task A) để cân bằng tỷ lệ nhãn `0` và `1`; tập `generation_<split>.jsonl` (Task B) luôn giữ nguyên gold sub-schema.
