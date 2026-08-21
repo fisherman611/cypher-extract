@@ -5,10 +5,10 @@ predict_with_generate: false
 
 model_name_or_path: Qwen/Qwen3-0.6B
 ref_model: Qwen/Qwen3-4B-Instruct-2507
-ref_model_adapters: REPLACE_WITH_TEACHER_ADAPTER
-dataset: REPLACE_WITH_TRAIN_DATASET
-eval_dataset: REPLACE_WITH_EVAL_DATASET
-dataset_dir: data
+ref_model_adapters: results/qwen3/teacher_lora
+dataset: cypher_prepared_train
+eval_dataset: cypher_prepared_eval
+dataset_dir: data/llamafactory
 template: qwen3_nothink
 cutoff_len: 892
 packing: false

@@ -156,6 +156,20 @@ python scripts\prepare_multitask_prompts.py `
   --overwrite
 ```
 
+Chuyển bốn file prompt/response vừa tạo sang OpenAI chat JSONL và đăng ký tên
+dataset local cho LlamaFactory:
+
+```powershell
+python scripts\prepare_llamafactory_data.py `
+  --input-dir data\prepared `
+  --output-dir data\llamafactory `
+  --overwrite
+```
+
+Mỗi row đầu ra chỉ giữ `messages` theo thứ tự `system -> user -> assistant`.
+Các config train dùng tên `cypher_prepared_train` và `cypher_prepared_eval`
+trong `data/llamafactory/dataset_info.json`.
+
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
 > - Tham số `--negative-ratio` chỉ tác động đến tập `selection_<split>.jsonl` (Task A) để cân bằng tỷ lệ nhãn `0` và `1`; tập `generation_<split>.jsonl` (Task B) luôn giữ nguyên gold sub-schema.
@@ -217,35 +231,136 @@ Xem thêm về thiết kế và format tại [docs/data-preparation.md](docs/dat
 
 Phần `src/distillation` tích hợp đầy đủ các baseline từ template: SFT,
 FKL/RKL, SFKL/SRKL, CSD, AMID, HPD, BDL/DA-KD, FDD và adaptive DistiLLM.
-Môi trường train yêu cầu Python 3.11+, Linux/WSL2 và GPU NVIDIA hỗ trợ BF16.
+Môi trường train yêu cầu Python 3.11+, Linux/WSL2, GPU NVIDIA hỗ trợ BF16 và
+driver tương thích với PyTorch CUDA 12.8. Các lệnh train bên dưới chạy từ thư
+mục gốc của repository.
+
+### 1. Cài môi trường train
 
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements-distillation.txt
 ```
 
-Train LoRA teacher trước. Adapter sẽ được lưu tại
+DeepSpeed chỉ được bật trên Linux/WSL2. Có thể chạy SFT kiểm tra trên CPU hoặc
+Windows bằng override `deepspeed=null bf16=false`, nhưng KD yêu cầu DeepSpeed
+và BF16.
+
+### 2. Tạo dữ liệu LlamaFactory
+
+Nếu `data/prepared` đã tồn tại, chuyển nó sang OpenAI chat JSONL bằng:
+
+```bash
+python scripts/prepare_llamafactory_data.py \
+  --input-dir data/prepared \
+  --output-dir data/llamafactory \
+  --overwrite
+```
+
+Lệnh tạo bốn dataset `cypher_prepared_train`, `cypher_prepared_eval`,
+`cypher_prepared_test_generator`, `cypher_prepared_test_selector` và đăng ký
+chúng trong `data/llamafactory/dataset_info.json`. Các YAML hiện tại đã trỏ
+sẵn tới train/eval local này.
+
+### 3. Train LoRA teacher Qwen
+
+Train teacher `Qwen/Qwen3-4B-Instruct-2507`. Adapter được lưu tại
 `results/qwen3/teacher_lora`:
 
 ```bash
-bash scripts/train.sh configs/distillation/teacher_sft.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_sft.yaml
 ```
 
-Train SFT student với dữ liệu đã đăng ký trong `data/llamafactory`:
+Nếu chỉ dùng một GPU:
 
 ```bash
-bash scripts/train.sh configs/distillation/student_sft.yaml
+RUN_GPUS=0 bash scripts/train.sh configs/distillation/teacher_sft.yaml
 ```
 
-Train FKL. Config mặc định tự nạp LoRA teacher vừa train thông qua
-`ref_model_adapters`:
+### 4. Train SFT student làm baseline
+
+Bước này không bắt buộc trước KD, nhưng dùng để lấy baseline student không có
+teacher:
 
 ```bash
-bash scripts/train.sh configs/distillation/kd.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/student_sft.yaml
 ```
 
-Có thể dùng adapter khác bằng override
-`ref_model_adapters=/path/to/teacher-adapter`.
+Output nằm tại `results/qwen3/student_sft`.
 
-Toàn bộ preset cho Llama và Qwen nằm trong `configs/llama` và
-`configs/qwen`; có thể ghi đè bất kỳ giá trị YAML bằng `key=value` trên dòng
-lệnh.
+### 5. Train student bằng KD
+
+Config project mặc định dùng FKL với `kd_ratio: 0.6`, tự nạp base teacher 4B
+và LoRA adapter vừa train tại `results/qwen3/teacher_lora`:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml
+```
+
+Loss train là `0.4 * LM loss + 0.6 * FKL loss`; output mặc định nằm tại
+`results/qwen3/fkl`.
+
+Có thể thay adapter, dataset hoặc output bằng override:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
+  ref_model_adapters=/path/to/teacher-adapter \
+  dataset=cypher_prepared_train \
+  eval_dataset=cypher_prepared_eval \
+  output_dir=results/qwen3/my_fkl
+```
+
+### 6. Chạy các method khác
+
+Các preset trong `configs/qwen` đã dùng dataset local và tự nạp adapter tại
+`results/qwen3/teacher_lora`. Ví dụ AMID:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/qwen/amid.yaml
+```
+
+Tương tự có thể thay `amid.yaml` bằng `fkl.yaml`, `rkl.yaml`, `sfkl.yaml`,
+`srkl.yaml`, `csd.yaml`, `hpd.yaml`, `da_kd.yaml`, các config `fdd_*` hoặc
+`distillm_adaptive_*`.
+
+Preset trong `configs/llama` dùng student Llama 3.2 1B và teacher Llama 3 8B.
+Đăng nhập Hugging Face với tài khoản có quyền truy cập model gated, sau đó
+train đúng LoRA teacher Llama:
+
+```bash
+export HF_TOKEN=your_huggingface_token
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_sft_llama.yaml
+```
+
+Adapter được lưu tại `results/llama3/teacher_lora` và mọi preset Llama tự nạp
+đường dẫn này. Ví dụ:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/llama/amid.yaml
+```
+
+Không dùng adapter Qwen cho config Llama hoặc ngược lại.
+
+### 7. GPU, resume và kiểm tra
+
+Launcher mặc định dùng hai GPU. `RUN_GPUS` vừa chọn GPU vừa đặt số process;
+có thể dùng `NPROC_PER_NODE` khi scheduler đã quản lý `CUDA_VISIBLE_DEVICES`:
+
+```bash
+RUN_GPUS=2,3 bash scripts/train.sh configs/distillation/kd.yaml
+NPROC_PER_NODE=4 bash scripts/train.sh configs/distillation/kd.yaml
+```
+
+Resume từ checkpoint:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
+  resume_from_checkpoint=results/qwen3/fkl/checkpoint-1000
+```
+
+Chạy test trước khi train dài:
+
+```bash
+python -m pytest
+```

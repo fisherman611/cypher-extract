@@ -35,10 +35,16 @@ def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     assert actual == BASELINE_CONFIG_NAMES
 
 
-def test_teacher_lora_output_is_wired_into_project_kd_config() -> None:
-    teacher = yaml.safe_load(Path("configs/distillation/teacher_sft.yaml").read_text(encoding="utf-8"))
-    student = yaml.safe_load(Path("configs/distillation/student_sft.yaml").read_text(encoding="utf-8"))
-    kd = yaml.safe_load(Path("configs/distillation/kd.yaml").read_text(encoding="utf-8"))
+@pytest.mark.parametrize(
+    ("teacher_path", "kd_path"),
+    [
+        ("configs/distillation/teacher_sft.yaml", "configs/qwen/fkl.yaml"),
+        ("configs/distillation/teacher_sft_llama.yaml", "configs/llama/fkl.yaml"),
+    ],
+)
+def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
+    teacher = yaml.safe_load(Path(teacher_path).read_text(encoding="utf-8"))
+    kd = yaml.safe_load(Path(kd_path).read_text(encoding="utf-8"))
 
     assert teacher["distill_method"] == "sft"
     assert teacher["kd_ratio"] == 0.0
@@ -47,9 +53,9 @@ def test_teacher_lora_output_is_wired_into_project_kd_config() -> None:
     assert "ref_model_adapters" not in teacher
     assert teacher["model_name_or_path"] == kd["ref_model"]
     assert teacher["output_dir"] == kd["ref_model_adapters"]
-    assert teacher["dataset"] == student["dataset"] == kd["dataset"]
-    assert teacher["eval_dataset"] == student["eval_dataset"] == kd["eval_dataset"]
-    assert teacher["dataset_dir"] == student["dataset_dir"] == kd["dataset_dir"]
+    assert teacher["dataset"] == kd["dataset"]
+    assert teacher["eval_dataset"] == kd["eval_dataset"]
+    assert teacher["dataset_dir"] == kd["dataset_dir"]
 
 
 @pytest.mark.parametrize("config_path", sorted(Path("configs/qwen").glob("*.yaml")))
@@ -168,11 +174,15 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     distillation_args, _ = DistillationArguments.split_config(config)
     if distillation_args.uses_kd:
-        assert config["ref_model_adapters"] == "REPLACE_WITH_TEACHER_ADAPTER"
+        expected_adapter = (
+            "results/qwen3/teacher_lora" if config_path.parent.name == "qwen" else "results/llama3/teacher_lora"
+        )
+        assert config["ref_model_adapters"] == expected_adapter
     else:
         assert "ref_model_adapters" not in config
-    assert config["dataset"] == "REPLACE_WITH_TRAIN_DATASET"
-    assert config["eval_dataset"] == "REPLACE_WITH_EVAL_DATASET"
+    assert config["dataset"] == "cypher_prepared_train"
+    assert config["eval_dataset"] == "cypher_prepared_eval"
+    assert config["dataset_dir"] == "data/llamafactory"
     expected_template = "qwen3_nothink" if config_path.parent.name == "qwen" else "llama3"
     assert config["template"] == expected_template
     assert config["packing"] is False

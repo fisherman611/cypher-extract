@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 kd-train = "distillation.cli:main"
+prepare-llamafactory-data = "distillation.prepare_data:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
