@@ -3,9 +3,7 @@ do_train: true
 do_eval: true
 predict_with_generate: false
 
-model_name_or_path: Qwen/Qwen3-0.6B
-ref_model: Qwen/Qwen3-4B-Instruct-2507
-ref_model_adapters: results/qwen3/teacher_lora
+model_name_or_path: Qwen/Qwen3-4B-Instruct-2507
 dataset: cypher_prepared_train
 eval_dataset: cypher_prepared_eval
 dataset_dir: data/llamafactory
@@ -25,14 +23,17 @@ lora_dropout: 0.1
 train_on_prompt: false
 mask_history: false
 
-distill_method: fkl
-kd_ratio: 0.6
+# The shared CLI treats kd_ratio=0 as ordinary SFT, so no reference model is loaded.
+distill_method: sft
+kd_ratio: 0.0
 
-output_dir: results/qwen3/fkl
+# LlamaFactory saves the trained LoRA adapter in this directory. kd.yaml loads it
+# through ref_model_adapters while keeping the 4B base model frozen.
+output_dir: results/qwen3/teacher_lora
 overwrite_output_dir: true
-per_device_train_batch_size: 2
-per_device_eval_batch_size: 16
-gradient_accumulation_steps: 8
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 8
+gradient_accumulation_steps: 16
 gradient_checkpointing: false
 learning_rate: 0.0001
 num_train_epochs: 5

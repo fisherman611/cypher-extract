@@ -223,18 +223,28 @@ Môi trường train yêu cầu Python 3.11+, Linux/WSL2 và GPU NVIDIA hỗ tr�
 python -m pip install -r requirements-distillation.txt
 ```
 
+Train LoRA teacher trước. Adapter sẽ được lưu tại
+`results/qwen3/teacher_lora`:
+
+```bash
+bash scripts/train.sh configs/distillation/teacher_sft.yaml
+```
+
 Train SFT student với dữ liệu đã đăng ký trong `data/llamafactory`:
 
 ```bash
 bash scripts/train.sh configs/distillation/student_sft.yaml
 ```
 
-Train FKL với teacher adapter:
+Train FKL. Config mặc định tự nạp LoRA teacher vừa train thông qua
+`ref_model_adapters`:
 
 ```bash
-bash scripts/train.sh configs/distillation/kd.yaml \
-  ref_model_adapters=/path/to/teacher-adapter
+bash scripts/train.sh configs/distillation/kd.yaml
 ```
+
+Có thể dùng adapter khác bằng override
+`ref_model_adapters=/path/to/teacher-adapter`.
 
 Toàn bộ preset cho Llama và Qwen nằm trong `configs/llama` và
 `configs/qwen`; có thể ghi đè bất kỳ giá trị YAML bằng `key=value` trên dòng

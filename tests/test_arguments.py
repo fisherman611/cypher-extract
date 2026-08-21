@@ -35,6 +35,23 @@ def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     assert actual == BASELINE_CONFIG_NAMES
 
 
+def test_teacher_lora_output_is_wired_into_project_kd_config() -> None:
+    teacher = yaml.safe_load(Path("configs/distillation/teacher_sft.yaml").read_text(encoding="utf-8"))
+    student = yaml.safe_load(Path("configs/distillation/student_sft.yaml").read_text(encoding="utf-8"))
+    kd = yaml.safe_load(Path("configs/distillation/kd.yaml").read_text(encoding="utf-8"))
+
+    assert teacher["distill_method"] == "sft"
+    assert teacher["kd_ratio"] == 0.0
+    assert teacher["finetuning_type"] == "lora"
+    assert "ref_model" not in teacher
+    assert "ref_model_adapters" not in teacher
+    assert teacher["model_name_or_path"] == kd["ref_model"]
+    assert teacher["output_dir"] == kd["ref_model_adapters"]
+    assert teacher["dataset"] == student["dataset"] == kd["dataset"]
+    assert teacher["eval_dataset"] == student["eval_dataset"] == kd["eval_dataset"]
+    assert teacher["dataset_dir"] == student["dataset_dir"] == kd["dataset_dir"]
+
+
 @pytest.mark.parametrize("config_path", sorted(Path("configs/qwen").glob("*.yaml")))
 def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
