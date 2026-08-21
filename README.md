@@ -135,6 +135,27 @@ python scripts\filter_selector_stage1.py `
 Script giữ nguyên generation data và selection dev/test; chỉ thay
 `selection_train.jsonl` và cập nhật manifest với policy lọc.
 
+### Chuẩn bị prompt multitask
+
+Chuẩn bị `train.jsonl` và `eval.jsonl` sao cho batch có cả generator và
+selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Nếu task
+selector ít hơn số batch (ví dụ `batch-size=2`), selector sẽ được rải đều vào
+các mixed batch và batch còn lại chỉ chứa generator. Test generator và selector
+được ghi thành hai file riêng. Không bật shuffle lại ở data loader vì thứ tự
+trong train/eval đã được interleave theo batch.
+
+Với CypherBench final hiện tại (`6,827` generator, `3,200` selector) và
+`batch-size=2`, train có `3,200` mixed batch (`1 generator + 1 selector`) và
+`1,814` batch chỉ generator; mọi mẫu nguồn chỉ xuất hiện một lần.
+
+```powershell
+python scripts\prepare_multitask_prompts.py `
+  --input-dir data\cypherbench_schema_grounding_full_final `
+  --output-dir data\prepared `
+  --batch-size 2 `
+  --overwrite
+```
+
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
 > - Tham số `--negative-ratio` chỉ tác động đến tập `selection_<split>.jsonl` (Task A) để cân bằng tỷ lệ nhãn `0` và `1`; tập `generation_<split>.jsonl` (Task B) luôn giữ nguyên gold sub-schema.

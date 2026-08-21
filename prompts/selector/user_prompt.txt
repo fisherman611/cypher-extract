@@ -1,0 +1,7 @@
+QUESTION:
+{question}
+
+SCHEMA UNIT:
+{schema_unit}
+
+Is this schema unit needed to answer the question?
