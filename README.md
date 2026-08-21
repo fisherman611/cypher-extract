@@ -212,3 +212,30 @@ không có topology sẽ nằm trong `normalization_issues_<split>.jsonl`, còn 
 coverage giữa gold Cypher và schema hợp lệ nằm trong `rejected_<split>.jsonl`.
 
 Xem thêm về thiết kế và format tại [docs/data-preparation.md](docs/data-preparation.md).
+
+## Distillation
+
+Phần `src/distillation` tích hợp đầy đủ các baseline từ template: SFT,
+FKL/RKL, SFKL/SRKL, CSD, AMID, HPD, BDL/DA-KD, FDD và adaptive DistiLLM.
+Môi trường train yêu cầu Python 3.11+, Linux/WSL2 và GPU NVIDIA hỗ trợ BF16.
+
+```bash
+python -m pip install -r requirements-distillation.txt
+```
+
+Train SFT student với dữ liệu đã đăng ký trong `data/llamafactory`:
+
+```bash
+bash scripts/train.sh configs/distillation/student_sft.yaml
+```
+
+Train FKL với teacher adapter:
+
+```bash
+bash scripts/train.sh configs/distillation/kd.yaml \
+  ref_model_adapters=/path/to/teacher-adapter
+```
+
+Toàn bộ preset cho Llama và Qwen nằm trong `configs/llama` và
+`configs/qwen`; có thể ghi đè bất kỳ giá trị YAML bằng `key=value` trên dòng
+lệnh.
