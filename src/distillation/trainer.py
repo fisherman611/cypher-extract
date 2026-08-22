@@ -119,6 +119,12 @@ class KDTrainer(CustomSeq2SeqTrainer):
         if self.distillation_args.uses_da_kd and not hasattr(CustomSeq2SeqTrainer, "_run_epoch"):
             raise RuntimeError("DA-KD requires Transformers >= 5.5.0 for dynamic epoch lengths.")
         super().__init__(*args, **kwargs)
+        # This trainer consumes and reduces every custom loss itself and does
+        # not use Transformers' num_items_in_batch normalization contract.
+        # Qwen/Llama forward methods expose **kwargs, which otherwise makes
+        # Trainer assume that contract is implemented and skip division by
+        # the active gradient-accumulation window.
+        self.model_accepts_loss_kwargs = False
         if self.distillation_args.uses_kd and self.ref_model is None:
             raise ValueError("Knowledge distillation requires LlamaFactory ref_model.")
 
