@@ -46,7 +46,7 @@ adam_beta2: 0.999
 adam_epsilon: 1.0e-8
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
-  min_lr: 1.0e-7
+  min_lr_rate: 0.001
 warmup_steps: 0
 weight_decay: 0.01
 max_grad_norm: 1.0

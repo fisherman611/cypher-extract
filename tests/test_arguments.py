@@ -198,7 +198,8 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["adam_beta2"] == 0.999
     assert config["adam_epsilon"] == 1.0e-8
     assert config["lr_scheduler_type"] == "cosine_with_min_lr"
-    assert config["lr_scheduler_kwargs"] == {"min_lr": 1.0e-7}
+    expected_min_lr_rate = 0.01 if distillation_args.uses_da_kd else 0.001
+    assert config["lr_scheduler_kwargs"] == {"min_lr_rate": expected_min_lr_rate}
     assert config["logging_strategy"] == "steps"
     if distillation_args.is_adaptive:
         assert config["student_gen"] is True
