@@ -743,7 +743,13 @@ class KDTrainer(CustomSeq2SeqTrainer):
         return (loss, student_outputs) if return_outputs else loss
 
     def evaluate(self, *args, **kwargs):
-        metrics = super().evaluate(*args, **kwargs)
+        original_padding_side = self.processing_class.padding_side
+        if self.args.predict_with_generate:
+            self.processing_class.padding_side = "left"
+        try:
+            metrics = super().evaluate(*args, **kwargs)
+        finally:
+            self.processing_class.padding_side = original_padding_side
         if self.rollout_scheduler is not None and "eval_loss" in metrics:
             changed = False
             if self.is_in_train:
@@ -755,3 +761,68 @@ class KDTrainer(CustomSeq2SeqTrainer):
                 f"DistiLLM threshold={self.rollout_scheduler.threshold:.2f} after eval_loss={metrics['eval_loss']:.6f}"
             )
         return metrics
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys=None,
+        **gen_kwargs,
+    ):
+        """Preserve student LM loss while LlamaFactory generates metric predictions."""
+
+        if not self.args.predict_with_generate or prediction_loss_only:
+            return super().prediction_step(
+                model,
+                inputs,
+                prediction_loss_only=prediction_loss_only,
+                ignore_keys=ignore_keys,
+                **gen_kwargs,
+            )
+
+        prepared_inputs = self._prepare_inputs(inputs)
+        labels = prepared_inputs["labels"]
+        attention_mask = prepared_inputs.get("attention_mask")
+        prompt_rows = []
+        for index in range(labels.size(0)):
+            if attention_mask is not None and attention_mask.ndim == 2:
+                valid = attention_mask[index].bool()
+                input_ids = prepared_inputs["input_ids"][index][valid]
+                row_labels = labels[index][valid]
+            else:
+                input_ids = prepared_inputs["input_ids"][index]
+                row_labels = labels[index]
+            response_positions = torch.nonzero(row_labels.ne(-100), as_tuple=False).flatten()
+            if response_positions.numel() == 0:
+                raise ValueError("Generative evaluation requires at least one unmasked response token per row.")
+            prompt_rows.append(input_ids[: int(response_positions[0])])
+
+        prompt_length = max(row.numel() for row in prompt_rows)
+        pad_token_id = self.processing_class.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.processing_class.eos_token_id
+        prompt_input_ids = prepared_inputs["input_ids"].new_full(
+            (len(prompt_rows), prompt_length), pad_token_id
+        )
+        prompt_attention_mask = prepared_inputs["input_ids"].new_zeros(
+            (len(prompt_rows), prompt_length)
+        )
+        for index, row in enumerate(prompt_rows):
+            prompt_input_ids[index, -row.numel() :] = row
+            prompt_attention_mask[index, -row.numel() :] = 1
+
+        generation_inputs = {
+            "input_ids": prompt_input_ids,
+            "attention_mask": prompt_attention_mask,
+        }
+        _, generated_tokens, _ = super().prediction_step(
+            model,
+            generation_inputs,
+            prediction_loss_only=False,
+            ignore_keys=ignore_keys,
+            **gen_kwargs,
+        )
+        with torch.no_grad(), self.compute_loss_context_manager():
+            loss = self.compute_loss(model, prepared_inputs).detach().mean()
+        return loss, generated_tokens, labels

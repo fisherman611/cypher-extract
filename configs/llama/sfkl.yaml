@@ -1,7 +1,7 @@
 stage: sft
 do_train: true
 do_eval: true
-predict_with_generate: false
+predict_with_generate: true
 
 model_name_or_path: meta-llama/Llama-3.2-1B-Instruct
 ref_model: meta-llama/Meta-Llama-3-8B-Instruct

@@ -189,7 +189,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["ignore_pad_token_for_loss"] is True
     assert config["train_on_prompt"] is False
     assert config["mask_history"] is False
-    assert config["predict_with_generate"] is False
+    assert config["predict_with_generate"] is True
     assert config["dataloader_num_workers"] == 1
     assert config["dataloader_drop_last"] is False
     assert config["gradient_checkpointing"] is False

@@ -324,6 +324,24 @@ Tương tự có thể thay `amid.yaml` bằng `fkl.yaml`, `rkl.yaml`, `sfkl.yam
 `srkl.yaml`, `csd.yaml`, `hpd.yaml`, `da_kd.yaml`, các config `fdd_*` hoặc
 `distillm_adaptive_*`.
 
+Train teacher trước, sau đó chạy tuần tự toàn bộ preset Qwen (SFT student và
+tất cả KD baseline):
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_qwen.sh
+```
+
+Mọi override phía sau script được chuyển cho từng run. Ví dụ smoke-test một epoch:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_qwen.sh num_train_epochs=1
+```
+
+Teacher là dependency bắt buộc nên nếu bước teacher lỗi, script luôn dừng. Sau
+đó, mặc định script dừng ngay khi một method lỗi; đặt `CONTINUE_ON_ERROR=1` để
+chạy các method còn lại. Log riêng của từng method nằm trong
+`results/qwen3/run_all_logs/<timestamp>/`.
+
 Preset trong `configs/llama` dùng student Llama 3.2 1B và teacher Llama 3 8B.
 Đăng nhập Hugging Face với tài khoản có quyền truy cập model gated, sau đó
 train đúng LoRA teacher Llama:

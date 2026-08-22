@@ -4,6 +4,7 @@ from typing import Any
 
 from .arguments import DistillationArguments
 from .data import register_tool_dataset_converters
+from .metrics import ComputeTaskMetrics
 from .trainer import KDTrainer
 
 
@@ -33,7 +34,16 @@ def run_kd(
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
-    dataset_module = get_dataset(template, model_args, data_args, training_args, stage="sft", **tokenizer_module)
+    # Keep eval tokenization supervised even when generative metrics are
+    # enabled. KDTrainer extracts prompt-only inputs for model.generate while
+    # retaining the full sequence for the validation LM loss.
+    generate_eval = training_args.predict_with_generate
+    if generate_eval:
+        training_args.predict_with_generate = False
+    try:
+        dataset_module = get_dataset(template, model_args, data_args, training_args, stage="sft", **tokenizer_module)
+    finally:
+        training_args.predict_with_generate = generate_eval
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     ref_model = None
     if distillation_args.uses_kd:
@@ -53,18 +63,32 @@ def run_kd(
         **tokenizer_module,
     )
 
+    metric_module = {}
+    if training_args.predict_with_generate:
+        metric_module["compute_metrics"] = ComputeTaskMetrics(tokenizer)
+
+    # Evaluation is deterministic and bounded. The longest gold response in
+    # the prepared corpus is well below this budget.
+    gen_kwargs = generating_args.to_dict(obey_generation_config=True)
+    gen_kwargs.update(do_sample=False, max_new_tokens=256, pad_token_id=tokenizer.pad_token_id)
+    extra_eos_ids = getattr(tokenizer, "additional_special_tokens_ids", []) or []
+    eos_ids = [tokenizer.eos_token_id, *extra_eos_ids]
+    valid_eos_ids = (token_id for token_id in eos_ids if token_id is not None and token_id >= 0)
+    gen_kwargs["eos_token_id"] = list(dict.fromkeys(valid_eos_ids))
+
     trainer = KDTrainer(
         model=model,
         args=training_args,
         finetuning_args=finetuning_args,
         data_collator=data_collator,
-        gen_kwargs={},
+        gen_kwargs=gen_kwargs,
         ref_model=ref_model,
         distillation_args=distillation_args,
         data_args=data_args,
         generating_args=generating_args,
         **dataset_module,
         **tokenizer_module,
+        **metric_module,
     )
 
     if training_args.do_train:
@@ -79,7 +103,7 @@ def run_kd(
         trainer.save_state()
 
     if training_args.do_eval:
-        metrics = trainer.evaluate(metric_key_prefix="eval")
+        metrics = trainer.evaluate(metric_key_prefix="eval", **gen_kwargs)
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
