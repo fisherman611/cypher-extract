@@ -107,6 +107,63 @@ def stratified_select_indices(
     return selected
 
 
+def summarize_da_kd_selection(
+    scores: Sequence[float],
+    student_losses: Sequence[float],
+    teacher_losses: Sequence[float],
+    active_indices: Sequence[int],
+) -> dict[str, float | int]:
+    """Summarize DDS values and the realized high/low SDU mixture.
+
+    The paper defines the high-DDS partition as the first ``rN`` examples
+    after sorting.  ``active_indices`` also has size ``rN``, so it determines
+    the partition boundary even when the low partition is too small to
+    realize the requested ``tau`` mixture exactly.
+    """
+
+    total = len(scores)
+    if total == 0:
+        raise ValueError("DA-KD diagnostics require a non-empty dataset.")
+    if len(student_losses) != total or len(teacher_losses) != total:
+        raise ValueError("DA-KD score and loss arrays must have equal lengths.")
+
+    selected = [int(index) for index in active_indices]
+    if not selected:
+        raise ValueError("DA-KD diagnostics require at least one active sample.")
+    if len(set(selected)) != len(selected) or any(index < 0 or index >= total for index in selected):
+        raise ValueError("DA-KD active indices must be unique valid dataset indices.")
+
+    numeric_scores = torch.tensor([float(value) for value in scores], dtype=torch.float64)
+    numeric_student = torch.tensor([float(value) for value in student_losses], dtype=torch.float64)
+    numeric_teacher = torch.tensor([float(value) for value in teacher_losses], dtype=torch.float64)
+    if not torch.isfinite(torch.cat((numeric_scores, numeric_student, numeric_teacher))).all():
+        raise ValueError("DA-KD diagnostic values must be finite.")
+
+    selected_tensor = torch.tensor(selected, dtype=torch.long)
+    selected_scores = numeric_scores[selected_tensor]
+    ordered = sorted(range(total), key=lambda index: (-float(numeric_scores[index]), index))
+    high_partition = set(ordered[: len(selected)])
+    selected_high = sum(index in high_partition for index in selected)
+    selected_low = len(selected) - selected_high
+    quantiles = torch.quantile(numeric_scores, torch.tensor([0.1, 0.5, 0.9], dtype=torch.float64))
+
+    return {
+        "dds_min": numeric_scores.min().item(),
+        "dds_p10": quantiles[0].item(),
+        "dds_median": quantiles[1].item(),
+        "dds_p90": quantiles[2].item(),
+        "dds_max": numeric_scores.max().item(),
+        "dds_mean": numeric_scores.mean().item(),
+        "selected_dds_mean": selected_scores.mean().item(),
+        "student_ce_mean": numeric_student.mean().item(),
+        "teacher_ce_mean": numeric_teacher.mean().item(),
+        "teacher_better_fraction": (numeric_student > numeric_teacher).to(torch.float64).mean().item(),
+        "selected_high_count": selected_high,
+        "selected_low_count": selected_low,
+        "selected_low_fraction": selected_low / len(selected),
+    }
+
+
 def per_sample_causal_cross_entropy(
     logits: torch.Tensor,
     labels: torch.Tensor,

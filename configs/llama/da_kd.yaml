@@ -30,6 +30,7 @@ kd_ratio: 1.0
 bdl_lambda: 0.9
 da_kd_tau: 0.1
 da_kd_schedule: cosine
+da_kd_audit_samples: 10
 
 output_dir: results/llama3/da_kd
 overwrite_output_dir: true
@@ -38,7 +39,7 @@ per_device_eval_batch_size: 32
 gradient_accumulation_steps: 1
 gradient_checkpointing: false
 learning_rate: 0.00001
-num_train_epochs: 10
+num_train_epochs: 5
 optim: adamw_torch
 adam_beta1: 0.9
 adam_beta2: 0.999

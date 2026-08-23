@@ -163,6 +163,20 @@ def test_da_kd_uses_bdl_and_dynamic_data_updates() -> None:
     assert args.uses_da_kd is True
 
 
+def test_da_kd_rejects_zero_bdl_and_invalid_audit_size() -> None:
+    with pytest.raises(ValueError, match="identically zero"):
+        DistillationArguments(distill_method="da_kd", bdl_lambda=0.5)
+    with pytest.raises(ValueError, match="non-negative"):
+        DistillationArguments(distill_method="da_kd", da_kd_audit_samples=-1)
+
+
+@pytest.mark.parametrize("family", ["qwen", "llama"])
+def test_da_kd_configs_keep_five_epochs_and_enable_cypher_audit(family: str) -> None:
+    config = yaml.safe_load((Path("configs") / family / "da_kd.yaml").read_text(encoding="utf-8"))
+    assert config["num_train_epochs"] == 5
+    assert config["da_kd_audit_samples"] == 10
+
+
 @pytest.mark.parametrize("field, value", [("amid_div_name", "js"), ("amid_div_order", "pp")])
 def test_amid_arguments_validate_choices(field: str, value: str) -> None:
     with pytest.raises(ValueError, match="amid"):

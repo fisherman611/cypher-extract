@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, fields
 from typing import Any, ClassVar
 
@@ -43,6 +44,7 @@ class DistillationArguments:
     bdl_lambda: float = 0.9
     da_kd_tau: float = 0.1
     da_kd_schedule: str = "cosine"
+    da_kd_audit_samples: int = 10
 
     # DistiLLM student rollout controls.
     student_gen: bool = False
@@ -132,10 +134,14 @@ class DistillationArguments:
             raise ValueError("amid_lam must be in [0, 1].")
         if not 0.0 < self.bdl_lambda < 1.0:
             raise ValueError("bdl_lambda must be in (0, 1).")
+        if math.isclose(self.bdl_lambda, 0.5, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("bdl_lambda=0.5 makes BDL identically zero.")
         if not 0.0 <= self.da_kd_tau <= 1.0:
             raise ValueError("da_kd_tau must be in [0, 1].")
         if self.da_kd_schedule not in {"linear", "cosine"}:
             raise ValueError("da_kd_schedule must be linear or cosine.")
+        if self.da_kd_audit_samples < 0:
+            raise ValueError("da_kd_audit_samples must be non-negative.")
         if not 0.0 < self.gen_top_p <= 1.0:
             raise ValueError("gen_top_p must be in (0, 1].")
         if not 0.0 <= self.init_threshold <= 1.0:

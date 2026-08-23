@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections import defaultdict
@@ -15,7 +16,13 @@ from transformers import TrainerCallback
 from transformers.trainer_utils import get_last_checkpoint, seed_worker
 
 from .arguments import DistillationArguments
-from .da_kd import per_sample_causal_cross_entropy, selection_ratio, selection_size, stratified_select_indices
+from .da_kd import (
+    per_sample_causal_cross_entropy,
+    selection_ratio,
+    selection_size,
+    stratified_select_indices,
+    summarize_da_kd_selection,
+)
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
 from .losses import compute_distillation_loss, compute_hpd_loss
@@ -535,6 +542,72 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     scores[index] = float(gathered[rank, offset].item())
         return scores
 
+    def _decode_da_kd_sample(self, index: int) -> tuple[str, str]:
+        if self._da_kd_scoring_dataset is None:
+            return "", ""
+        sample = self._da_kd_scoring_dataset[index]
+        input_ids = [int(token) for token in sample.get("input_ids", [])]
+        labels = [int(token) for token in sample.get("labels", [])]
+        response_positions = [position for position, label in enumerate(labels) if label != -100]
+        first_response = response_positions[0] if response_positions else len(input_ids)
+        response_ids = [labels[position] for position in response_positions]
+        decode = getattr(self.processing_class, "decode", None)
+        if not callable(decode):
+            return "", ""
+        prompt = decode(input_ids[:first_response], skip_special_tokens=True).strip()
+        response = decode(response_ids, skip_special_tokens=True).strip()
+        return prompt, response
+
+    def _write_da_kd_audit(
+        self,
+        *,
+        epoch: int,
+        ratio: float,
+        scores: list[float],
+        student_losses: list[float],
+        teacher_losses: list[float],
+        active_indices: list[int],
+        diagnostics: dict[str, float | int],
+    ) -> None:
+        audit_count = min(int(self.distillation_args.da_kd_audit_samples), len(scores))
+        if audit_count <= 0 or get_rank() != 0:
+            return
+
+        ordered = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
+        audit_indices = ordered[:audit_count]
+        audit_indices.extend(index for index in reversed(ordered[-audit_count:]) if index not in audit_indices)
+        active_set = set(active_indices)
+        high_partition = set(ordered[: len(active_indices)])
+        samples = []
+        for index in audit_indices:
+            prompt, response = self._decode_da_kd_sample(index)
+            samples.append(
+                {
+                    "dataset_index": index,
+                    "dds_rank": ordered.index(index) + 1,
+                    "partition": "high" if index in high_partition else "low",
+                    "selected": index in active_set,
+                    "dds": scores[index],
+                    "student_ce": student_losses[index],
+                    "teacher_ce": teacher_losses[index],
+                    "prompt": prompt,
+                    "gold_response": response,
+                }
+            )
+
+        audit_dir = Path(self.args.output_dir, "da_kd_audit")
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "epoch": epoch + 1,
+            "selection_ratio": ratio,
+            "dataset_size": len(scores),
+            "active_size": len(active_indices),
+            "statistics": diagnostics,
+            "samples": samples,
+        }
+        audit_path = audit_dir / f"epoch_{epoch + 1:03d}.json"
+        audit_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     def update_da_kd_dataset(self, model: torch.nn.Module, epoch: int) -> None:
         """Score the full dataset and activate the next DiffUp/SDU subset."""
 
@@ -575,6 +648,8 @@ class KDTrainer(CustomSeq2SeqTrainer):
         model.eval()
         self.ref_model.eval()
         local_scores: list[float] = []
+        local_student_losses: list[float] = []
+        local_teacher_losses: list[float] = []
         try:
             with torch.no_grad():
                 for features in scoring_loader:
@@ -591,6 +666,8 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     if not torch.isfinite(dds).all():
                         raise ValueError("DA-KD produced a non-finite DDS score.")
                     local_scores.extend(dds.detach().float().cpu().tolist())
+                    local_student_losses.extend(student_loss.detach().float().cpu().tolist())
+                    local_teacher_losses.extend(teacher_loss.detach().float().cpu().tolist())
         finally:
             if was_training:
                 model.train()
@@ -598,6 +675,8 @@ class KDTrainer(CustomSeq2SeqTrainer):
                 self.ref_model.train()
 
         scores = self._gather_da_kd_scores(local_indices, local_scores, total_size)
+        student_losses = self._gather_da_kd_scores(local_indices, local_student_losses, total_size)
+        teacher_losses = self._gather_da_kd_scores(local_indices, local_teacher_losses, total_size)
         total_epochs = float(self.args.num_train_epochs)
         ratio = selection_ratio(epoch, total_epochs, self.distillation_args.da_kd_schedule)
         minimum_size = self._train_batch_size * self.accelerator.num_processes
@@ -612,10 +691,25 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self._da_kd_batch_sampler.set_active_indices(active_indices)
         self._da_kd_active_indices = list(active_indices)
         self._da_kd_active_epoch = epoch
+        diagnostics = summarize_da_kd_selection(scores, student_losses, teacher_losses, active_indices)
+        self._write_da_kd_audit(
+            epoch=epoch,
+            ratio=ratio,
+            scores=scores,
+            student_losses=student_losses,
+            teacher_losses=teacher_losses,
+            active_indices=active_indices,
+            diagnostics=diagnostics,
+        )
         print_rank(
             f"DA-KD epoch={epoch + 1} ratio={ratio:.4f} "
             f"active={len(active_indices)}/{len(scores)} "
-            f"dds_mean={sum(scores) / max(len(scores), 1):.4f}"
+            f"high={diagnostics['selected_high_count']} low={diagnostics['selected_low_count']} "
+            f"dds_mean={diagnostics['dds_mean']:.4f} "
+            f"dds_p10/p50/p90={diagnostics['dds_p10']:.4f}/"
+            f"{diagnostics['dds_median']:.4f}/{diagnostics['dds_p90']:.4f} "
+            f"student_ce={diagnostics['student_ce_mean']:.4f} "
+            f"teacher_ce={diagnostics['teacher_ce_mean']:.4f}"
         )
 
     def _store_hpd_metrics(self, metrics: dict[str, float]) -> None:

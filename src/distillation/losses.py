@@ -119,6 +119,8 @@ def bdl(
 
     if not 0.0 < lam < 1.0:
         raise ValueError("BDL lam must be in (0, 1).")
+    if math.isclose(lam, 0.5, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("BDL lam=0.5 makes both mixture distributions identical and the loss zero.")
 
     student_logits = student_logits.to(torch.float32)
     teacher_logits = teacher_logits.to(torch.float32)
