@@ -1,0 +1,127 @@
+# Two-stage inference
+
+Pipeline inference chạy cùng một multitask LoRA adapter qua hai bước:
+
+1. `question + schema unit -> RELATED/UNRELATED`;
+2. merge các unit được chọn thành predicted sub-schema, rồi chạy
+   `question + predicted sub-schema -> Cypher`.
+
+Prediction path không dùng gold selector label, gold sub-schema hoặc gold
+Cypher. Các trường gold chỉ được nối vào output sau generation để tính metric.
+
+## Checkpoint
+
+Mặc định script đọc model repository:
+
+```text
+distillation-sql/nothing-extract
+```
+
+Với mỗi method, script liệt kê `qwen3/<method>/checkpoint-N` và tự chọn `N` lớn
+nhất. Nó chỉ tải adapter/tokenizer files cần cho inference; DeepSpeed optimizer
+state trong `global_step*` không được tải.
+
+`--methods all` gồm 13 model:
+
+```text
+teacher_lora
+sft
+fkl
+rkl
+sfkl
+srkl
+csd
+hpd
+amid
+fdd_sfkl
+fdd_srkl
+distillm_adaptive_sfkl
+distillm_adaptive_srkl
+```
+
+`da_kd` bị loại khỏi inference suite này.
+
+Base model được đọc từ `adapter_config.json`, vì vậy student adapter dùng
+`Qwen/Qwen3-0.6B` còn `teacher_lora` dùng `Qwen/Qwen3-4B-Instruct-2507`.
+
+## Chạy
+
+Chạy toàn bộ model và cả ba benchmark:
+
+```bash
+bash scripts/infer_all_qwen.sh
+```
+
+Hoặc chạy trực tiếp trên Linux:
+
+```bash
+python scripts/infer_two_stage.py \
+  --methods all \
+  --datasets cypherbench,mind_the_query,neo4j_text2cypher \
+  --selector-batch-size 128 \
+  --generator-batch-size 16 \
+  --dtype bfloat16 \
+  --device cuda
+```
+
+Chạy một phần method trên một GPU cụ thể:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods teacher_lora,sft,fkl
+```
+
+Trên nhiều GPU, chạy nhiều process với danh sách method không giao nhau. Mỗi
+process batch song song các schema unit trên GPU của nó; không nên load nhiều
+adapter vào cùng một GPU.
+
+Nếu repository cần authentication, đặt một trong hai biến:
+
+```bash
+export HF_READ_TOKEN=...
+# hoặc HF_TOKEN
+```
+
+## Merge policy
+
+Sub-schema luôn có đúng format:
+
+```json
+{
+  "nodes": [],
+  "relationships": []
+}
+```
+
+Unit được deduplicate và giữ thứ tự canonical từ `selection_test.jsonl`. Khi
+một relationship được chọn nhưng endpoint node chưa được chọn, node tương ứng
+được thêm từ schema unit của chính sample đó. Có thể tắt bằng
+`--no-relation-endpoint-closure`.
+
+Selector output không phải chính xác `RELATED` hoặc `UNRELATED` được ghi là
+`INVALID`, lưu nguyên raw output và không được chọn vào sub-schema. Empty schema
+được giữ nguyên thay vì âm thầm fallback sang gold/full schema.
+
+## Output và resume
+
+```text
+results/inference/qwen3/<method>/<dataset>/
+├── run_config.json
+├── selector_predictions.jsonl
+├── predicted_subschemas.jsonl
+├── generator_predictions.jsonl
+├── metrics.json
+└── manifest.json
+```
+
+Selector và generator ghi vào `.partial` rồi mới publish file hoàn chỉnh. Nếu
+process bị dừng giữa stage, lần chạy sau tiếp tục từ row cuối đã ghi. Stage đã
+hoàn chỉnh được reuse.
+
+`run_config.json` khóa checkpoint, input paths và generation options. Pipeline
+sẽ từ chối reuse output nếu một trong các giá trị này thay đổi; khi đó dùng một
+`--output-dir` khác hoặc chủ động xóa riêng directory method/dataset cũ.
+
+Các generation mặc định deterministic (`do_sample=False`, `num_beams=1`) và
+dùng `qwen3_nothink` (`enable_thinking=False`). Selector dùng tối đa 8 new
+tokens, generator dùng tối đa 256 new tokens.

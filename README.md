@@ -382,3 +382,281 @@ Chạy test trước khi train dài:
 ```bash
 python -m pytest
 ```
+
+## Two-stage inference trên Linux
+
+Pipeline inference thực hiện tuần tự hai task bằng cùng một LoRA adapter:
+
+1. Chạy selector cho từng cặp `question + schema unit` để dự đoán
+   `RELATED/UNRELATED`.
+2. Merge các unit `RELATED` thành predicted sub-schema, rồi đưa
+   `question + predicted sub-schema` vào generator để sinh Cypher.
+
+Prediction path không sử dụng gold selector label, gold sub-schema hoặc gold
+Cypher. Các trường gold chỉ được đọc sau generation để tính metric.
+
+### 1. Yêu cầu
+
+- Linux x86-64.
+- Python 3.11, khuyến nghị dùng virtual environment.
+- GPU NVIDIA hỗ trợ BF16 và driver tương thích với CUDA 12.8.
+- Đủ dung lượng Hugging Face cache cho base models và 13 LoRA adapters.
+- Ba test dataset đã tồn tại:
+
+  ```text
+  data/cypherbench_schema_grounding_full_final/
+  data/mind_the_query_schema_grounding_full/
+  data/neo4j_text2cypher_schema_grounding_full/
+  ```
+
+Mỗi directory phải có `selection_test.jsonl` và `generation_test.jsonl`.
+
+Từ repository root, tạo môi trường và cài dependency:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-distillation.txt
+```
+
+Đặt Hugging Face token nếu model repository yêu cầu authentication:
+
+```bash
+export HF_READ_TOKEN="hf_..."
+```
+
+Có thể đặt cache trên ổ đĩa riêng:
+
+```bash
+export HF_HOME="/mnt/models/huggingface"
+mkdir -p "$HF_HOME"
+```
+
+Kiểm tra CLI trước khi chạy:
+
+```bash
+python scripts/infer_two_stage.py --help
+```
+
+### 2. Model được chạy
+
+`--methods all` chạy 13 model sau:
+
+```text
+teacher_lora
+sft
+fkl
+rkl
+sfkl
+srkl
+csd
+hpd
+amid
+fdd_sfkl
+fdd_srkl
+distillm_adaptive_sfkl
+distillm_adaptive_srkl
+```
+
+`da_kd` không nằm trong inference suite. Với mỗi model, script truy vấn
+`distillation-sql/nothing-extract/qwen3/<method>/checkpoint-N` và tự dùng
+checkpoint có `N` lớn nhất. Script chỉ tải adapter/tokenizer files phục vụ
+inference, không tải DeepSpeed optimizer states trong `global_step*`.
+
+Base model được lấy từ `adapter_config.json`:
+
+- `teacher_lora`: `Qwen/Qwen3-4B-Instruct-2507`;
+- 12 student methods: `Qwen/Qwen3-0.6B`.
+
+### 3. Chạy toàn bộ trên một GPU
+
+Chạy đủ 13 model trên cả ba benchmark bằng GPU 0:
+
+```bash
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen.sh \
+  --selector-batch-size 128 \
+  --generator-batch-size 16 \
+  --dtype bfloat16 \
+  --device cuda
+```
+
+Lệnh trên chạy model tuần tự để không giữ nhiều model trong VRAM. Trong mỗi
+model, selector units và generator samples được infer theo batch. Nếu một batch
+gây CUDA OOM, runner tự chia đôi batch cho đến khi chạy được hoặc chỉ còn một
+sample.
+
+Để chỉ định Hugging Face cache qua CLI:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen.sh \
+  --cache-dir /mnt/models/huggingface \
+  --selector-batch-size 128 \
+  --generator-batch-size 16
+```
+
+### 4. Chạy một số method hoặc một benchmark
+
+Ví dụ chạy teacher, SFT và FKL trên CypherBench:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods teacher_lora,sft,fkl \
+  --datasets cypherbench \
+  --selector-batch-size 64 \
+  --generator-batch-size 8 \
+  --dtype bfloat16 \
+  --device cuda
+```
+
+Các giá trị hợp lệ của `--datasets`:
+
+```text
+cypherbench
+mind_the_query
+neo4j_text2cypher
+```
+
+Ví dụ chạy một method trên cả ba benchmark:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods hpd \
+  --datasets cypherbench,mind_the_query,neo4j_text2cypher
+```
+
+### 5. Chạy song song trên nhiều GPU
+
+Pipeline song song schema units bằng batching trên từng GPU. Để chạy nhiều
+method đồng thời, khởi tạo một process cho mỗi GPU và đảm bảo danh sách method
+không trùng nhau. Ví dụ với bốn GPU:
+
+```bash
+mkdir -p logs/inference
+
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods teacher_lora,sft,fkl \
+  > logs/inference/gpu0.log 2>&1 &
+pid0=$!
+
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_two_stage.py \
+  --methods rkl,sfkl,srkl,csd \
+  > logs/inference/gpu1.log 2>&1 &
+pid1=$!
+
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_two_stage.py \
+  --methods hpd,amid,fdd_sfkl \
+  > logs/inference/gpu2.log 2>&1 &
+pid2=$!
+
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_two_stage.py \
+  --methods fdd_srkl,distillm_adaptive_sfkl,distillm_adaptive_srkl \
+  > logs/inference/gpu3.log 2>&1 &
+pid3=$!
+
+wait "$pid0" "$pid1" "$pid2" "$pid3"
+```
+
+Theo dõi log:
+
+```bash
+tail -f logs/inference/gpu0.log
+```
+
+Mỗi process nhìn GPU được gán qua `CUDA_VISIBLE_DEVICES` như `cuda:0`, vì vậy
+giữ `--device cuda` hoặc bỏ tham số này.
+
+### 6. Resume
+
+Selector và generator ghi kết quả vào file `.partial`, sau đó mới publish file
+JSONL hoàn chỉnh. Nếu process bị dừng, chạy lại chính xác command cũ:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods teacher_lora,sft,fkl \
+  --datasets cypherbench \
+  --selector-batch-size 64 \
+  --generator-batch-size 8
+```
+
+Pipeline sẽ:
+
+- tiếp tục selector/generator từ row cuối của file `.partial`;
+- reuse stage đã hoàn thành;
+- tính lại metrics và manifest sau khi đủ output.
+
+`run_config.json` khóa checkpoint, input paths và inference options. Nếu
+`last_ckpt` trên Hugging Face thay đổi hoặc command dùng option khác, pipeline
+sẽ không reuse output cũ. Khi đó chọn output directory mới:
+
+```bash
+python scripts/infer_two_stage.py \
+  --methods sft \
+  --output-dir results/inference/qwen3-run-2
+```
+
+### 7. Output
+
+Kết quả mặc định nằm tại:
+
+```text
+results/inference/qwen3/<method>/<dataset>/
+├── run_config.json
+├── selector_predictions.jsonl
+├── predicted_subschemas.jsonl
+├── generator_predictions.jsonl
+├── metrics.json
+└── manifest.json
+```
+
+- `selector_predictions.jsonl`: label và raw output của từng schema unit.
+- `predicted_subschemas.jsonl`: sub-schema sau merge và các endpoint node được
+  closure tự động.
+- `generator_predictions.jsonl`: raw generator output, parsed Cypher, prompt
+  length và reference dùng để đánh giá.
+- `metrics.json`: selector accuracy/precision/recall/F1, Cypher exact
+  match/ROUGE và schema diagnostics.
+- `manifest.json`: checkpoint, options, thời gian và trạng thái từng stage.
+
+Xem metric của một run:
+
+```bash
+jq . results/inference/qwen3/sft/cypherbench/metrics.json
+```
+
+Xem một prediction:
+
+```bash
+head -n 1 results/inference/qwen3/sft/cypherbench/generator_predictions.jsonl | jq .
+```
+
+### 8. Điều chỉnh VRAM
+
+Nếu GPU ít VRAM, giảm batch size. Với `teacher_lora` 4B có thể bắt đầu bằng:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
+  --methods teacher_lora \
+  --selector-batch-size 32 \
+  --generator-batch-size 4 \
+  --dtype bfloat16
+```
+
+Nếu GPU không hỗ trợ BF16, thử `--dtype float16`. Có thể giữ LoRA adapter chưa
+merge bằng `--no-merge-adapter`, nhưng inference thường chậm hơn.
+
+Generation mặc định deterministic (`do_sample=False`, `num_beams=1`) và dùng
+`qwen3_nothink` (`enable_thinking=False`). Selector dùng tối đa 8 new tokens;
+generator dùng tối đa 256 new tokens. Có thể override:
+
+```bash
+python scripts/infer_two_stage.py \
+  --methods sft \
+  --selector-max-new-tokens 8 \
+  --generator-max-new-tokens 256
+```
+
+Tài liệu chi tiết về merge policy và output schema nằm tại
+[`docs/two-stage-inference.md`](docs/two-stage-inference.md).
