@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,19 @@ class PromptTemplates:
     generator_user: str
     selector_system: str
     selector_user: str
+
+    def fingerprints(self) -> dict[str, str]:
+        """Return stable content hashes used to validate resumable outputs."""
+
+        return {
+            name: sha256(getattr(self, name).encode("utf-8")).hexdigest()
+            for name in (
+                "generator_system",
+                "generator_user",
+                "selector_system",
+                "selector_user",
+            )
+        }
 
     @classmethod
     def from_repository(cls, repository_root: Path) -> PromptTemplates:

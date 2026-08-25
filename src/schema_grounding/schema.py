@@ -9,12 +9,12 @@ removing benchmark-specific field names:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from hashlib import sha256
 import json
 import re
-from typing import Any, Iterable, Mapping, Sequence
-
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PROPERTY_RE = re.compile(
@@ -98,7 +98,7 @@ def _coerce_properties(properties: Any) -> tuple[tuple[str, str], ...]:
             if isinstance(value, Mapping):
                 value = value.get("datatype", value.get("type", "UNKNOWN"))
             values[clean_identifier(name)] = normalize_property_type(value)
-    elif isinstance(properties, Sequence) and not isinstance(properties, (str, bytes)):
+    elif isinstance(properties, Sequence) and not isinstance(properties, str | bytes):
         for item in properties:
             if not isinstance(item, Mapping):
                 continue
@@ -440,7 +440,7 @@ def _schema_from_neo4j_json_object(
             if not isinstance(details, Mapping):
                 continue
             targets = details.get("labels", [])
-            if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)):
+            if not isinstance(targets, Sequence) or isinstance(targets, str | bytes):
                 continue
             global_relation = payload.get(raw_type, {})
             relation_properties = (

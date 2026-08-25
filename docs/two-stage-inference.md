@@ -118,7 +118,7 @@ Selector và generator ghi vào `.partial` rồi mới publish file hoàn chỉn
 process bị dừng giữa stage, lần chạy sau tiếp tục từ row cuối đã ghi. Stage đã
 hoàn chỉnh được reuse.
 
-`run_config.json` khóa checkpoint, input paths và generation options. Pipeline
+`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256 của input/prompt và generation options. Pipeline
 sẽ từ chối reuse output nếu một trong các giá trị này thay đổi; khi đó dùng một
 `--output-dir` khác hoặc chủ động xóa riêng directory method/dataset cũ.
 

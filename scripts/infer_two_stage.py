@@ -25,6 +25,8 @@ from schema_grounding.inference.data import default_dataset_specs  # noqa: E402
 from schema_grounding.inference.model import ModelRunner  # noqa: E402
 from schema_grounding.inference.pipeline import (  # noqa: E402
     InferenceOptions,
+    model_runner_required,
+    prepare_run_directory,
     run_dataset_pipeline,
 )
 from schema_grounding.inference.prompting import PromptTemplates  # noqa: E402
@@ -73,6 +75,8 @@ def parse_args() -> argparse.Namespace:
 
 def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     methods = list(DEFAULT_METHODS) if args.methods == "all" else comma_separated(args.methods)
+    if not methods:
+        raise ValueError("--methods must contain at least one method")
     unknown_methods = sorted(set(methods).difference(DEFAULT_METHODS))
     if unknown_methods:
         raise ValueError(f"Unknown methods: {', '.join(unknown_methods)}")
@@ -81,6 +85,8 @@ def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
 
     available_datasets = default_dataset_specs(REPOSITORY_ROOT)
     datasets = comma_separated(args.datasets)
+    if not datasets:
+        raise ValueError("--datasets must contain at least one dataset")
     unknown_datasets = sorted(set(datasets).difference(available_datasets))
     if unknown_datasets:
         raise ValueError(f"Unknown datasets: {', '.join(unknown_datasets)}")
@@ -123,16 +129,33 @@ def main() -> None:
             model_family=args.model_family,
             revision=args.revision,
         )
-        print(f"[{method}] resolving {checkpoint.uri} (step {checkpoint.step})")
-        adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
-        runner = ModelRunner.from_adapter(
-            adapter_path,
-            dtype=args.dtype,
-            device=args.device,
-            merge_adapter=not args.no_merge_adapter,
-        )
+        print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step}, revision {checkpoint.revision})")
+        planned_runs = [
+            (dataset_name, args.output_dir.resolve() / method / dataset_name) for dataset_name in dataset_names
+        ]
+        for dataset_name, output_directory in planned_runs:
+            prepare_run_directory(
+                method=method,
+                checkpoint=checkpoint,
+                spec=specs[dataset_name],
+                templates=templates,
+                output_directory=output_directory,
+                options=options,
+            )
+
+        runner = None
+        if any(model_runner_required(output_directory) for _, output_directory in planned_runs):
+            adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
+            runner = ModelRunner.from_adapter(
+                adapter_path,
+                dtype=args.dtype,
+                device=args.device,
+                merge_adapter=not args.no_merge_adapter,
+            )
+        else:
+            print(f"[{method}] all model-backed stages are complete; skipping model load")
         try:
-            for dataset_name in dataset_names:
+            for dataset_name, output_directory in planned_runs:
                 print(f"[{method}/{dataset_name}] starting")
                 run_dataset_pipeline(
                     method=method,
@@ -140,15 +163,16 @@ def main() -> None:
                     spec=specs[dataset_name],
                     runner=runner,
                     templates=templates,
-                    output_directory=args.output_dir.resolve() / method / dataset_name,
+                    output_directory=output_directory,
                     options=options,
                 )
                 print(f"[{method}/{dataset_name}] completed")
         finally:
-            del runner
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if runner is not None:
+                del runner
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

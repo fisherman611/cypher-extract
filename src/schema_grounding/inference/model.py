@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,13 @@ _DTYPES = {
     "float16": torch.float16,
     "float32": torch.float32,
 }
+_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+    "spiece.model",
+    "vocab.json",
+)
 
 
 @dataclass
@@ -24,6 +31,7 @@ class ModelRunner:
     model: Any
     tokenizer: Any
     device: torch.device
+    safe_batch_sizes: dict[int, int] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_adapter(
@@ -41,8 +49,13 @@ class ModelRunner:
         base_name = peft_config.base_model_name_or_path
         if not base_name:
             raise ValueError(f"Adapter {adapter_path} does not declare a base model")
-        tokenizer_source = adapter_path if Path(adapter_path, "tokenizer_config.json").is_file() else base_name
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=True)
+        base_revision = peft_config.revision
+        has_local_tokenizer = (Path(adapter_path) / "tokenizer_config.json").is_file() and any(
+            (Path(adapter_path) / filename).is_file() for filename in _TOKENIZER_ASSETS
+        )
+        tokenizer_source = adapter_path if has_local_tokenizer else base_name
+        tokenizer_revision = None if has_local_tokenizer else base_revision
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, revision=tokenizer_revision, use_fast=True)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "left"
@@ -50,6 +63,7 @@ class ModelRunner:
         target_device = torch.device(device)
         model = AutoModelForCausalLM.from_pretrained(
             base_name,
+            revision=base_revision,
             dtype=_DTYPES[dtype],
             low_cpu_mem_usage=True,
         )
@@ -85,6 +99,17 @@ class ModelRunner:
     ) -> list[str]:
         if not conversations:
             return []
+        safe_batch_size = self.safe_batch_sizes.get(max_new_tokens)
+        if safe_batch_size is not None and len(conversations) > safe_batch_size:
+            outputs: list[str] = []
+            for start in range(0, len(conversations), safe_batch_size):
+                outputs.extend(
+                    self.generate(
+                        conversations[start : start + safe_batch_size],
+                        max_new_tokens=max_new_tokens,
+                    )
+                )
+            return outputs
         try:
             return self._generate_batch(conversations, max_new_tokens=max_new_tokens)
         except torch.cuda.OutOfMemoryError:
@@ -92,6 +117,8 @@ class ModelRunner:
                 raise
             torch.cuda.empty_cache()
             middle = len(conversations) // 2
+            previous_safe_size = self.safe_batch_sizes.get(max_new_tokens, len(conversations))
+            self.safe_batch_sizes[max_new_tokens] = min(previous_safe_size, middle)
             return [
                 *self.generate(conversations[:middle], max_new_tokens=max_new_tokens),
                 *self.generate(conversations[middle:], max_new_tokens=max_new_tokens),

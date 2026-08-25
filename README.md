@@ -486,7 +486,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen.sh \
 Lệnh trên chạy model tuần tự để không giữ nhiều model trong VRAM. Trong mỗi
 model, selector units và generator samples được infer theo batch. Nếu một batch
 gây CUDA OOM, runner tự chia đôi batch cho đến khi chạy được hoặc chỉ còn một
-sample.
+sample, sau đó ghi nhớ batch size an toàn cho các batch có cùng token budget.
 
 Để chỉ định Hugging Face cache qua CLI:
 
@@ -587,9 +587,10 @@ Pipeline sẽ:
 - reuse stage đã hoàn thành;
 - tính lại metrics và manifest sau khi đủ output.
 
-`run_config.json` khóa checkpoint, input paths và inference options. Nếu
-`last_ckpt` trên Hugging Face thay đổi hoặc command dùng option khác, pipeline
-sẽ không reuse output cũ. Khi đó chọn output directory mới:
+`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256
+của input/prompt và inference options. Nếu `last_ckpt` trên Hugging Face thay đổi, command dùng
+option khác, dataset được build lại hoặc prompt thay đổi, pipeline sẽ không
+reuse output cũ. Khi đó chọn output directory mới:
 
 ```bash
 python scripts/infer_two_stage.py \

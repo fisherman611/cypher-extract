@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -57,6 +58,14 @@ def _batches(rows: Iterable[dict[str, Any]], batch_size: int) -> Iterator[list[d
         yield batch
 
 
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _rows_after_progress(
     source_path: Path, completed_rows: int, last_completed_id: str | None
 ) -> Iterator[dict[str, Any]]:
@@ -76,7 +85,7 @@ def _rows_after_progress(
 
 def run_selector_stage(
     spec: DatasetSpec,
-    runner: GenerationRunner,
+    runner: GenerationRunner | None,
     templates: PromptTemplates,
     output_path: Path,
     options: InferenceOptions,
@@ -84,6 +93,8 @@ def run_selector_stage(
     output = ResumableJsonl(output_path)
     if output.complete:
         return {"status": "reused", "path": str(output_path)}
+    if runner is None:
+        raise RuntimeError("Selector output is incomplete but no model runner was loaded")
     completed_rows, last_id = output.progress()
     started = time.monotonic()
     generated_rows = 0
@@ -202,7 +213,7 @@ def _context_limit(runner: GenerationRunner) -> int | None:
 
 def run_generator_stage(
     spec: DatasetSpec,
-    runner: GenerationRunner,
+    runner: GenerationRunner | None,
     templates: PromptTemplates,
     sub_schema_path: Path,
     output_path: Path,
@@ -211,6 +222,8 @@ def run_generator_stage(
     output = ResumableJsonl(output_path)
     if output.complete:
         return {"status": "reused", "path": str(output_path)}
+    if runner is None:
+        raise RuntimeError("Generator output is incomplete but no model runner was loaded")
     _, generation_rows = load_generation_index(spec.generation_test)
     completed_rows, last_id = output.progress()
     started = time.monotonic()
@@ -275,10 +288,22 @@ def compute_inference_metrics(
     generator_predictions: Path,
 ) -> dict[str, Any]:
     true_positive = false_positive = false_negative = true_negative = invalid = 0
+    selector_count = 0
     for source, prediction in paired_rows(spec.selection_test, selector_predictions):
+        if source.get("id") != prediction.get("id"):
+            raise ValueError(
+                f"Selector prediction misalignment: {source.get('id')!r} != {prediction.get('id')!r}"
+            )
+        selector_count += 1
         expected = "RELATED" if source["label"] == 1 else "UNRELATED"
         predicted = prediction["predicted_label"]
-        invalid += predicted == "INVALID"
+        if predicted not in {"RELATED", "UNRELATED", "INVALID"}:
+            raise ValueError(f"Unknown selector prediction label {predicted!r} for row {prediction.get('id')!r}")
+        if predicted == "INVALID":
+            invalid += 1
+            if expected == "RELATED":
+                false_negative += 1
+            continue
         if expected == "RELATED" and predicted == "RELATED":
             true_positive += 1
         elif expected == "UNRELATED" and predicted == "RELATED":
@@ -287,20 +312,36 @@ def compute_inference_metrics(
             false_negative += 1
         else:
             true_negative += 1
-    selector_count = true_positive + false_positive + false_negative + true_negative
     precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
     recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
+    if selector_count == 0:
+        raise ValueError(f"No selector rows found in {spec.selection_test}")
+
+    generation_order, generation_rows = load_generation_index(spec.generation_test)
     predicted_cypher: list[str] = []
     reference_cypher: list[str] = []
     closure_nodes = empty_schemas = 0
+    seen_generator_ids: set[str] = set()
     for row in iter_jsonl(generator_predictions):
+        example_id = row.get("id")
+        if not isinstance(example_id, str) or not example_id:
+            raise ValueError(f"Generator prediction in {generator_predictions} has no id")
+        if example_id in seen_generator_ids:
+            raise ValueError(f"Duplicate generator prediction id {example_id!r} in {generator_predictions}")
+        reference = generation_rows.get(example_id)
+        if reference is None:
+            raise ValueError(f"Generator prediction id {example_id!r} is not present in {spec.generation_test}")
+        seen_generator_ids.add(example_id)
         predicted_cypher.append(str(row["predicted_cypher"]))
-        reference_cypher.append(str(row["reference_cypher"]))
+        reference_cypher.append(str(reference["cypher"]))
         closure_nodes += len(row["closure_added_node_ids"])
         schema = row["predicted_sub_schema"]
         empty_schemas += not schema["nodes"] and not schema["relationships"]
+    missing_generator_ids = [example_id for example_id in generation_order if example_id not in seen_generator_ids]
+    if missing_generator_ids:
+        raise ValueError(f"Missing generator predictions for ids: {missing_generator_ids[:5]}")
     generator_metrics = compute_task_metrics(predicted_cypher, reference_cypher)
     return {
         "selector": {
@@ -323,18 +364,51 @@ def compute_inference_metrics(
     }
 
 
-def run_dataset_pipeline(
+def prepare_run_directory(
     *,
     method: str,
     checkpoint: LastCheckpoint,
     spec: DatasetSpec,
-    runner: GenerationRunner,
     templates: PromptTemplates,
     output_directory: Path,
     options: InferenceOptions,
 ) -> dict[str, Any]:
+    """Validate the resumable run configuration before loading a model."""
+
     options.validate()
     output_directory.mkdir(parents=True, exist_ok=True)
+    selector_path = output_directory / "selector_predictions.jsonl"
+    selector_partial_path = selector_path.with_suffix(selector_path.suffix + ".partial")
+    sub_schema_path = output_directory / "predicted_subschemas.jsonl"
+    sub_schema_temporary_path = sub_schema_path.with_suffix(sub_schema_path.suffix + ".tmp")
+    generator_path = output_directory / "generator_predictions.jsonl"
+    generator_partial_path = generator_path.with_suffix(generator_path.suffix + ".partial")
+    run_config_path = output_directory / "run_config.json"
+    inference_artifacts = (
+        selector_path,
+        selector_partial_path,
+        sub_schema_path,
+        sub_schema_temporary_path,
+        generator_path,
+        generator_partial_path,
+        output_directory / "metrics.json",
+        output_directory / "manifest.json",
+    )
+    if not run_config_path.is_file() and any(path.exists() for path in inference_artifacts):
+        raise ValueError(
+            f"Inference outputs exist in {output_directory} without run_config.json; use a new --output-dir or "
+            "remove the orphaned outputs"
+        )
+    if (sub_schema_path.is_file() or sub_schema_temporary_path.is_file()) and not selector_path.is_file():
+        raise ValueError(
+            f"Inconsistent inference outputs in {output_directory}: sub-schema output exists without completed "
+            "selector_predictions.jsonl"
+        )
+    if (generator_path.is_file() or generator_partial_path.is_file()) and not sub_schema_path.is_file():
+        raise ValueError(
+            f"Inconsistent inference outputs in {output_directory}: generator output exists without completed "
+            "predicted_subschemas.jsonl"
+        )
     run_config = {
         "method": method,
         "dataset": spec.name,
@@ -342,18 +416,51 @@ def run_dataset_pipeline(
         "options": asdict(options),
         "selection_test": str(spec.selection_test.resolve()),
         "generation_test": str(spec.generation_test.resolve()),
+        "input_fingerprints": {
+            "selection_test": _file_sha256(spec.selection_test),
+            "generation_test": _file_sha256(spec.generation_test),
+        },
+        "prompt_fingerprints": templates.fingerprints(),
     }
-    run_config_path = output_directory / "run_config.json"
     if run_config_path.is_file():
         existing_config = json.loads(run_config_path.read_text(encoding="utf-8"))
         if existing_config != run_config:
             raise ValueError(
-                f"Existing inference outputs in {output_directory} were created with a different "
-                "checkpoint, dataset, or option set. Choose a new --output-dir or remove that "
-                "method/dataset directory."
+                f"Existing inference outputs in {output_directory} were created with a different configuration "
+                "or with different input/prompt contents. Choose a new --output-dir or remove that method/dataset "
+                "directory."
             )
     else:
         write_json_atomic(run_config_path, run_config)
+    return run_config
+
+
+def model_runner_required(output_directory: Path) -> bool:
+    """Return whether either model-backed stage still needs generation."""
+
+    return not (output_directory / "selector_predictions.jsonl").is_file() or not (
+        output_directory / "generator_predictions.jsonl"
+    ).is_file()
+
+
+def run_dataset_pipeline(
+    *,
+    method: str,
+    checkpoint: LastCheckpoint,
+    spec: DatasetSpec,
+    runner: GenerationRunner | None,
+    templates: PromptTemplates,
+    output_directory: Path,
+    options: InferenceOptions,
+) -> dict[str, Any]:
+    prepare_run_directory(
+        method=method,
+        checkpoint=checkpoint,
+        spec=spec,
+        templates=templates,
+        output_directory=output_directory,
+        options=options,
+    )
     selector_path = output_directory / "selector_predictions.jsonl"
     sub_schema_path = output_directory / "predicted_subschemas.jsonl"
     generator_path = output_directory / "generator_predictions.jsonl"

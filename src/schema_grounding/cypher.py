@@ -9,13 +9,12 @@ silently producing incorrect supervision.
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
 import re
-from typing import Iterable
+from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from .schema import CanonicalSchema, RelationUnit, clean_identifier
-
 
 _NODE_PATTERN_RE = re.compile(r"\((?P<body>[^()]*)\)")
 _RELATION_PATTERN_RE = re.compile(

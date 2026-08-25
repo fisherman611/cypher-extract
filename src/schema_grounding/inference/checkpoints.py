@@ -32,7 +32,12 @@ _INFERENCE_FILES = (
     "adapter_model.safetensors",
     "adapter_model.bin",
     "tokenizer.json",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+    "spiece.model",
     "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
     "special_tokens_map.json",
     "added_tokens.json",
     "chat_template.jinja",
@@ -88,15 +93,20 @@ def resolve_last_checkpoint(
         raise ValueError(f"Unsupported method {method!r}; expected one of {', '.join(DEFAULT_METHODS)}")
     token = token or os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
     method_prefix = f"{model_family}/{method}"
-    tree = (api or HfApi()).list_repo_tree(
+    client = api or HfApi()
+    repo_info = client.repo_info(repo_id=repo_id, revision=revision, token=token)
+    resolved_revision = getattr(repo_info, "sha", None)
+    if not isinstance(resolved_revision, str) or not resolved_revision:
+        raise ValueError(f"Could not resolve {repo_id}@{revision} to an immutable commit SHA")
+    tree = client.list_repo_tree(
         repo_id=repo_id,
         path_in_repo=method_prefix,
         recursive=False,
-        revision=revision,
+        revision=resolved_revision,
         token=token,
     )
     step, subfolder = select_last_checkpoint((_path(item) for item in tree), method_prefix)
-    return LastCheckpoint(repo_id, revision, method, step, subfolder)
+    return LastCheckpoint(repo_id, resolved_revision, method, step, subfolder)
 
 
 def download_inference_checkpoint(

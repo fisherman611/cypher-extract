@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import random
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from pathlib import Path
-import random
-from typing import Iterable, TextIO
+from typing import TextIO
 
 from .cypher import SubSchemaExtraction, extract_subschema
 from .datasets import SUPPORTED_SOURCES, BenchmarkExample, iter_benchmark_examples
-
 
 FORMAT_VERSION = "1.1"
 

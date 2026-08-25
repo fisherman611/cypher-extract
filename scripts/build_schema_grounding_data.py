@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
@@ -70,12 +70,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
-
-import datetime
-
 def main() -> None:
     args = parse_args()
-    
+
     output_dir = args.output_dir
     if output_dir.exists() and any(output_dir.iterdir()) and not args.overwrite:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

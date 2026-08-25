@@ -9,13 +9,13 @@ will no longer be guaranteed. Test files remain separated by task.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import json
-from pathlib import Path
 import random
 import shutil
-from typing import Any, Iterable
-
+from collections import Counter
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -257,12 +257,24 @@ def main() -> None:
     selector_user = load_prompt("selector/user_prompt.txt")
     rng = random.Random(args.seed)
 
-    generator_train = format_generator_rows(read_jsonl(input_dir / "generation_train.jsonl"), generator_system, generator_user)
-    selector_train = format_selector_rows(read_jsonl(input_dir / "selection_train.jsonl"), selector_system, selector_user)
-    generator_eval = format_generator_rows(read_jsonl(input_dir / "generation_dev.jsonl"), generator_system, generator_user)
-    selector_eval_full = format_selector_rows(read_jsonl(input_dir / "selection_dev.jsonl"), selector_system, selector_user)
-    generator_test = format_generator_rows(read_jsonl(input_dir / "generation_test.jsonl"), generator_system, generator_user)
-    selector_test = format_selector_rows(read_jsonl(input_dir / "selection_test.jsonl"), selector_system, selector_user)
+    generator_train = format_generator_rows(
+        read_jsonl(input_dir / "generation_train.jsonl"), generator_system, generator_user
+    )
+    selector_train = format_selector_rows(
+        read_jsonl(input_dir / "selection_train.jsonl"), selector_system, selector_user
+    )
+    generator_eval = format_generator_rows(
+        read_jsonl(input_dir / "generation_dev.jsonl"), generator_system, generator_user
+    )
+    selector_eval_full = format_selector_rows(
+        read_jsonl(input_dir / "selection_dev.jsonl"), selector_system, selector_user
+    )
+    generator_test = format_generator_rows(
+        read_jsonl(input_dir / "generation_test.jsonl"), generator_system, generator_user
+    )
+    selector_test = format_selector_rows(
+        read_jsonl(input_dir / "selection_test.jsonl"), selector_system, selector_user
+    )
 
     eval_selector_balanced = sample_eval_selector_rows(selector_eval_full, len(generator_eval), rng)
     train = interleave_without_replacement(generator_train, selector_train, args.batch_size, rng)
@@ -278,10 +290,17 @@ def main() -> None:
         "input_directory": str(input_dir),
         "seed": args.seed,
         "batch_size": args.batch_size,
-        "batch_policy": "Each ordered batch contains both tasks whenever available row counts allow it; remaining batches contain the majority task. Source rows are never duplicated. Keep dataloader shuffle disabled.",
+        "batch_policy": (
+            "Each ordered batch contains both tasks whenever available row counts allow it; remaining batches contain "
+            "the majority task. Source rows are never duplicated. Keep dataloader shuffle disabled."
+        ),
         "files": {
             "train": {"rows": len(train), "generator": len(generator_train), "selector": len(selector_train)},
-            "eval": {"rows": len(evaluation), "generator": len(generator_eval), "selector": len(eval_selector_balanced)},
+            "eval": {
+                "rows": len(evaluation),
+                "generator": len(generator_eval),
+                "selector": len(eval_selector_balanced),
+            },
             "test_generator": {"rows": len(generator_test)},
             "test_selector": {"rows": len(selector_test)},
         },

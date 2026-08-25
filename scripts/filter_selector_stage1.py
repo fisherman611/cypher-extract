@@ -8,12 +8,13 @@ Generation data and evaluation splits are copied unchanged.
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
 import json
-from pathlib import Path
 import random
 import shutil
-from typing import Any, Iterable
+from collections import Counter, defaultdict
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
@@ -199,7 +200,9 @@ def main() -> None:
         "sampling_seed": args.seed,
         "rows": len(filtered_rows),
         "unique_questions": len({str(row["example_id"]) for row in filtered_rows}),
-        "policy": "One row per question; equal per-graph and label quotas; cover every observed schema unit and label pair.",
+        "policy": (
+            "One row per question; equal per-graph and label quotas; cover every observed schema unit and label pair."
+        ),
         "graphs": graph_summaries,
     }
     (output_dir / "manifest.json").write_text(

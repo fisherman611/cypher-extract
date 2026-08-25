@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any
 
 from .schema import (
     CanonicalSchema,
@@ -14,7 +15,6 @@ from .schema import (
     from_mind_the_query,
     from_neo4j_schema_text,
 )
-
 
 SUPPORTED_SOURCES = ("cypherbench", "mind_the_query", "neo4j_text2cypher")
 
@@ -169,13 +169,15 @@ def iter_benchmark_examples(
                 graph = _normalise_graph(schema_payload.get("name"))
                 cache_key = graph
                 schema_reference = f"{records_path.name}[{index}].user_prompt.SCHEMA"
-                schema_loader = lambda: from_cypherbench(schema_payload, graph)
+                def schema_loader() -> CanonicalSchema:
+                    return from_cypherbench(schema_payload, graph)
             else:
                 cache_key = graph
                 schema_path = benchmarks_root / directory / "graphs" / "schemas" / f"{graph}_schema.json"
                 question = str(record.get("nl_question", ""))
                 schema_reference = str(schema_path.relative_to(benchmarks_root))
-                schema_loader = lambda: from_cypherbench(_load_json_object(schema_path), graph)
+                def schema_loader() -> CanonicalSchema:
+                    return from_cypherbench(_load_json_object(schema_path), graph)
             schema, issues, normalization_error = _load_normalized_schema(
                 schema_cache,
                 cache_key,
