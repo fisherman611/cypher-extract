@@ -37,6 +37,61 @@ def _json_objects(text: str):
             yield payload
 
 
+def _malformed_json_cypher(text: str) -> str | None:
+    """Recover the cypher field from common truncated/loosely escaped model JSON."""
+
+    match = re.search(r'["\']cypher["\']\s*:\s*"', text, flags=re.IGNORECASE)
+    if not match:
+        return None
+
+    output: list[str] = []
+    index = match.end()
+    closed = False
+    simple_escapes = {
+        '"': '"',
+        "'": "'",  # Models often emit invalid JSON \' for Cypher literals.
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(text):
+        character = text[index]
+        if character == '"':
+            closed = True
+            break
+        if character != "\\":
+            output.append(character)
+            index += 1
+            continue
+
+        if index + 1 >= len(text):
+            output.append("\\")
+            break
+        escaped = text[index + 1]
+        if escaped == "u" and index + 5 < len(text):
+            codepoint = text[index + 2 : index + 6]
+            if re.fullmatch(r"[0-9A-Fa-f]{4}", codepoint):
+                output.append(chr(int(codepoint, 16)))
+                index += 6
+                continue
+        if escaped in simple_escapes:
+            output.append(simple_escapes[escaped])
+        else:
+            # Preserve unknown escapes because they may belong to a Cypher regex.
+            output.extend(("\\", escaped))
+        index += 2
+
+    cypher = "".join(output).strip()
+    if not closed:
+        # A truncated JSON envelope often leaves its closing brace on a new line.
+        cypher = re.sub(r"\s*\}\s*$", "", cypher).strip()
+    return cypher or None
+
+
 def extract_cypher(text: str) -> str:
     """Extract a Cypher string from the expected JSON response, with robust fallbacks."""
 
@@ -49,6 +104,9 @@ def extract_cypher(text: str) -> str:
     fenced = re.search(r"```(?:cypher)?\s*(.*?)```", stripped, flags=re.IGNORECASE | re.DOTALL)
     if fenced:
         return fenced.group(1).strip()
+    malformed = _malformed_json_cypher(stripped)
+    if malformed:
+        return malformed
     return stripped
 
 

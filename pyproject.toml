@@ -29,6 +29,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+evaluation = [
+    "neo4j>=5.20",
+    "python-dotenv>=1.0",
+    "tqdm>=4.66",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.9",
@@ -37,11 +42,13 @@ dev = [
 [project.scripts]
 kd-train = "distillation.cli:main"
 prepare-llamafactory-data = "distillation.prepare_data:main"
+evaluate-cypher = "cypher_evaluation.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/distillation",
     "src/schema_grounding",
+    "src/cypher_evaluation",
 ]
 
 [tool.hatch.build.targets.sdist]

@@ -633,6 +633,39 @@ Xem một prediction:
 head -n 1 results/inference/qwen3/sft/cypherbench/generator_predictions.jsonl | jq .
 ```
 
+### Chấm Cypher bằng Neo4j
+
+Project có ba metric execution-based lấy từ pipeline CypherKD:
+
+- `execution_accuracy`: so sánh kết quả thực thi của Cypher dự đoán và gold;
+- `psjs`: Jaccard của provenance subgraph (các node được phần `MATCH` chạm tới);
+- `executable`: kiểm tra Cypher dự đoán có chạy được hay không.
+
+Cài Neo4j driver và chấm trực tiếp output của two-stage inference trên PowerShell.
+Kết quả eval được tách khỏi inference và lưu dưới `results/evaluation/`:
+
+```powershell
+python -m pip install -e ".[evaluation]"
+
+Copy-Item .env.example .env
+# Sau đó sửa NEO4J_PASSWORD và các cấu hình Neo4j trong .env.
+
+evaluate-cypher `
+  --input results/inference/qwen3/sft/cypherbench/generator_predictions.jsonl `
+  --output results/evaluation/qwen3/sft/cypherbench/nba/cypher_scores.jsonl `
+  --name cypherbench-db `
+  --graph nba
+```
+
+Có thể chọn metric với `--metrics execution_accuracy executable`. CLI tự load
+`NEO4J_URI`, `NEO4J_USERNAME`, và `NEO4J_PASSWORD` từ `.env`. Database được chọn
+bằng graph (`flight_accident` được đổi thành database `flight.accident`) đúng theo
+CypherKD. `cypherbench-db` và `mind-the-query-db` là logical connector name, chọn
+bằng `--name`; graph chọn bằng `--graph`, mặc định là `nba`. Có thể dùng
+`--database` để override database thực tế. Với command trên, CLI ghi kết quả từng
+mẫu vào `results/evaluation/qwen3/sft/cypherbench/nba/cypher_scores.jsonl` và
+trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng folder.
+
 ### 8. Điều chỉnh VRAM
 
 Nếu GPU ít VRAM, giảm batch size. Với `teacher_lora` 4B có thể bắt đầu bằng:

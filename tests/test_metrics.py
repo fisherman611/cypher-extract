@@ -6,6 +6,14 @@ def test_extract_cypher_from_json_and_fence() -> None:
     assert extract_cypher("```cypher\nMATCH (n) RETURN n\n```") == "MATCH (n) RETURN n"
 
 
+def test_extract_cypher_from_malformed_or_truncated_json() -> None:
+    assert extract_cypher('{"cypher": "MATCH (n {name: \\\'Neo\\\'}) RETURN n"}') == (
+        "MATCH (n {name: 'Neo'}) RETURN n"
+    )
+    assert extract_cypher('{"cypher": "MATCH (n) RETURN n"') == "MATCH (n) RETURN n"
+    assert extract_cypher('{"cypher": "MATCH (n) RETURN n\n}') == "MATCH (n) RETURN n"
+
+
 def test_compute_mixed_task_metrics() -> None:
     metrics = compute_task_metrics(
         [
