@@ -20,7 +20,12 @@ def parse_args() -> argparse.Namespace:
     load_dotenv()
     parser = argparse.ArgumentParser(description="Evaluate generated Cypher against a Neo4j database")
     parser.add_argument("--input", type=Path, required=True, help="JSON array or generator_predictions.jsonl")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output JSONL path; defaults to the matching results/evaluation/.../<graph>/ folder",
+    )
     parser.add_argument("--uri", default=os.getenv("NEO4J_URI", "neo4j://127.0.0.1:7687"))
     parser.add_argument("--username", default=os.getenv("NEO4J_USERNAME", "neo4j"))
     parser.add_argument("--password", default=os.getenv("NEO4J_PASSWORD"))
@@ -51,6 +56,24 @@ def resolve_database(database: str | None, graph: str) -> str:
     return database or graph.replace("_", ".")
 
 
+def resolve_output_path(input_path: Path, output_path: Path | None, graph: str) -> Path:
+    if output_path is not None:
+        return output_path
+
+    parts = input_path.parts
+    try:
+        inference_index = parts.index("inference")
+    except ValueError:
+        return input_path.parent / "evaluation" / graph / "cypher_scores.jsonl"
+    return Path(
+        *parts[:inference_index],
+        "evaluation",
+        *parts[inference_index + 1 : -1],
+        graph,
+        "cypher_scores.jsonl",
+    )
+
+
 def main() -> None:
     args = parse_args()
     if not args.password:
@@ -59,6 +82,7 @@ def main() -> None:
     if args.graph:
         records = [row for row in records if row.get("graph") == args.graph]
     database = resolve_database(args.database, args.graph)
+    output_path = resolve_output_path(args.input, args.output, args.graph)
     with Neo4jConnector(args.uri, args.username, args.password, database=database) as connector:
         connector.verify_connectivity()
         scored = score_records(
@@ -70,11 +94,11 @@ def main() -> None:
             timeout=args.timeout,
             desc=f"Evaluating {args.name}/{database}",
         )
-    write_jsonl(args.output, scored)
+    write_jsonl(output_path, scored)
     summary = aggregate_scores(scored)
-    summary_path = args.output.with_name(f"{args.output.stem}_summary.json")
+    summary_path = output_path.with_name(f"{output_path.stem}_summary.json")
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"output": str(args.output), "summary": str(summary_path), **summary}, indent=2))
+    print(json.dumps({"output": str(output_path), "summary": str(summary_path), **summary}, indent=2))
 
 
 if __name__ == "__main__":

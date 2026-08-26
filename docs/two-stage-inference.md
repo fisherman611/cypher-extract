@@ -58,6 +58,10 @@ Hoặc chạy trực tiếp trên Linux:
 python scripts/infer_two_stage.py \
   --methods all \
   --datasets cypherbench,mind_the_query,neo4j_text2cypher \
+  --seeds 10,42,50,100,1234 \
+  --temperature 0.5 \
+  --top-p 0.95 \
+  --num-beams 1 \
   --selector-batch-size 128 \
   --generator-batch-size 16 \
   --dtype bfloat16 \
@@ -105,7 +109,7 @@ Selector output không phải chính xác `RELATED` hoặc `UNRELATED` được 
 ## Output và resume
 
 ```text
-results/inference/qwen3/<method>/<dataset>/
+results/inference/qwen3/seed<seed>/<method>/<dataset>/
 ├── run_config.json
 ├── selector_predictions.jsonl
 ├── predicted_subschemas.jsonl
@@ -122,6 +126,34 @@ hoàn chỉnh được reuse.
 sẽ từ chối reuse output nếu một trong các giá trị này thay đổi; khi đó dùng một
 `--output-dir` khác hoặc chủ động xóa riêng directory method/dataset cũ.
 
-Các generation mặc định deterministic (`do_sample=False`, `num_beams=1`) và
-dùng `qwen3_nothink` (`enable_thinking=False`). Selector dùng tối đa 8 new
-tokens, generator dùng tối đa 256 new tokens.
+Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
+`temperature=0.5`, `top_p=0.95`, `num_beams=1`) và `qwen3_nothink`
+(`enable_thinking=False`). Script mặc định chạy các seed `10,42,50,100,1234`;
+Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng dataset. Selector
+dùng tối đa 8 new tokens, generator dùng tối đa 256 new tokens.
+
+Eval graph `nba` cho toàn bộ seed trên PowerShell:
+
+```powershell
+$seeds = 10, 42, 50, 100, 1234
+
+foreach ($seed in $seeds) {
+  evaluate-cypher `
+    --input "results/inference/qwen3/seed$seed/sft/cypherbench/generator_predictions.jsonl" `
+    --name cypherbench-db `
+    --graph nba
+}
+```
+
+Output được suy ra tự động dưới
+`results/evaluation/qwen3/seed<seed>/sft/cypherbench/nba/`.
+
+Sau khi đã eval đủ các graph của một seed, gộp kết quả bằng:
+
+```powershell
+merge-cypher-evaluations `
+  --input-dir results/evaluation/qwen3/seed10/sft/cypherbench
+```
+
+CLI tạo `all_graphs_cypher_scores.jsonl` và `all_graphs_summary.json`; đồng thời
+kiểm tra đủ graph của dataset, graph field đúng folder và không có ID trùng.

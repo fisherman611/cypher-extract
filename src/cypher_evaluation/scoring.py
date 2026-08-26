@@ -49,19 +49,20 @@ def score_records(
             name: METRICS[name](predicted, target, connector, timeout=timeout)
             for name in metrics
         }
-        scored.append({**record, predicted_key: predicted, "cypher_metrics": values})
+        scored.append({**record, predicted_key: predicted, "metrics": values})
     return scored
 
 
 def aggregate_scores(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     rows = list(records)
-    names = sorted({name for row in rows for name in row.get("cypher_metrics", {})})
+    metric_rows = [row.get("metrics", row.get("cypher_metrics", {})) for row in rows]
+    names = sorted({name for metrics in metric_rows for name in metrics})
     return {
         "count": len(rows),
-        "metrics": {
-            name: (sum(float(row["cypher_metrics"][name]) for row in rows if name in row.get("cypher_metrics", {})) /
-                   sum(name in row.get("cypher_metrics", {}) for row in rows))
-            if any(name in row.get("cypher_metrics", {}) for row in rows) else math.nan
+        "overall": {
+            name: (sum(float(metrics[name]) for metrics in metric_rows if name in metrics) /
+                   sum(name in metrics for metrics in metric_rows))
+            if any(name in metrics for metrics in metric_rows) else math.nan
             for name in names
         },
     }

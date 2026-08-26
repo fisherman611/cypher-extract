@@ -96,6 +96,10 @@ class ModelRunner:
         conversations: Sequence[Sequence[Message]],
         *,
         max_new_tokens: int,
+        do_sample: bool = True,
+        temperature: float = 0.5,
+        top_p: float = 0.95,
+        num_beams: int = 1,
     ) -> list[str]:
         if not conversations:
             return []
@@ -107,11 +111,22 @@ class ModelRunner:
                     self.generate(
                         conversations[start : start + safe_batch_size],
                         max_new_tokens=max_new_tokens,
+                        do_sample=do_sample,
+                        temperature=temperature,
+                        top_p=top_p,
+                        num_beams=num_beams,
                     )
                 )
             return outputs
         try:
-            return self._generate_batch(conversations, max_new_tokens=max_new_tokens)
+            return self._generate_batch(
+                conversations,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p,
+                num_beams=num_beams,
+            )
         except torch.cuda.OutOfMemoryError:
             if len(conversations) == 1:
                 raise
@@ -120,8 +135,22 @@ class ModelRunner:
             previous_safe_size = self.safe_batch_sizes.get(max_new_tokens, len(conversations))
             self.safe_batch_sizes[max_new_tokens] = min(previous_safe_size, middle)
             return [
-                *self.generate(conversations[:middle], max_new_tokens=max_new_tokens),
-                *self.generate(conversations[middle:], max_new_tokens=max_new_tokens),
+                *self.generate(
+                    conversations[:middle],
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    top_p=top_p,
+                    num_beams=num_beams,
+                ),
+                *self.generate(
+                    conversations[middle:],
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    top_p=top_p,
+                    num_beams=num_beams,
+                ),
             ]
 
     def _generate_batch(
@@ -129,6 +158,10 @@ class ModelRunner:
         conversations: Sequence[Sequence[Message]],
         *,
         max_new_tokens: int,
+        do_sample: bool,
+        temperature: float,
+        top_p: float,
+        num_beams: int,
     ) -> list[str]:
         features = []
         for messages in conversations:
@@ -136,14 +169,16 @@ class ModelRunner:
             features.append({"input_ids": input_ids, "attention_mask": [1] * len(input_ids)})
         batch = self.tokenizer.pad(features, padding=True, return_tensors="pt")
         batch = {key: value.to(self.device) for key, value in batch.items()}
-        generated = self.model.generate(
-            **batch,
-            do_sample=False,
-            num_beams=1,
-            max_new_tokens=max_new_tokens,
-            use_cache=True,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
-        )
+        generation_kwargs = {
+            "do_sample": do_sample,
+            "num_beams": num_beams,
+            "max_new_tokens": max_new_tokens,
+            "use_cache": True,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if do_sample:
+            generation_kwargs.update(temperature=temperature, top_p=top_p)
+        generated = self.model.generate(**batch, **generation_kwargs)
         prompt_width = batch["input_ids"].shape[1]
         return self.tokenizer.batch_decode(generated[:, prompt_width:], skip_special_tokens=True)

@@ -43,6 +43,7 @@ dev = [
 kd-train = "distillation.cli:main"
 prepare-llamafactory-data = "distillation.prepare_data:main"
 evaluate-cypher = "cypher_evaluation.cli:main"
+merge-cypher-evaluations = "cypher_evaluation.merge:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [

@@ -27,7 +27,7 @@ from schema_grounding.inference.pipeline import (
     run_selector_stage,
 )
 from schema_grounding.inference.prompting import PromptTemplates
-from scripts.infer_two_stage import validate_choices
+from scripts.infer_two_stage import DEFAULT_INFERENCE_SEEDS, parse_seeds, validate_choices
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,6 +119,13 @@ def test_cli_rejects_empty_method_or_dataset_lists() -> None:
         validate_choices(SimpleNamespace(methods="sft", datasets=""))
 
 
+def test_default_inference_seeds_and_seed_parser() -> None:
+    assert DEFAULT_INFERENCE_SEEDS == (10, 42, 50, 100, 1234)
+    assert parse_seeds("10,42,50,100,1234") == [10, 42, 50, 100, 1234]
+    with pytest.raises(ValueError, match="duplicates"):
+        parse_seeds("10,10")
+
+
 def test_checkpoint_download_excludes_training_state(monkeypatch, tmp_path: Path) -> None:
     checkpoint = LastCheckpoint("owner/repo", "main", "sft", 1570, "qwen3/sft/checkpoint-1570")
     adapter = tmp_path / checkpoint.subfolder
@@ -163,7 +170,13 @@ class FakeRunner:
     def prompt_length(self, messages) -> int:
         return sum(len(message["content"].split()) for message in messages)
 
-    def generate(self, conversations, *, max_new_tokens):
+    def generate(self, conversations, *, max_new_tokens, **generation_kwargs):
+        assert generation_kwargs == {
+            "do_sample": True,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "num_beams": 1,
+        }
         outputs = []
         for messages in conversations:
             system = messages[0]["content"]
@@ -171,7 +184,9 @@ class FakeRunner:
             if "relevance classifier" in system:
                 outputs.append("RELATED" if "(:A " in user or "[:LINKS]" in user else "UNRELATED")
             else:
-                outputs.append('{"cypher": "MATCH (n:A) RETURN n.name"}')
+                # Deliberately omit the closing JSON brace to exercise the
+                # inference-time recovery used for real model generations.
+                outputs.append('{"cypher": "MATCH (n:A) RETURN n.name"')
         return outputs
 
 
@@ -179,9 +194,9 @@ class CountingRunner(FakeRunner):
     def __init__(self) -> None:
         self.generated = 0
 
-    def generate(self, conversations, *, max_new_tokens):
+    def generate(self, conversations, *, max_new_tokens, **generation_kwargs):
         self.generated += len(conversations)
-        return super().generate(conversations, max_new_tokens=max_new_tokens)
+        return super().generate(conversations, max_new_tokens=max_new_tokens, **generation_kwargs)
 
 
 def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenizer(monkeypatch, tmp_path: Path) -> None:
@@ -227,7 +242,13 @@ def test_model_runner_remembers_safe_batch_size_after_oom(monkeypatch) -> None:
     runner = ModelRunner(model=None, tokenizer=None, device=torch.device("cpu"))
     attempted_batch_sizes: list[int] = []
 
-    def fake_generate_batch(conversations, *, max_new_tokens):
+    def fake_generate_batch(conversations, *, max_new_tokens, **generation_kwargs):
+        assert generation_kwargs == {
+            "do_sample": True,
+            "temperature": 0.5,
+            "top_p": 0.95,
+            "num_beams": 1,
+        }
         attempted_batch_sizes.append(len(conversations))
         if len(conversations) > 2:
             raise torch.cuda.OutOfMemoryError("simulated OOM")

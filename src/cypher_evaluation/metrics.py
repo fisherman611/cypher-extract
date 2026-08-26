@@ -80,8 +80,7 @@ def _equivalent_results(
     if [*_map_rows(left, _unordered_row, order_matters)] != [*_map_rows(right, _unordered_row, order_matters)]:
         return False
 
-    width = len(left[0])
-    for permutation in itertools.permutations(range(width)):
+    for permutation in _candidate_permutations(left, right, order_matters=order_matters):
         permuted = [tuple(row[index] for index in permutation) for row in right]
         if order_matters:
             if left == permuted:
@@ -89,6 +88,28 @@ def _equivalent_results(
         elif Counter(left) == Counter(permuted):
             return True
     return False
+
+
+def _candidate_permutations(
+    left: list[tuple[Any, ...]],
+    right: list[tuple[Any, ...]],
+    *,
+    order_matters: bool,
+):
+    """Constrain column permutations using complete column signatures."""
+    width = len(left[0])
+    left_columns = [tuple(row[index] for row in left) for index in range(width)]
+    right_columns = [tuple(row[index] for row in right) for index in range(width)]
+    if not order_matters:
+        left_columns = [tuple(sorted(column, key=repr)) for column in left_columns]
+        right_columns = [tuple(sorted(column, key=repr)) for column in right_columns]
+    candidates = [
+        tuple(right_index for right_index, right_column in enumerate(right_columns) if left_column == right_column)
+        for left_column in left_columns
+    ]
+    for permutation in itertools.product(*candidates):
+        if len(set(permutation)) == width:
+            yield permutation
 
 
 def _map_rows(rows: list[tuple[Any, ...]], transform, order_matters: bool):
@@ -139,8 +160,68 @@ _CLAUSE = re.compile(
 )
 
 
+def _mask_literals(query: str) -> str:
+    """Mask quoted strings, backtick identifiers, and comments while preserving offsets."""
+    masked = list(query)
+    index = 0
+    while index < len(query):
+        character = query[index]
+        if query.startswith("//", index):
+            end = query.find("\n", index + 2)
+            end = len(query) if end < 0 else end
+            masked[index:end] = " " * (end - index)
+            index = end
+            continue
+        if query.startswith("/*", index):
+            end = query.find("*/", index + 2)
+            end = len(query) if end < 0 else end + 2
+            masked[index:end] = " " * (end - index)
+            index = end
+            continue
+        if character not in {"'", '"', "`"}:
+            index += 1
+            continue
+        quote = character
+        end = index + 1
+        while end < len(query):
+            if query[end] == "\\" and quote != "`":
+                end += 2
+                continue
+            if query[end] == quote:
+                if quote == "`" and end + 1 < len(query) and query[end + 1] == "`":
+                    end += 2
+                    continue
+                end += 1
+                break
+            end += 1
+        masked[index:end] = " " * (end - index)
+        index = end
+    return "".join(masked)
+
+
+def _top_level_matches(pattern: re.Pattern[str], query: str) -> list[re.Match[str]]:
+    masked = _mask_literals(query)
+    top_level = [False] * len(masked)
+    round_depth = square_depth = curly_depth = 0
+    for index, character in enumerate(masked):
+        top_level[index] = round_depth == square_depth == curly_depth == 0
+        if character == "(":
+            round_depth += 1
+        elif character == ")":
+            round_depth = max(0, round_depth - 1)
+        elif character == "[":
+            square_depth += 1
+        elif character == "]":
+            square_depth = max(0, square_depth - 1)
+        elif character == "{":
+            curly_depth += 1
+        elif character == "}":
+            curly_depth = max(0, curly_depth - 1)
+    return [match for match in pattern.finditer(masked) if top_level[match.start()]]
+
+
 def _clauses(query: str) -> list[str]:
-    matches = list(_CLAUSE.finditer(query))
+    matches = _top_level_matches(_CLAUSE, query)
     return [query[item.start() : matches[index + 1].start() if index + 1 < len(matches) else len(query)].strip()
             for index, item in enumerate(matches)]
 
@@ -177,22 +258,51 @@ def _name_anonymous_patterns(query: str) -> str:
         relationship_number += 1
         return result
 
-    query = re.sub(r"\[(:[^\]]+)\]", relationship, query)
-    return re.sub(r"\(:([A-Za-z_][A-Za-z0-9_]*)(\s*\{.*?\})?\)", node, query)
+    clauses = _clauses(query)
+    for index, clause in enumerate(clauses):
+        if not clause.upper().startswith(("MATCH", "OPTIONAL MATCH")):
+            continue
+        clause = re.sub(r"\[(:[^\]]+)\]", relationship, clause)
+        clauses[index] = re.sub(r"\(:([A-Za-z_][A-Za-z0-9_]*)(\s*\{.*?\})?\)", node, clause)
+    return " ".join(clauses)
+
+
+def _node_variables(query: str) -> list[str]:
+    variables: set[str] = set()
+    for clause in _clauses(re.sub(r"\{[^}]*\}", "{}", query)):
+        if clause.upper().startswith(("MATCH", "OPTIONAL MATCH")):
+            variables.update(re.findall(r"\(([A-Za-z_]\w*)(?::[^)]*|\))", clause))
+    return sorted(variables)
 
 
 def _split_by_union(query: str) -> list[str]:
     """Split top-level UNIONs and UNIONs inside the CALL shape used by the benchmark."""
     stripped = query.strip()
     if re.match(r"^CALL\b", stripped, re.IGNORECASE):
-        inner = re.search(
-            r"CALL\s*\{(.*?)\}\s*(?:WITH|RETURN|WHERE|UNWIND)\b",
-            stripped,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if inner:
-            stripped = inner.group(1)
-    return [part.strip() for part in re.split(r"\bUNION(?:\s+ALL)?\b", stripped, flags=re.IGNORECASE)]
+        masked = _mask_literals(stripped)
+        opening = masked.find("{")
+        if opening >= 0:
+            depth = 0
+            for index in range(opening, len(masked)):
+                if masked[index] == "{":
+                    depth += 1
+                elif masked[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        stripped = stripped[opening + 1 : index]
+                        break
+            else:
+                # Do not award partial PSJS to a syntactically incomplete CALL block.
+                return [query.strip()]
+    union_pattern = re.compile(r"\bUNION(?:\s+ALL)?\b", flags=re.IGNORECASE)
+    matches = _top_level_matches(union_pattern, stripped)
+    if not matches:
+        return [stripped.strip()]
+    boundaries = [0, *(match.end() for match in matches), len(stripped)]
+    return [
+        stripped[boundaries[index] : matches[index].start() if index < len(matches) else boundaries[index + 1]].strip()
+        for index in range(len(boundaries) - 1)
+    ]
 
 
 def _provenance_query(query: str, return_name: str) -> str:
@@ -202,7 +312,7 @@ def _provenance_query(query: str, return_name: str) -> str:
         if not prefix:
             continue
         prefix = _name_anonymous_patterns(prefix)
-        nodes = sorted(set(re.findall(r"\(([A-Za-z_]\w*)", re.sub(r"\{[^}]*\}", "{}", prefix))))
+        nodes = _node_variables(prefix)
         expression = " + ".join(f"collect(DISTINCT elementId({name}))" for name in nodes) or "[]"
         parts.append(f"{prefix} WITH {expression} AS ids UNWIND ids AS id RETURN id AS {return_name}")
     return " UNION ".join(parts) if parts else f"UNWIND [] AS id RETURN id AS {return_name}"

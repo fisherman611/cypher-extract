@@ -603,7 +603,7 @@ python scripts/infer_two_stage.py \
 Kết quả mặc định nằm tại:
 
 ```text
-results/inference/qwen3/<method>/<dataset>/
+results/inference/qwen3/seed<seed>/<method>/<dataset>/
 ├── run_config.json
 ├── selector_predictions.jsonl
 ├── predicted_subschemas.jsonl
@@ -624,13 +624,13 @@ results/inference/qwen3/<method>/<dataset>/
 Xem metric của một run:
 
 ```bash
-jq . results/inference/qwen3/sft/cypherbench/metrics.json
+jq . results/inference/qwen3/seed10/sft/cypherbench/metrics.json
 ```
 
 Xem một prediction:
 
 ```bash
-head -n 1 results/inference/qwen3/sft/cypherbench/generator_predictions.jsonl | jq .
+head -n 1 results/inference/qwen3/seed10/sft/cypherbench/generator_predictions.jsonl | jq .
 ```
 
 ### Chấm Cypher bằng Neo4j
@@ -651,11 +651,63 @@ Copy-Item .env.example .env
 # Sau đó sửa NEO4J_PASSWORD và các cấu hình Neo4j trong .env.
 
 evaluate-cypher `
-  --input results/inference/qwen3/sft/cypherbench/generator_predictions.jsonl `
-  --output results/evaluation/qwen3/sft/cypherbench/nba/cypher_scores.jsonl `
+  --input results/inference/qwen3/seed10/sft/cypherbench/generator_predictions.jsonl `
   --name cypherbench-db `
   --graph nba
 ```
+
+Eval toàn bộ 5 inference seed cho SFT/CypherBench graph `nba`:
+
+```powershell
+$seeds = 10, 42, 50, 100, 1234
+
+foreach ($seed in $seeds) {
+  evaluate-cypher `
+    --input "results/inference/qwen3/seed$seed/sft/cypherbench/generator_predictions.jsonl" `
+    --name cypherbench-db `
+    --graph nba
+}
+```
+
+Kết quả được ghi tự động vào các folder tương ứng:
+
+```text
+results/evaluation/qwen3/seed10/sft/cypherbench/nba/
+results/evaluation/qwen3/seed42/sft/cypherbench/nba/
+results/evaluation/qwen3/seed50/sft/cypherbench/nba/
+results/evaluation/qwen3/seed100/sft/cypherbench/nba/
+results/evaluation/qwen3/seed1234/sft/cypherbench/nba/
+```
+
+Eval và merge toàn bộ 7 graph CypherBench cho cả 5 seed:
+
+```powershell
+$seeds = 10, 42, 50, 100, 1234
+$graphs = "company", "fictional_character", "flight_accident", "geography", "movie", "nba", "politics"
+
+foreach ($seed in $seeds) {
+  foreach ($graph in $graphs) {
+    evaluate-cypher `
+      --input "results/inference/qwen3/seed$seed/sft/cypherbench/generator_predictions.jsonl" `
+      --name cypherbench-db `
+      --graph $graph
+  }
+
+  merge-cypher-evaluations `
+    --input-dir "results/evaluation/qwen3/seed$seed/sft/cypherbench"
+}
+```
+
+Mỗi seed tạo thêm hai file gộp ở folder `cypherbench`:
+
+```text
+all_graphs_cypher_scores.jsonl
+all_graphs_summary.json
+```
+
+`all_graphs_summary.json` chứa điểm `overall` trên toàn bộ sample và breakdown
+riêng cho từng graph. Lệnh merge sẽ báo lỗi nếu thiếu graph, graph trong record
+không khớp folder hoặc có ID trùng.
 
 Có thể chọn metric với `--metrics execution_accuracy executable`. CLI tự load
 `NEO4J_URI`, `NEO4J_USERNAME`, và `NEO4J_PASSWORD` từ `.env`. Database được chọn
@@ -663,8 +715,10 @@ bằng graph (`flight_accident` được đổi thành database `flight.accident
 CypherKD. `cypherbench-db` và `mind-the-query-db` là logical connector name, chọn
 bằng `--name`; graph chọn bằng `--graph`, mặc định là `nba`. Có thể dùng
 `--database` để override database thực tế. Với command trên, CLI ghi kết quả từng
-mẫu vào `results/evaluation/qwen3/sft/cypherbench/nba/cypher_scores.jsonl` và
+mẫu vào `results/evaluation/qwen3/seed10/sft/cypherbench/nba/cypher_scores.jsonl` và
 trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng folder.
+Đường dẫn output được suy ra tự động từ `--input` và `--graph`; vẫn có thể truyền
+`--output` nếu muốn ghi sang vị trí khác.
 
 ### 8. Điều chỉnh VRAM
 
@@ -681,13 +735,19 @@ CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
 Nếu GPU không hỗ trợ BF16, thử `--dtype float16`. Có thể giữ LoRA adapter chưa
 merge bằng `--no-merge-adapter`, nhưng inference thường chậm hơn.
 
-Generation mặc định deterministic (`do_sample=False`, `num_beams=1`) và dùng
-`qwen3_nothink` (`enable_thinking=False`). Selector dùng tối đa 8 new tokens;
-generator dùng tối đa 256 new tokens. Có thể override:
+Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
+`temperature=0.5`, `top_p=0.95`, `num_beams=1`) và `qwen3_nothink`
+(`enable_thinking=False`). Mỗi method/dataset chạy lần lượt với các seed
+`10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng tối đa
+8 new tokens; generator dùng tối đa 256 new tokens. Có thể override:
 
 ```bash
 python scripts/infer_two_stage.py \
   --methods sft \
+  --seeds 10,42,50,100,1234 \
+  --temperature 0.5 \
+  --top-p 0.95 \
+  --num-beams 1 \
   --selector-max-new-tokens 8 \
   --generator-max-new-tokens 256
 ```

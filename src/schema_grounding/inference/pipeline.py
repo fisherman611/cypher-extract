@@ -26,7 +26,16 @@ from schema_grounding.inference.prompting import Message, PromptTemplates
 class GenerationRunner(Protocol):
     model: Any
 
-    def generate(self, conversations: Sequence[Sequence[Message]], *, max_new_tokens: int) -> list[str]: ...
+    def generate(
+        self,
+        conversations: Sequence[Sequence[Message]],
+        *,
+        max_new_tokens: int,
+        do_sample: bool,
+        temperature: float,
+        top_p: float,
+        num_beams: int,
+    ) -> list[str]: ...
 
     def prompt_length(self, messages: Sequence[Message]) -> int: ...
 
@@ -38,13 +47,38 @@ class InferenceOptions:
     selector_max_new_tokens: int = 8
     generator_max_new_tokens: int = 256
     close_relation_endpoints: bool = True
+    do_sample: bool = True
+    temperature: float = 0.5
+    top_p: float = 0.95
+    num_beams: int = 1
+    seed: int = 42
 
     def validate(self) -> None:
-        for name, value in asdict(self).items():
-            if name == "close_relation_endpoints":
-                continue
+        for name in (
+            "selector_batch_size",
+            "generator_batch_size",
+            "selector_max_new_tokens",
+            "generator_max_new_tokens",
+            "num_beams",
+        ):
+            value = getattr(self, name)
             if not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("seed must be a non-negative integer")
+        if self.temperature <= 0:
+            raise ValueError("temperature must be positive")
+        if not 0 < self.top_p <= 1:
+            raise ValueError("top_p must be in (0, 1]")
+
+
+def _generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
+    return {
+        "do_sample": options.do_sample,
+        "temperature": options.temperature,
+        "top_p": options.top_p,
+        "num_beams": options.num_beams,
+    }
 
 
 def _batches(rows: Iterable[dict[str, Any]], batch_size: int) -> Iterator[list[dict[str, Any]]]:
@@ -105,7 +139,11 @@ def run_selector_stage(
             conversations = [
                 templates.selector_messages(str(row["question"]), str(row["unit"]["text"])) for row in batch
             ]
-            raw_outputs = runner.generate(conversations, max_new_tokens=options.selector_max_new_tokens)
+            raw_outputs = runner.generate(
+                conversations,
+                max_new_tokens=options.selector_max_new_tokens,
+                **_generation_kwargs(options),
+            )
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of selector outputs")
             for row, raw_output in zip(batch, raw_outputs, strict=True):
@@ -247,7 +285,11 @@ def run_generator_stage(
                         f"Generator prompt plus response budget exceeds context limit {context_limit}: "
                         f"prompt_length={max(overflowing)}"
                     )
-            raw_outputs = runner.generate(conversations, max_new_tokens=options.generator_max_new_tokens)
+            raw_outputs = runner.generate(
+                conversations,
+                max_new_tokens=options.generator_max_new_tokens,
+                **_generation_kwargs(options),
+            )
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of generator outputs")
             for row, raw_output, prompt_length in zip(batch, raw_outputs, prompt_lengths, strict=True):

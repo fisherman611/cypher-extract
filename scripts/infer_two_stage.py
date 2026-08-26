@@ -7,6 +7,7 @@ import argparse
 import gc
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -14,6 +15,7 @@ import torch
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
+from distillation.utils import seed_everything  # noqa: E402
 from schema_grounding.inference.checkpoints import (  # noqa: E402
     DEFAULT_METHODS,
     DEFAULT_MODEL_FAMILY,
@@ -31,9 +33,26 @@ from schema_grounding.inference.pipeline import (  # noqa: E402
 )
 from schema_grounding.inference.prompting import PromptTemplates  # noqa: E402
 
+DEFAULT_INFERENCE_SEEDS = (10, 42, 50, 100, 1234)
+
 
 def comma_separated(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def parse_seeds(value: str) -> list[int]:
+    raw_seeds = comma_separated(value)
+    if not raw_seeds:
+        raise ValueError("--seeds must contain at least one seed")
+    try:
+        seeds = [int(seed) for seed in raw_seeds]
+    except ValueError as error:
+        raise ValueError("--seeds must be comma-separated integers") from error
+    if any(seed < 0 for seed in seeds):
+        raise ValueError("--seeds must contain only non-negative integers")
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("--seeds contains duplicates")
+    return seeds
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +79,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generator-batch-size", type=int, default=16)
     parser.add_argument("--selector-max-new-tokens", type=int, default=8)
     parser.add_argument("--generator-max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--seeds",
+        default=",".join(str(seed) for seed in DEFAULT_INFERENCE_SEEDS),
+        help="Comma-separated inference seeds; each seed is written to its own seed<value> folder.",
+    )
+    parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--num-beams", type=int, default=1)
     parser.add_argument(
         "--no-merge-adapter",
         action="store_true",
@@ -98,6 +125,7 @@ def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
 def main() -> None:
     args = parse_args()
     methods, dataset_names = validate_choices(args)
+    seeds = parse_seeds(args.seeds)
     specs = default_dataset_specs(REPOSITORY_ROOT)
     templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
     options = InferenceOptions(
@@ -106,6 +134,10 @@ def main() -> None:
         selector_max_new_tokens=args.selector_max_new_tokens,
         generator_max_new_tokens=args.generator_max_new_tokens,
         close_relation_endpoints=not args.no_relation_endpoint_closure,
+        do_sample=True,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        num_beams=args.num_beams,
     )
     options.validate()
 
@@ -116,6 +148,13 @@ def main() -> None:
                 "revision": args.revision,
                 "methods": methods,
                 "datasets": dataset_names,
+                "seeds": seeds,
+                "generation": {
+                    "do_sample": options.do_sample,
+                    "temperature": options.temperature,
+                    "top_p": options.top_p,
+                    "num_beams": options.num_beams,
+                },
                 "output_dir": str(args.output_dir.resolve()),
             },
             ensure_ascii=False,
@@ -130,21 +169,25 @@ def main() -> None:
             revision=args.revision,
         )
         print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step}, revision {checkpoint.revision})")
-        planned_runs = [
-            (dataset_name, args.output_dir.resolve() / method / dataset_name) for dataset_name in dataset_names
-        ]
-        for dataset_name, output_directory in planned_runs:
+        planned_runs = []
+        for seed in seeds:
+            seed_options = replace(options, seed=seed)
+            for dataset_name in dataset_names:
+                output_directory = args.output_dir.resolve() / f"seed{seed}" / method / dataset_name
+                planned_runs.append((seed, dataset_name, output_directory, seed_options))
+
+        for _seed, dataset_name, output_directory, seed_options in planned_runs:
             prepare_run_directory(
                 method=method,
                 checkpoint=checkpoint,
                 spec=specs[dataset_name],
                 templates=templates,
                 output_directory=output_directory,
-                options=options,
+                options=seed_options,
             )
 
         runner = None
-        if any(model_runner_required(output_directory) for _, output_directory in planned_runs):
+        if any(model_runner_required(output_directory) for _, _, output_directory, _ in planned_runs):
             adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
             runner = ModelRunner.from_adapter(
                 adapter_path,
@@ -155,8 +198,9 @@ def main() -> None:
         else:
             print(f"[{method}] all model-backed stages are complete; skipping model load")
         try:
-            for dataset_name, output_directory in planned_runs:
-                print(f"[{method}/{dataset_name}] starting")
+            for seed, dataset_name, output_directory, seed_options in planned_runs:
+                seed_everything(seed, rank_offset=False)
+                print(f"[seed{seed}/{method}/{dataset_name}] starting")
                 run_dataset_pipeline(
                     method=method,
                     checkpoint=checkpoint,
@@ -164,9 +208,9 @@ def main() -> None:
                     runner=runner,
                     templates=templates,
                     output_directory=output_directory,
-                    options=options,
+                    options=seed_options,
                 )
-                print(f"[{method}/{dataset_name}] completed")
+                print(f"[seed{seed}/{method}/{dataset_name}] completed")
         finally:
             if runner is not None:
                 del runner
