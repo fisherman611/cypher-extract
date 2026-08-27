@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import cypher_evaluation.cli as evaluation_cli
 from cypher_evaluation.cli import parse_args, resolve_database, resolve_output_path
 from cypher_evaluation.merge import merge_graph_evaluations
 from cypher_evaluation.metrics import (
@@ -43,6 +44,46 @@ def test_cli_defaults_to_cypherbench_nba(monkeypatch):
 def test_database_defaults_to_dotted_graph_name():
     assert resolve_database(None, "flight_accident") == "flight.accident"
     assert resolve_database("custom-db", "flight_accident") == "custom-db"
+
+
+def test_cli_uses_configured_timeout_for_connectivity(monkeypatch, tmp_path: Path):
+    observed = {}
+
+    class Connector:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def verify_connectivity(self, *, timeout):
+            observed["timeout"] = timeout
+
+    input_path = tmp_path / "input.jsonl"
+    input_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(evaluation_cli, "Neo4jConnector", Connector)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate-cypher",
+            "--input",
+            str(input_path),
+            "--output",
+            str(tmp_path / "scores.jsonl"),
+            "--password",
+            "secret",
+            "--timeout",
+            "45",
+        ],
+    )
+
+    evaluation_cli.main()
+
+    assert observed["timeout"] == 45
 
 
 def test_output_path_is_derived_from_input_and_graph():

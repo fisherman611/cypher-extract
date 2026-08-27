@@ -84,7 +84,7 @@ def main() -> None:
     database = resolve_database(args.database, args.graph)
     output_path = resolve_output_path(args.input, args.output, args.graph)
     with Neo4jConnector(args.uri, args.username, args.password, database=database) as connector:
-        connector.verify_connectivity()
+        connector.verify_connectivity(timeout=args.timeout)
         scored = score_records(
             records,
             connector,
