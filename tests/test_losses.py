@@ -7,6 +7,7 @@ from distillation.da_kd import (
     per_sample_causal_cross_entropy,
     selection_ratio,
     selection_size,
+    stratified_select_grouped_indices,
     stratified_select_indices,
     summarize_da_kd_selection,
 )
@@ -194,6 +195,27 @@ def test_da_kd_uses_all_low_samples_when_the_low_partition_is_too_small() -> Non
     assert len(selected) == 98
     assert {0, 1}.issubset(selected)
     assert len(set(selected)) == len(selected)
+
+
+def test_da_kd_grouped_selection_never_splits_contrast_blocks() -> None:
+    scores = [float(index) for index in range(19)]
+    selected = stratified_select_grouped_indices(
+        scores,
+        group_size=4,
+        ratio=0.5,
+        tau=0.1,
+        seed=7,
+        min_size=4,
+        multiple=2,
+    )
+
+    assert len(selected) == 8
+    assert all(
+        set(range(block_start, block_start + 4)).issubset(selected)
+        or set(range(block_start, block_start + 4)).isdisjoint(selected)
+        for block_start in range(0, 16, 4)
+    )
+    assert all(index < 16 for index in selected)
 
 
 def test_da_kd_selection_summary_reports_realized_mixture_and_ce() -> None:

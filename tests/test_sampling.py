@@ -56,6 +56,18 @@ def test_distributed_sampler_preserves_generator_selector_pairs() -> None:
                 assert batch[1] == batch[0] + 1
 
 
+def test_sampler_shuffles_complete_two_batch_contrast_blocks() -> None:
+    sampler = TemplateDistributedBatchSampler(range(32), batch_size=2, num_replicas=2, seed=17)
+
+    for epoch in (0, 1):
+        sampler.set_epoch(epoch)
+        batches = [list(batch) for batch in sampler]
+        for offset in range(0, len(batches), 2):
+            first, second = batches[offset : offset + 2]
+            assert second[0] == first[0] + 2
+            assert second[1] == first[1] + 2
+
+
 def test_difficulty_aware_sampler_uses_active_indices() -> None:
     sampler = DifficultyAwareDistributedBatchSampler(range(10), batch_size=2, num_replicas=1, seed=0)
     sampler.set_active_indices([1, 3, 5, 7])

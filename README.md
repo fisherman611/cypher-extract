@@ -120,8 +120,9 @@ positive unit trong `selection_<split>.jsonl`; nó không thay đổi generation
 
 ### Lọc selector stage-1
 
-Tạo tập selector nhỏ, cân bằng theo graph và nhãn, đồng thời cover mọi schema
-unit × label quan sát được trong `selection_train.jsonl`:
+Tạo tập selector theo cặp contrast trên cùng question. Mỗi question được chọn có
+đúng một schema unit `YES` và một schema unit `NO`; tập vẫn cân bằng theo graph
+và cover mọi schema unit × label quan sát được trong `selection_train.jsonl`:
 
 ```powershell
 python scripts\filter_selector_stage1.py `
@@ -133,16 +134,23 @@ python scripts\filter_selector_stage1.py `
 ```
 
 Script giữ nguyên generation data và selection dev/test; chỉ thay
-`selection_train.jsonl` và cập nhật manifest với policy lọc.
+`selection_train.jsonl` và cập nhật manifest với policy lọc. Với
+`--target-rows 3200`, đầu ra có `1600` contrast pair từ `1600` question riêng
+biệt; hai thành viên của mỗi pair nằm liền nhau.
 
 ### Chuẩn bị prompt multitask
 
 Chuẩn bị `train.jsonl` và `eval.jsonl` sao cho batch có cả generator và
-selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Nếu task
-selector ít hơn số batch (ví dụ `batch-size=2`), selector sẽ được rải đều vào
-các mixed batch và batch còn lại chỉ chứa generator. Test generator và selector
-được ghi thành hai file riêng. Không bật shuffle lại ở data loader vì thứ tự
-trong train/eval đã được interleave theo batch.
+selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Selector train
+được xếp theo cặp cùng question; với `batch-size=2`, hai thành viên của một pair
+nằm trong hai mixed batch liên tiếp (`generator + selector`). Batch còn lại chỉ
+chứa generator. Test generator và selector được ghi thành hai file riêng. Không
+bật shuffle từng row ở data loader vì sẽ phá task mix và contrast pairing.
+Trainer chỉ shuffle theo block hai batch hoàn chỉnh. Khi train 2 GPU với
+`batch-size=2`, hai selector row `YES/NO` của cùng question đi vào cùng một
+global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + selector`.
+DA-KD cũng chọn active data theo nguyên block hai batch, không chọn rời từng row
+nên không thể giữ `YES` mà làm rơi `NO` (hoặc ngược lại) của một contrast pair.
 
 Với CypherBench final hiện tại (`6,827` generator, `3,200` selector) và
 `batch-size=2`, train có `3,200` mixed batch (`1 generator + 1 selector`) và

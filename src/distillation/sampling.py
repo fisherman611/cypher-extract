@@ -21,35 +21,43 @@ def _preserved_distributed_batches(
     seed: int,
     epoch: int,
 ) -> Iterator[list[int]]:
-    """Shuffle whole prepared batches without shuffling their samples.
+    """Shuffle two-batch contrast blocks without shuffling their samples.
 
     The prepared dataset already encodes the intended generator/selector batch
-    composition. Accelerate assigns each consecutive group of batches across
-    ranks, so shuffling complete batches changes data order and rank ownership
-    without destroying that composition.
+    composition and same-question selector pairs. At batch size two, a contrast
+    pair spans two consecutive prepared batches. Shuffling complete two-batch
+    blocks preserves both the local task mix and, with two replicas, places the
+    YES/NO pair in the same distributed micro-step.
     """
 
     full_batch_count, remainder = divmod(len(indices), batch_size)
     batches = [indices[start * batch_size : (start + 1) * batch_size] for start in range(full_batch_count)]
     generator = torch.Generator().manual_seed(seed + epoch)
-    order = torch.randperm(full_batch_count, generator=generator).tolist()
+    complete_block_count, trailing_batch_count = divmod(full_batch_count, 2)
+    blocks = [batches[start * 2 : (start + 1) * 2] for start in range(complete_block_count)]
+    block_order = torch.randperm(complete_block_count, generator=generator).tolist()
+    ordered_batches = [batch for block_index in block_order for batch in blocks[block_index]]
+    if trailing_batch_count:
+        # The prepared train layout puts any unpaired full batch after all
+        # contrast blocks (it contains generator rows only), so leave it last.
+        ordered_batches.append(batches[-1])
     if num_replicas > 1:
         # Each consecutive group of batches is sharded one-per-rank by
         # Accelerate. Drop fewer than ``num_replicas`` whole batches so every
         # rank has equal steps; never split or pad a prepared batch.
-        order = order[: (full_batch_count // num_replicas) * num_replicas]
-    for batch_index in order:
-        yield batches[batch_index]
+        ordered_batches = ordered_batches[: (full_batch_count // num_replicas) * num_replicas]
+    yield from ordered_batches
     if num_replicas == 1 and remainder:
         # Accelerate accepts a single-process incomplete batch only at the end.
         yield indices[full_batch_count * batch_size :]
 
 
 class TemplateDistributedBatchSampler(BatchSampler):
-    """Distribute prepared batches without destroying their task composition.
+    """Distribute prepared contrast blocks without destroying their composition.
 
     With ``even_batches=False``, ranks have equal step counts and no examples
-    are duplicated. Only whole batches and their rank ownership are shuffled.
+    are duplicated. Only complete two-batch blocks and their rank ownership are
+    shuffled.
     """
 
     def __init__(self, dataset: Sized, *, batch_size: int, num_replicas: int, seed: int = 0) -> None:

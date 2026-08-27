@@ -20,7 +20,7 @@ from .da_kd import (
     per_sample_causal_cross_entropy,
     selection_ratio,
     selection_size,
-    stratified_select_indices,
+    stratified_select_grouped_indices,
     summarize_da_kd_selection,
 )
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
@@ -680,8 +680,9 @@ class KDTrainer(CustomSeq2SeqTrainer):
         total_epochs = float(self.args.num_train_epochs)
         ratio = selection_ratio(epoch, total_epochs, self.distillation_args.da_kd_schedule)
         minimum_size = self._train_batch_size * self.accelerator.num_processes
-        active_indices = stratified_select_indices(
+        active_indices = stratified_select_grouped_indices(
             scores,
+            group_size=2 * self._train_batch_size,
             ratio=ratio,
             tau=self.distillation_args.da_kd_tau,
             seed=int(self.args.seed) + epoch,

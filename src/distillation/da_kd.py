@@ -107,6 +107,53 @@ def stratified_select_indices(
     return selected
 
 
+def stratified_select_grouped_indices(
+    scores: Sequence[float],
+    *,
+    group_size: int,
+    ratio: float,
+    tau: float,
+    seed: int,
+    min_size: int,
+    multiple: int = 1,
+) -> list[int]:
+    """Run SDU selection on fixed groups and return every row in chosen groups.
+
+    Prepared multitask data encodes a same-question selector contrast in each
+    two-batch block. Group-level selection prevents DA-KD from retaining only
+    the YES or only the NO member. A trailing partial group contains only
+    majority-task rows and is omitted from the active subset.
+    """
+
+    if group_size <= 0:
+        raise ValueError("DA-KD group size must be positive.")
+    if multiple <= 0:
+        raise ValueError("DA-KD selection multiple must be positive.")
+    complete_group_count = len(scores) // group_size
+    if complete_group_count == 0:
+        raise ValueError("DA-KD dataset is too small for one complete contrast group.")
+
+    grouped_scores = [
+        sum(float(value) for value in scores[offset : offset + group_size]) / group_size
+        for offset in range(0, complete_group_count * group_size, group_size)
+    ]
+    minimum_groups = math.ceil(min_size / group_size)
+    group_multiple = multiple // math.gcd(group_size, multiple)
+    selected_groups = stratified_select_indices(
+        grouped_scores,
+        ratio=ratio,
+        tau=tau,
+        seed=seed,
+        min_size=minimum_groups,
+        multiple=group_multiple,
+    )
+    return [
+        index
+        for group_index in selected_groups
+        for index in range(group_index * group_size, (group_index + 1) * group_size)
+    ]
+
+
 def summarize_da_kd_selection(
     scores: Sequence[float],
     student_losses: Sequence[float],

@@ -104,6 +104,11 @@ def format_selector_rows(
                 "schema_id": row["schema_id"],
                 "unit_id": row["unit_id"],
                 "label": classification_label,
+                **(
+                    {"contrast_pair_id": str(row["contrast_pair_id"])}
+                    if "contrast_pair_id" in row
+                    else {}
+                ),
             }
         )
     return prepared
@@ -162,78 +167,58 @@ def interleave_without_replacement(
     batch_size: int,
     rng: random.Random,
 ) -> list[dict[str, Any]]:
-    """Mix two unequal task sets without duplicating rows.
+    """Mix tasks while retaining same-question selector contrast pairs.
 
-    When one task has fewer rows than batches (for example 3,200 selector rows
-    at batch size 2), it is placed in as many evenly spaced mixed batches as
-    possible. The remaining batches contain the majority task only.
+    Mixed batches are emitted first and later shuffled only as complete batches
+    by the trainer. For batch size two, each pair spans two consecutive mixed
+    batches; for larger even batches, pair members stay in the same batch or in
+    two consecutive batches. Remaining generator rows form generator-only
+    batches. No source row is duplicated.
     """
 
-    if batch_size < 2:
-        raise ValueError("batch-size must be at least 2")
-    total_rows = len(generator_rows) + len(selector_rows)
+    if batch_size < 2 or batch_size % 2:
+        raise ValueError("batch-size must be a positive even number")
     if not generator_rows or not selector_rows:
         raise ValueError("Both generator and selector datasets must be non-empty")
-
-    batch_lengths = [batch_size] * (total_rows // batch_size)
-    if total_rows % batch_size:
-        batch_lengths.append(total_rows % batch_size)
     if len(generator_rows) < len(selector_rows):
         raise ValueError("This preparation policy expects generator rows to be at least as numerous as selector rows")
 
-    # Reserve one row from each task for as many batches as possible. Choose
-    # the batch positions evenly, so mixed batches remain distributed through
-    # the ordered dataset even when batch size is only two.
-    mixable_indices = [index for index, length in enumerate(batch_lengths) if length >= 2]
-    mixed_batch_count = min(len(generator_rows), len(selector_rows), len(mixable_indices))
-    selected_mixed_indices = [
-        index
-        for position, index in enumerate(mixable_indices)
-        if ((position + 1) * mixed_batch_count) // len(mixable_indices)
-        > (position * mixed_batch_count) // len(mixable_indices)
-    ]
-    selector_per_batch = [0] * len(batch_lengths)
-    for index in selected_mixed_indices:
-        selector_per_batch[index] = 1
+    by_contrast: dict[str, list[dict[str, Any]]] = {}
+    for row in selector_rows:
+        pair_id = row.get("contrast_pair_id")
+        if pair_id is None:
+            raise ValueError("Every train selector row must contain contrast_pair_id")
+        by_contrast.setdefault(str(pair_id), []).append(row)
+    malformed = {
+        pair_id: [row.get("label") for row in pair]
+        for pair_id, pair in by_contrast.items()
+        if len(pair) != 2
+        or {row.get("label") for row in pair}
+        != {NEGATIVE_SELECTOR_LABEL, POSITIVE_SELECTOR_LABEL}
+    }
+    if malformed:
+        raise ValueError(f"Malformed same-question selector contrast pairs: {malformed}")
 
-    # If selector rows outnumber mixed batches, spread the remainder over
-    # existing mixed batches while retaining at least one generator in each.
-    remaining_selectors = len(selector_rows) - mixed_batch_count
-    available = [
-        index
-        for index in selected_mixed_indices
-        if selector_per_batch[index] < batch_lengths[index] - 1
-    ]
-    while remaining_selectors:
-        if not available:
-            raise ValueError("Unable to distribute selector rows while retaining generator rows in mixed batches")
-        rng.shuffle(available)
-        progressed = False
-        for index in available:
-            if remaining_selectors == 0:
-                break
-            if selector_per_batch[index] < batch_lengths[index] - 1:
-                selector_per_batch[index] += 1
-                remaining_selectors -= 1
-                progressed = True
-        if not progressed:
-            raise ValueError("Unable to distribute task rows across batches")
+    contrast_pairs = list(by_contrast.values())
+    rng.shuffle(contrast_pairs)
+    selectors = [row for pair in contrast_pairs for row in pair]
 
     generators = list(generator_rows)
-    selectors = list(selector_rows)
     rng.shuffle(generators)
-    rng.shuffle(selectors)
     generator_offset = 0
-    selector_offset = 0
     result: list[dict[str, Any]] = []
-    for length, selector_count in zip(batch_lengths, selector_per_batch):
-        generator_count = length - selector_count
+    selector_capacity = batch_size // 2
+    for selector_offset in range(0, len(selectors), selector_capacity):
+        selector_chunk = selectors[selector_offset : selector_offset + selector_capacity]
+        generator_count = batch_size - len(selector_chunk)
+        if generator_offset + generator_count > len(generators):
+            raise ValueError("Not enough generator rows to construct mixed contrast batches")
         result.extend(generators[generator_offset : generator_offset + generator_count])
-        result.extend(selectors[selector_offset : selector_offset + selector_count])
+        result.extend(selector_chunk)
         generator_offset += generator_count
-        selector_offset += selector_count
-    if generator_offset != len(generators) or selector_offset != len(selectors):
-        raise AssertionError("Interleaving did not consume every row exactly once")
+    result.extend(generators[generator_offset:])
+    if len(result) != len(generator_rows) + len(selector_rows):
+        raise AssertionError("Interleaving did not consume every source row exactly once")
     return result
 
 
@@ -299,8 +284,8 @@ def main() -> None:
         "seed": args.seed,
         "batch_size": args.batch_size,
         "batch_policy": (
-            "Each ordered batch contains both tasks whenever available row counts allow it; remaining batches contain "
-            "the majority task. Source rows are never duplicated. Keep dataloader shuffle disabled."
+            "Mixed batches retain adjacent same-question YES/NO selector contrasts; remaining batches contain "
+            "generator rows only. Source rows are never duplicated. Keep individual-row dataloader shuffle disabled."
         ),
         "files": {
             "train": {"rows": len(train), "generator": len(generator_train), "selector": len(selector_train)},
@@ -313,6 +298,7 @@ def main() -> None:
             "test_selector": {"rows": len(selector_test)},
         },
         "eval_selector_labels": dict(Counter(row["label"] for row in eval_selector_balanced)),
+        "train_selector_contrast_pairs": len(selector_train) // 2,
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
