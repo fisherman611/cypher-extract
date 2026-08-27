@@ -26,7 +26,12 @@ from schema_grounding.inference.pipeline import (
     run_dataset_pipeline,
     run_selector_stage,
 )
-from schema_grounding.inference.prompting import PromptTemplates
+from schema_grounding.inference.prompting import (
+    QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
+    QWEN3_NOTHINK_TEMPLATE_NAME,
+    PromptTemplates,
+    render_qwen3_nothink,
+)
 from scripts.infer_two_stage import DEFAULT_INFERENCE_SEEDS, parse_seeds, validate_choices
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -70,9 +75,11 @@ def test_all_methods_include_teacher_and_exclude_da_kd() -> None:
 
 
 def test_selector_label_parser_is_strict() -> None:
-    assert parse_selector_label(" RELATED\n") == "RELATED"
-    assert parse_selector_label("unrelated") == "UNRELATED"
-    assert parse_selector_label("The answer is RELATED") is None
+    assert parse_selector_label(" YES\n") == "YES"
+    assert parse_selector_label("NO") == "NO"
+    assert parse_selector_label("no") is None
+    assert parse_selector_label("The answer is YES") is None
+    assert parse_selector_label("RELATED") is None
 
 
 def test_merge_closes_relationship_endpoints_and_preserves_order() -> None:
@@ -162,6 +169,43 @@ def test_prompt_messages_match_training_format() -> None:
         == (REPOSITORY_ROOT / "prompts/selector/system_prompt.txt").read_text(encoding="utf-8").strip()
     )
     assert "SCHEMA UNIT:\n(:Person)" in selector[1]["content"]
+    assert selector[1]["content"].endswith("LABEL (YES or NO):")
+    assert "`" not in selector[0]["content"]
+
+
+def test_qwen3_nothink_renderer_exactly_matches_llamafactory_chatml() -> None:
+    rendered = render_qwen3_nothink(
+        [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Question"},
+        ]
+    )
+
+    assert rendered == (
+        "<|im_start|>system\nSystem<|im_end|>\n"
+        "<|im_start|>user\nQuestion<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    assert "<think>" not in rendered
+    assert QWEN3_NOTHINK_TEMPLATE_NAME == "llamafactory:qwen3_nothink"
+    assert len(QWEN3_NOTHINK_TEMPLATE_FINGERPRINT) == 64
+
+
+def test_model_runner_tokenizes_rendered_llamafactory_template() -> None:
+    class RecordingTokenizer:
+        rendered: str | None = None
+
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert not add_special_tokens
+            self.rendered = text
+            return [1, 2, 3]
+
+    tokenizer = RecordingTokenizer()
+    runner = ModelRunner(model=None, tokenizer=tokenizer, device=torch.device("cpu"))
+
+    assert runner.prompt_length([{"role": "user", "content": "Question"}]) == 3
+    assert tokenizer.rendered == "<|im_start|>user\nQuestion<|im_end|>\n<|im_start|>assistant\n"
+    assert "<think>" not in tokenizer.rendered
 
 
 class FakeRunner:
@@ -171,18 +215,32 @@ class FakeRunner:
         return sum(len(message["content"].split()) for message in messages)
 
     def generate(self, conversations, *, max_new_tokens, **generation_kwargs):
-        assert generation_kwargs == {
-            "do_sample": True,
-            "temperature": 0.5,
-            "top_p": 0.95,
-            "num_beams": 1,
-        }
+        is_selector = "relevance classifier" in conversations[0][0]["content"]
+        expected_kwargs = (
+            {
+                "do_sample": False,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "top_k": 0,
+                "num_beams": 1,
+            }
+            if is_selector
+            else {
+                "do_sample": True,
+                "temperature": 0.5,
+                "top_p": 0.95,
+                "top_k": 0,
+                "num_beams": 1,
+            }
+        )
+        assert generation_kwargs == expected_kwargs
+        assert max_new_tokens == (1 if is_selector else 256)
         outputs = []
         for messages in conversations:
             system = messages[0]["content"]
             user = messages[1]["content"]
             if "relevance classifier" in system:
-                outputs.append("RELATED" if "(:A " in user or "[:LINKS]" in user else "UNRELATED")
+                outputs.append("YES" if "(:A " in user or "[:LINKS]" in user else "NO")
             else:
                 # Deliberately omit the closing JSON brace to exercise the
                 # inference-time recovery used for real model generations.
@@ -197,6 +255,16 @@ class CountingRunner(FakeRunner):
     def generate(self, conversations, *, max_new_tokens, **generation_kwargs):
         self.generated += len(conversations)
         return super().generate(conversations, max_new_tokens=max_new_tokens, **generation_kwargs)
+
+
+def test_inference_options_rejects_negative_top_k() -> None:
+    with pytest.raises(ValueError, match="top_k must be a non-negative integer"):
+        InferenceOptions(top_k=-1).validate()
+
+
+def test_inference_options_enforces_one_token_selector_protocol() -> None:
+    with pytest.raises(ValueError, match="selector_max_new_tokens must be 1"):
+        InferenceOptions(selector_max_new_tokens=2).validate()
 
 
 def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenizer(monkeypatch, tmp_path: Path) -> None:
@@ -247,6 +315,7 @@ def test_model_runner_remembers_safe_batch_size_after_oom(monkeypatch) -> None:
             "do_sample": True,
             "temperature": 0.5,
             "top_p": 0.95,
+            "top_k": 0,
             "num_beams": 1,
         }
         attempted_batch_sizes.append(len(conversations))
@@ -307,6 +376,17 @@ def test_end_to_end_pipeline_with_fake_model(tmp_path: Path) -> None:
         options=InferenceOptions(selector_batch_size=2, generator_batch_size=1),
     )
     assert manifest["method"] == "sft"
+    run_config = json.loads((output / "run_config.json").read_text(encoding="utf-8"))
+    assert run_config["chat_template"] == {
+        "name": QWEN3_NOTHINK_TEMPLATE_NAME,
+        "fingerprint": QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
+    }
+    assert run_config["selector_protocol"] == {
+        "positive_label": "YES",
+        "negative_label": "NO",
+        "do_sample": False,
+        "num_beams": 1,
+    }
     prediction = list(iter_jsonl(output / "generator_predictions.jsonl"))[0]
     assert prediction["predicted_cypher"] == generation["cypher"]
     assert prediction["predicted_sub_schema"] == generation["sub_schema"]
@@ -470,7 +550,7 @@ def test_metrics_reject_misaligned_selector_prediction_ids(tmp_path: Path) -> No
     data = tmp_path / "benchmark"
     write_jsonl(data / "selection_test.jsonl", [{"id": "expected", "label": 0}])
     write_jsonl(data / "generation_test.jsonl", [{"id": "example-1", "cypher": "RETURN 1"}])
-    write_jsonl(tmp_path / "selector_predictions.jsonl", [{"id": "other", "predicted_label": "UNRELATED"}])
+    write_jsonl(tmp_path / "selector_predictions.jsonl", [{"id": "other", "predicted_label": "NO"}])
     write_jsonl(
         tmp_path / "generator_predictions.jsonl",
         [
@@ -519,9 +599,9 @@ def test_selector_stage_resumes_a_contiguous_partial_file(tmp_path: Path) -> Non
                 "schema_id": "schema-1",
                 "unit_id": "node:A",
                 "unit_type": "node",
-                "predicted_label": "RELATED",
+                "predicted_label": "YES",
                 "valid": True,
-                "raw_output": "RELATED",
+                "raw_output": "YES",
             }
         ],
     )

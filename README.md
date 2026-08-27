@@ -387,9 +387,9 @@ python -m pytest
 
 Pipeline inference thực hiện tuần tự hai task bằng cùng một LoRA adapter:
 
-1. Chạy selector cho từng cặp `question + schema unit` để dự đoán
-   `RELATED/UNRELATED`.
-2. Merge các unit `RELATED` thành predicted sub-schema, rồi đưa
+1. Chạy selector cho từng cặp `question + schema unit` để dự đoán `YES/NO`
+   bằng greedy decoding (`do_sample=False`, tối đa một token).
+2. Merge các unit `YES` thành predicted sub-schema, rồi đưa
    `question + predicted sub-schema` vào generator để sinh Cypher.
 
 Prediction path không sử dụng gold selector label, gold sub-schema hoặc gold
@@ -588,7 +588,7 @@ Pipeline sẽ:
 - tính lại metrics và manifest sau khi đủ output.
 
 `run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256
-của input/prompt và inference options. Nếu `last_ckpt` trên Hugging Face thay đổi, command dùng
+của input/prompt, ChatML template và inference options. Nếu `last_ckpt` trên Hugging Face thay đổi, command dùng
 option khác, dataset được build lại hoặc prompt thay đổi, pipeline sẽ không
 reuse output cũ. Khi đó chọn output directory mới:
 
@@ -736,10 +736,10 @@ Nếu GPU không hỗ trợ BF16, thử `--dtype float16`. Có thể giữ LoRA 
 merge bằng `--no-merge-adapter`, nhưng inference thường chậm hơn.
 
 Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
-`temperature=0.5`, `top_p=0.95`, `num_beams=1`) và `qwen3_nothink`
-(`enable_thinking=False`). Mỗi method/dataset chạy lần lượt với các seed
-`10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng tối đa
-8 new tokens; generator dùng tối đa 256 new tokens. Có thể override:
+`temperature=0.5`, `top_p=0.95`, `top_k=0`, `num_beams=1`) và ChatML
+`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Mỗi method/dataset chạy lần lượt với các seed
+`10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng greedy
+decoding với nhãn một-token `YES/NO`; generator dùng tối đa 256 new tokens. Có thể override:
 
 ```bash
 python scripts/infer_two_stage.py \
@@ -747,8 +747,8 @@ python scripts/infer_two_stage.py \
   --seeds 10,42,50,100,1234 \
   --temperature 0.5 \
   --top-p 0.95 \
+  --top-k 0 \
   --num-beams 1 \
-  --selector-max-new-tokens 8 \
   --generator-max-new-tokens 256
 ```
 

@@ -8,6 +8,34 @@ from typing import Any
 
 Message = dict[str, str]
 
+_QWEN3_NOTHINK_MESSAGE = "<|im_start|>{role}\n{content}<|im_end|>\n"
+_QWEN3_NOTHINK_GENERATION_PROMPT = "<|im_start|>assistant\n"
+QWEN3_NOTHINK_TEMPLATE_NAME = "llamafactory:qwen3_nothink"
+QWEN3_NOTHINK_TEMPLATE_FINGERPRINT = sha256(
+    f"{_QWEN3_NOTHINK_MESSAGE}\0{_QWEN3_NOTHINK_GENERATION_PROMPT}".encode()
+).hexdigest()
+
+
+def render_qwen3_nothink(
+    messages: list[Message],
+    *,
+    add_generation_prompt: bool = True,
+) -> str:
+    """Render the exact non-reasoning ChatML format used by LlamaFactory."""
+
+    rendered: list[str] = []
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError(f"Unsupported qwen3_nothink message role: {role!r}")
+        if not isinstance(content, str):
+            raise TypeError("qwen3_nothink message content must be a string")
+        rendered.append(_QWEN3_NOTHINK_MESSAGE.format(role=role, content=content))
+    if add_generation_prompt:
+        rendered.append(_QWEN3_NOTHINK_GENERATION_PROMPT)
+    return "".join(rendered)
+
 
 @dataclass(frozen=True)
 class PromptTemplates:

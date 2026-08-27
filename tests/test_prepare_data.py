@@ -7,7 +7,7 @@ from distillation.prepare_data import SPLIT_FILES, convert_directory, to_openai_
 
 
 def _prepared_record(task: str = "generator") -> dict[str, str]:
-    response = '{"cypher":"MATCH (n) RETURN n"}' if task == "generator" else "RELATED"
+    response = '{"cypher":"MATCH (n) RETURN n"}' if task == "generator" else "YES"
     return {
         "task": task,
         "system_prompt": "System",

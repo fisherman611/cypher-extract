@@ -2,7 +2,7 @@
 
 Pipeline inference chạy cùng một multitask LoRA adapter qua hai bước:
 
-1. `question + schema unit -> RELATED/UNRELATED`;
+1. `question + schema unit -> YES/NO` bằng greedy decoding, không sampling;
 2. merge các unit được chọn thành predicted sub-schema, rồi chạy
    `question + predicted sub-schema -> Cypher`.
 
@@ -61,6 +61,7 @@ python scripts/infer_two_stage.py \
   --seeds 10,42,50,100,1234 \
   --temperature 0.5 \
   --top-p 0.95 \
+  --top-k 0 \
   --num-beams 1 \
   --selector-batch-size 128 \
   --generator-batch-size 16 \
@@ -102,7 +103,7 @@ một relationship được chọn nhưng endpoint node chưa được chọn, n
 được thêm từ schema unit của chính sample đó. Có thể tắt bằng
 `--no-relation-endpoint-closure`.
 
-Selector output không phải chính xác `RELATED` hoặc `UNRELATED` được ghi là
+Selector output không phải chính xác `YES` hoặc `NO` được ghi là
 `INVALID`, lưu nguyên raw output và không được chọn vào sub-schema. Empty schema
 được giữ nguyên thay vì âm thầm fallback sang gold/full schema.
 
@@ -122,15 +123,16 @@ Selector và generator ghi vào `.partial` rồi mới publish file hoàn chỉn
 process bị dừng giữa stage, lần chạy sau tiếp tục từ row cuối đã ghi. Stage đã
 hoàn chỉnh được reuse.
 
-`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256 của input/prompt và generation options. Pipeline
+`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256 của input/prompt, ChatML template và generation options. Pipeline
 sẽ từ chối reuse output nếu một trong các giá trị này thay đổi; khi đó dùng một
 `--output-dir` khác hoặc chủ động xóa riêng directory method/dataset cũ.
 
 Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
-`temperature=0.5`, `top_p=0.95`, `num_beams=1`) và `qwen3_nothink`
-(`enable_thinking=False`). Script mặc định chạy các seed `10,42,50,100,1234`;
-Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng dataset. Selector
-dùng tối đa 8 new tokens, generator dùng tối đa 256 new tokens.
+`temperature=0.5`, `top_p=0.95`, `top_k=0`, `num_beams=1`) và ChatML
+`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Script mặc định chạy các seed `10,42,50,100,1234`;
+Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng dataset. Seed chỉ
+ảnh hưởng generator; selector dùng greedy decoding với tối đa một new token và
+generator dùng tối đa 256 new tokens.
 
 Eval graph `nba` cho toàn bộ seed trên PowerShell:
 

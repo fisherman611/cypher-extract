@@ -75,7 +75,7 @@ def build_messages(row: dict[str, Any], task: str) -> list[dict[str, str]]:
         system = load_prompt("selector/system_prompt.txt")
         user_template = load_prompt("selector/user_prompt.txt")
         user = user_template.format(question=row["question"], schema_unit=row["unit"]["text"])
-        response = "RELATED" if row["label"] == 1 else "UNRELATED"
+        response = "YES" if row["label"] == 1 else "NO"
     else:
         raise ValueError(f"Unsupported task: {task}")
     return [

@@ -11,19 +11,13 @@ from typing import Any
 
 import numpy as np
 
+from schema_grounding.inference.parsing import parse_selector_label
+
 IGNORE_INDEX = -100
-SELECTOR_LABELS = frozenset({"RELATED", "UNRELATED"})
 _TOKEN_PATTERN = re.compile(
     r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:``|[^`])*`|"
     r"<=|>=|<>|!=|=~|[A-Za-z_]\w*|\d+(?:\.\d+)?|[^\s]"
 )
-
-
-def _selector_label(text: str) -> str | None:
-    match = re.search(r"\b(UNRELATED|RELATED)\b", text.upper())
-    return match.group(1) if match else None
-
-
 def _json_objects(text: str):
     decoder = json.JSONDecoder()
     for start, character in enumerate(text):
@@ -162,10 +156,10 @@ def compute_task_metrics(predictions: Sequence[str], references: Sequence[str]) 
     rouge_l = 0.0
 
     for prediction, reference in zip(predictions, references, strict=True):
-        reference_label = _selector_label(reference)
-        if reference.strip().upper() in SELECTOR_LABELS and reference_label is not None:
+        reference_label = parse_selector_label(reference)
+        if reference_label is not None:
             selector_count += 1
-            selector_correct += _selector_label(prediction) == reference_label
+            selector_correct += parse_selector_label(prediction) == reference_label
             continue
 
         generator_count += 1

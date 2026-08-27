@@ -20,7 +20,18 @@ from schema_grounding.inference.data import (
 from schema_grounding.inference.merge import merge_schema_units
 from schema_grounding.inference.outputs import ResumableJsonl, write_json_atomic, write_json_line
 from schema_grounding.inference.parsing import parse_selector_label
-from schema_grounding.inference.prompting import Message, PromptTemplates
+from schema_grounding.inference.prompting import (
+    QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
+    QWEN3_NOTHINK_TEMPLATE_NAME,
+    Message,
+    PromptTemplates,
+)
+from schema_grounding.selector_labels import (
+    NEGATIVE_SELECTOR_LABEL,
+    POSITIVE_SELECTOR_LABEL,
+    SELECTOR_LABELS,
+    selector_label_from_binary,
+)
 
 
 class GenerationRunner(Protocol):
@@ -34,6 +45,7 @@ class GenerationRunner(Protocol):
         do_sample: bool,
         temperature: float,
         top_p: float,
+        top_k: int,
         num_beams: int,
     ) -> list[str]: ...
 
@@ -44,12 +56,13 @@ class GenerationRunner(Protocol):
 class InferenceOptions:
     selector_batch_size: int = 128
     generator_batch_size: int = 16
-    selector_max_new_tokens: int = 8
+    selector_max_new_tokens: int = 1
     generator_max_new_tokens: int = 256
     close_relation_endpoints: bool = True
-    do_sample: bool = True
+    generator_do_sample: bool = True
     temperature: float = 0.5
     top_p: float = 0.95
+    top_k: int = 0
     num_beams: int = 1
     seed: int = 42
 
@@ -57,13 +70,16 @@ class InferenceOptions:
         for name in (
             "selector_batch_size",
             "generator_batch_size",
-            "selector_max_new_tokens",
             "generator_max_new_tokens",
             "num_beams",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.selector_max_new_tokens != 1:
+            raise ValueError("selector_max_new_tokens must be 1 for the one-token YES/NO protocol")
+        if not isinstance(self.top_k, int) or self.top_k < 0:
+            raise ValueError("top_k must be a non-negative integer")
         if not isinstance(self.seed, int) or self.seed < 0:
             raise ValueError("seed must be a non-negative integer")
         if self.temperature <= 0:
@@ -72,11 +88,22 @@ class InferenceOptions:
             raise ValueError("top_p must be in (0, 1]")
 
 
-def _generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
+def _selector_generation_kwargs() -> dict[str, Any]:
     return {
-        "do_sample": options.do_sample,
+        "do_sample": False,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "num_beams": 1,
+    }
+
+
+def _generator_generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
+    return {
+        "do_sample": options.generator_do_sample,
         "temperature": options.temperature,
         "top_p": options.top_p,
+        "top_k": options.top_k,
         "num_beams": options.num_beams,
     }
 
@@ -142,7 +169,7 @@ def run_selector_stage(
             raw_outputs = runner.generate(
                 conversations,
                 max_new_tokens=options.selector_max_new_tokens,
-                **_generation_kwargs(options),
+                **_selector_generation_kwargs(),
             )
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of selector outputs")
@@ -204,7 +231,7 @@ def run_merge_stage(
             related_ids = [
                 str(source["unit_id"])
                 for source, prediction in zip(source_rows, prediction_rows, strict=True)
-                if prediction["predicted_label"] == "RELATED"
+                if prediction["predicted_label"] == POSITIVE_SELECTOR_LABEL
             ]
             merged = merge_schema_units(
                 units,
@@ -288,7 +315,7 @@ def run_generator_stage(
             raw_outputs = runner.generate(
                 conversations,
                 max_new_tokens=options.generator_max_new_tokens,
-                **_generation_kwargs(options),
+                **_generator_generation_kwargs(options),
             )
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of generator outputs")
@@ -337,20 +364,20 @@ def compute_inference_metrics(
                 f"Selector prediction misalignment: {source.get('id')!r} != {prediction.get('id')!r}"
             )
         selector_count += 1
-        expected = "RELATED" if source["label"] == 1 else "UNRELATED"
+        expected = selector_label_from_binary(source["label"])
         predicted = prediction["predicted_label"]
-        if predicted not in {"RELATED", "UNRELATED", "INVALID"}:
+        if predicted not in {*SELECTOR_LABELS, "INVALID"}:
             raise ValueError(f"Unknown selector prediction label {predicted!r} for row {prediction.get('id')!r}")
         if predicted == "INVALID":
             invalid += 1
-            if expected == "RELATED":
+            if expected == POSITIVE_SELECTOR_LABEL:
                 false_negative += 1
             continue
-        if expected == "RELATED" and predicted == "RELATED":
+        if expected == POSITIVE_SELECTOR_LABEL and predicted == POSITIVE_SELECTOR_LABEL:
             true_positive += 1
-        elif expected == "UNRELATED" and predicted == "RELATED":
+        elif expected == NEGATIVE_SELECTOR_LABEL and predicted == POSITIVE_SELECTOR_LABEL:
             false_positive += 1
-        elif expected == "RELATED":
+        elif expected == POSITIVE_SELECTOR_LABEL:
             false_negative += 1
         else:
             true_negative += 1
@@ -463,6 +490,16 @@ def prepare_run_directory(
             "generation_test": _file_sha256(spec.generation_test),
         },
         "prompt_fingerprints": templates.fingerprints(),
+        "chat_template": {
+            "name": QWEN3_NOTHINK_TEMPLATE_NAME,
+            "fingerprint": QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
+        },
+        "selector_protocol": {
+            "positive_label": POSITIVE_SELECTOR_LABEL,
+            "negative_label": NEGATIVE_SELECTOR_LABEL,
+            "do_sample": False,
+            "num_beams": 1,
+        },
     }
     if run_config_path.is_file():
         existing_config = json.loads(run_config_path.read_text(encoding="utf-8"))

@@ -17,14 +17,14 @@ def test_extract_cypher_from_malformed_or_truncated_json() -> None:
 def test_compute_mixed_task_metrics() -> None:
     metrics = compute_task_metrics(
         [
-            "RELATED",
-            "RELATED",
+            "YES",
+            "YES",
             '{"cypher":"MATCH (n) RETURN n"}',
             '{"cypher":"MATCH (n) RETURN n.name"}',
         ],
         [
-            "RELATED",
-            "UNRELATED",
+            "YES",
+            "NO",
             '{"cypher":"MATCH (n)  RETURN n;"}',
             '{"cypher":"MATCH (n) RETURN n.age"}',
         ],
@@ -37,3 +37,10 @@ def test_compute_mixed_task_metrics() -> None:
     assert 0.0 < metrics["generator_rouge1"] < 100.0
     assert 0.0 < metrics["generator_rouge2"] < 100.0
     assert 0.0 < metrics["generator_rougeL"] < 100.0
+
+
+def test_selector_training_metric_uses_strict_inference_parser() -> None:
+    metrics = compute_task_metrics(["The answer is YES"], ["YES"])
+
+    assert metrics["selector_count"] == 1
+    assert metrics["selector_accuracy"] == 0.0

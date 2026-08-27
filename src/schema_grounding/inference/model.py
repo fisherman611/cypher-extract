@@ -9,7 +9,7 @@ import torch
 from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from schema_grounding.inference.prompting import Message
+from schema_grounding.inference.prompting import Message, render_qwen3_nothink
 
 _DTYPES = {
     "auto": "auto",
@@ -78,14 +78,8 @@ class ModelRunner:
         return len(self._tokenize_chat(messages))
 
     def _tokenize_chat(self, messages: Sequence[Message]) -> list[int]:
-        token_ids = self.tokenizer.apply_chat_template(
-            list(messages),
-            tokenize=True,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        if hasattr(token_ids, "keys") and "input_ids" in token_ids:
-            token_ids = token_ids["input_ids"]
+        rendered = render_qwen3_nothink(list(messages), add_generation_prompt=True)
+        token_ids = self.tokenizer.encode(rendered, add_special_tokens=False)
         if not isinstance(token_ids, list):
             token_ids = token_ids.tolist()
         return token_ids
@@ -99,6 +93,7 @@ class ModelRunner:
         do_sample: bool = True,
         temperature: float = 0.5,
         top_p: float = 0.95,
+        top_k: int = 0,
         num_beams: int = 1,
     ) -> list[str]:
         if not conversations:
@@ -114,6 +109,7 @@ class ModelRunner:
                         do_sample=do_sample,
                         temperature=temperature,
                         top_p=top_p,
+                        top_k=top_k,
                         num_beams=num_beams,
                     )
                 )
@@ -125,6 +121,7 @@ class ModelRunner:
                 do_sample=do_sample,
                 temperature=temperature,
                 top_p=top_p,
+                top_k=top_k,
                 num_beams=num_beams,
             )
         except torch.cuda.OutOfMemoryError:
@@ -141,6 +138,7 @@ class ModelRunner:
                     do_sample=do_sample,
                     temperature=temperature,
                     top_p=top_p,
+                    top_k=top_k,
                     num_beams=num_beams,
                 ),
                 *self.generate(
@@ -149,6 +147,7 @@ class ModelRunner:
                     do_sample=do_sample,
                     temperature=temperature,
                     top_p=top_p,
+                    top_k=top_k,
                     num_beams=num_beams,
                 ),
             ]
@@ -161,6 +160,7 @@ class ModelRunner:
         do_sample: bool,
         temperature: float,
         top_p: float,
+        top_k: int,
         num_beams: int,
     ) -> list[str]:
         features = []
@@ -178,7 +178,7 @@ class ModelRunner:
             "eos_token_id": self.tokenizer.eos_token_id,
         }
         if do_sample:
-            generation_kwargs.update(temperature=temperature, top_p=top_p)
+            generation_kwargs.update(temperature=temperature, top_p=top_p, top_k=top_k)
         generated = self.model.generate(**batch, **generation_kwargs)
         prompt_width = batch["input_ids"].shape[1]
         return self.tokenizer.batch_decode(generated[:, prompt_width:], skip_special_tokens=True)

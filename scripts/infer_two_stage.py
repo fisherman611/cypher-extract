@@ -31,7 +31,7 @@ from schema_grounding.inference.pipeline import (  # noqa: E402
     prepare_run_directory,
     run_dataset_pipeline,
 )
-from schema_grounding.inference.prompting import PromptTemplates  # noqa: E402
+from schema_grounding.inference.prompting import QWEN3_NOTHINK_TEMPLATE_NAME, PromptTemplates  # noqa: E402
 
 DEFAULT_INFERENCE_SEEDS = (10, 42, 50, 100, 1234)
 
@@ -77,7 +77,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="bfloat16")
     parser.add_argument("--selector-batch-size", type=int, default=128)
     parser.add_argument("--generator-batch-size", type=int, default=16)
-    parser.add_argument("--selector-max-new-tokens", type=int, default=8)
     parser.add_argument("--generator-max-new-tokens", type=int, default=256)
     parser.add_argument(
         "--seeds",
@@ -86,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--num-beams", type=int, default=1)
     parser.add_argument(
         "--no-merge-adapter",
@@ -131,12 +131,12 @@ def main() -> None:
     options = InferenceOptions(
         selector_batch_size=args.selector_batch_size,
         generator_batch_size=args.generator_batch_size,
-        selector_max_new_tokens=args.selector_max_new_tokens,
         generator_max_new_tokens=args.generator_max_new_tokens,
         close_relation_endpoints=not args.no_relation_endpoint_closure,
-        do_sample=True,
+        generator_do_sample=True,
         temperature=args.temperature,
         top_p=args.top_p,
+        top_k=args.top_k,
         num_beams=args.num_beams,
     )
     options.validate()
@@ -149,12 +149,20 @@ def main() -> None:
                 "methods": methods,
                 "datasets": dataset_names,
                 "seeds": seeds,
-                "generation": {
-                    "do_sample": options.do_sample,
+                "selector_decoding": {
+                    "labels": ["YES", "NO"],
+                    "do_sample": False,
+                    "num_beams": 1,
+                    "max_new_tokens": options.selector_max_new_tokens,
+                },
+                "generator_decoding": {
+                    "do_sample": options.generator_do_sample,
                     "temperature": options.temperature,
                     "top_p": options.top_p,
+                    "top_k": options.top_k,
                     "num_beams": options.num_beams,
                 },
+                "chat_template": QWEN3_NOTHINK_TEMPLATE_NAME,
                 "output_dir": str(args.output_dir.resolve()),
             },
             ensure_ascii=False,

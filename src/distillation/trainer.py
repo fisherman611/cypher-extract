@@ -173,7 +173,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
             self.add_callback(_DAKDDataUpdateCallback(self))
 
     def get_train_dataloader(self) -> DataLoader:
-        """Build the template's DistributedSampler(drop_last=True) batches."""
+        """Build distributed batches while preserving prepared task mixtures."""
 
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
@@ -206,7 +206,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
                 train_dataset,
                 batch_size=self._train_batch_size,
                 num_replicas=self.accelerator.num_processes,
-                # PyTorch DistributedSampler defaults to seed zero in the template.
+                # Match the template's fixed sampler seed while shuffling whole batches.
                 seed=0,
             )
         should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1

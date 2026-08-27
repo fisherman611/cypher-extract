@@ -12,12 +12,20 @@ import argparse
 import json
 import random
 import shutil
+import sys
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from schema_grounding.selector_labels import (  # noqa: E402
+    NEGATIVE_SELECTOR_LABEL,
+    POSITIVE_SELECTOR_LABEL,
+    selector_label_from_binary,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,7 +88,7 @@ def format_selector_rows(
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for row in rows:
-        classification_label = "RELATED" if row["label"] == 1 else "UNRELATED"
+        classification_label = selector_label_from_binary(row["label"])
         prepared.append(
             {
                 "task": "selector",
@@ -109,12 +117,12 @@ def sample_eval_selector_rows(
     if target > len({row["example_id"] for row in rows}):
         raise ValueError("Eval selector target exceeds the number of unique questions")
     targets = {
-        "UNRELATED": target // 2,
-        "RELATED": target - target // 2,
+        NEGATIVE_SELECTOR_LABEL: target // 2,
+        POSITIVE_SELECTOR_LABEL: target - target // 2,
     }
     chosen: list[dict[str, Any]] = []
     used_questions: set[str] = set()
-    for label in ("UNRELATED", "RELATED"):
+    for label in (NEGATIVE_SELECTOR_LABEL, POSITIVE_SELECTOR_LABEL):
         candidates = [row for row in rows if row["label"] == label]
         rng.shuffle(candidates)
         per_question: dict[str, dict[str, Any]] = {}
