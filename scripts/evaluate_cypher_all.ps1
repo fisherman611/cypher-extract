@@ -92,7 +92,12 @@ foreach ($seed in $Seeds) {
                 }
             }
 
-            & $Python -m cypher_evaluation.merge --input-dir $datasetOutput
+            $mergeArgs = @(
+                "-m", "cypher_evaluation.merge",
+                "--input-dir", $datasetOutput,
+                "--metrics"
+            ) + $Metrics
+            & $Python @mergeArgs
             if ($LASTEXITCODE -ne 0) {
                 throw "Merge failed for seed$seed/$method/$dataset (exit $LASTEXITCODE)."
             }

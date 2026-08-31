@@ -89,7 +89,9 @@ for seed in "${seeds[@]}"; do
                     --metrics "${metrics[@]}"
             done
 
-            "$python_bin" -m cypher_evaluation.merge --input-dir "$dataset_output"
+            "$python_bin" -m cypher_evaluation.merge \
+                --input-dir "$dataset_output" \
+                --metrics "${metrics[@]}"
         done
     done
     echo "[seed$seed] complete"

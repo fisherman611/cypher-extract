@@ -162,6 +162,23 @@ def test_merge_graph_evaluations_ignores_empty_unexpected_artifact(tmp_path: Pat
     assert summary["count"] == 1
 
 
+def test_merge_graph_evaluations_uses_selected_metrics_only(tmp_path: Path):
+    write_score_file(
+        tmp_path / "nba/cypher_scores.jsonl",
+        [{"id": "nba-1", "graph": "nba", "metrics": {"executable": 1.0}}],
+    )
+    _, summary = merge_graph_evaluations(
+        tmp_path,
+        expected_graphs=("nba",),
+        metrics=("executable",),
+    )
+    assert summary == {
+        "count": 1,
+        "graphs": {"nba": {"count": 1, "overall": {"executable": 1.0}}},
+        "overall": {"executable": 1.0},
+    }
+
+
 def test_execution_accuracy_ignores_row_and_column_order_without_order_by():
     connector = FakeConnector({
         "gold": [{"name": "A", "score": 1}, {"name": "B", "score": 2}],

@@ -173,5 +173,9 @@ merge-cypher-evaluations `
   --input-dir results/evaluation/qwen3/seed10/sft/cypherbench
 ```
 
+Nếu chỉ chấm một phần metric, truyền cùng danh sách vào cả hai bước, ví dụ
+`--metrics execution_accuracy executable`. Các script eval đã tự chuyển tiếp danh
+sách metric sang bước merge.
+
 CLI tạo `all_graphs_cypher_scores.jsonl` và `all_graphs_summary.json`; đồng thời
 kiểm tra đủ graph của dataset, graph field đúng folder và không có ID trùng.

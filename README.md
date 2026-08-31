@@ -744,7 +744,9 @@ all_graphs_summary.json
 riêng cho từng graph. Lệnh merge sẽ báo lỗi nếu thiếu graph, graph trong record
 không khớp folder hoặc có ID trùng.
 
-Có thể chọn metric với `--metrics execution_accuracy executable`. CLI tự load
+Có thể chọn metric với `--metrics execution_accuracy executable`. Khi chạy thủ công,
+phải truyền cùng danh sách đó cho cả `evaluate-cypher` và `merge-cypher-evaluations`;
+hai script tự động làm việc này. CLI tự load
 `NEO4J_URI`, `NEO4J_USERNAME`, và `NEO4J_PASSWORD` từ `.env`. Database được chọn
 bằng graph (`flight_accident` được đổi thành database `flight.accident`) đúng theo
 CypherKD. `cypherbench-db` và `mind-the-query-db` là logical connector name, chọn

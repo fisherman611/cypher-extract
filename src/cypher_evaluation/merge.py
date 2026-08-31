@@ -6,7 +6,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from .scoring import aggregate_scores, read_records, write_jsonl
+from .scoring import DEFAULT_METRICS, VALID_METRICS, aggregate_scores, read_records, write_jsonl
 
 DATASET_GRAPHS = {
     "cypherbench": (
@@ -63,7 +63,15 @@ def merge_graph_evaluations(
     input_dir: Path,
     *,
     expected_graphs: Sequence[str] | None = None,
+    metrics: Sequence[str] = DEFAULT_METRICS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    metric_names = tuple(metrics)
+    unknown_metrics = sorted(set(metric_names).difference(VALID_METRICS))
+    if unknown_metrics:
+        raise ValueError(f"Unknown metrics: {', '.join(unknown_metrics)}")
+    if not metric_names:
+        raise ValueError("At least one metric is required")
+
     expected = tuple(expected_graphs) if expected_graphs is not None else infer_expected_graphs(input_dir)
     # Ignore empty stray artifacts (for example a failed run against a wrongly
     # dotted database name) while still treating an expected empty graph as missing.
@@ -105,9 +113,9 @@ def merge_graph_evaluations(
                 raise ValueError(f"Duplicate evaluation record id: {record_id}")
             seen_ids.add(record_id)
         merged.extend(rows)
-        per_graph[graph] = {"count": len(rows), **aggregate_scores(rows)}
+        per_graph[graph] = {"count": len(rows), **aggregate_scores(rows, metrics=metric_names)}
 
-    overall = aggregate_scores(merged)
+    overall = aggregate_scores(merged, metrics=metric_names)
     summary = {
         "count": len(merged),
         "graphs": per_graph,
@@ -140,13 +148,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional comma-separated graph list; inferred from the dataset folder name by default",
     )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        choices=VALID_METRICS,
+        default=list(DEFAULT_METRICS),
+        help="Metrics to aggregate; must match the metrics selected during graph evaluation",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     output_dir = args.output_dir or args.input_dir
-    merged, summary = merge_graph_evaluations(args.input_dir, expected_graphs=args.expected_graphs)
+    merged, summary = merge_graph_evaluations(
+        args.input_dir,
+        expected_graphs=args.expected_graphs,
+        metrics=args.metrics,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     scores_path = output_dir / "all_graphs_cypher_scores.jsonl"
     summary_path = output_dir / "all_graphs_summary.json"
