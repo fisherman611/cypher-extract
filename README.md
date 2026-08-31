@@ -336,13 +336,13 @@ Train teacher trước, sau đó chạy tuần tự toàn bộ preset Qwen (SFT 
 tất cả KD baseline):
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_qwen.sh
+RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
 ```
 
 Mọi override phía sau script được chuyển cho từng run. Ví dụ smoke-test một epoch:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_qwen.sh num_train_epochs=1
+RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh num_train_epochs=1
 ```
 
 Teacher là dependency bắt buộc nên nếu bước teacher lỗi, script luôn dừng. Sau
@@ -364,6 +364,19 @@ Adapter được lưu tại `results/llama3/teacher_lora` và mọi preset Llama
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train.sh configs/llama3/amid.yaml
+```
+
+Train teacher trước, sau đó chạy tuần tự toàn bộ preset Llama 3:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_llama3.sh
+```
+
+Có thể truyền override cho mọi run và đổi thư mục log qua `LLAMA3_LOG_DIR`:
+
+```bash
+LLAMA3_LOG_DIR=results/llama3/custom_logs \
+RUN_GPUS=0,1 bash scripts/train_all_llama3.sh num_train_epochs=1
 ```
 
 Không dùng adapter Qwen cho config Llama hoặc ngược lại.
