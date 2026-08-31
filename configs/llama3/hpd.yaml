@@ -23,7 +23,6 @@ lora_rank: 32
 lora_alpha: 64
 lora_dropout: 0.1
 train_on_prompt: false
-mask_history: false
 
 distill_method: hpd
 kd_ratio: 1.0
@@ -34,25 +33,19 @@ overwrite_output_dir: true
 per_device_train_batch_size: 16
 per_device_eval_batch_size: 32
 gradient_accumulation_steps: 1
-gradient_checkpointing: false
 learning_rate: 0.0001
 num_train_epochs: 5
 optim: adamw_torch
-adam_beta1: 0.9
-adam_beta2: 0.999
-adam_epsilon: 1.0e-8
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
   min_lr_rate: 0.001
 warmup_steps: 0
 weight_decay: 0.01
 max_grad_norm: 1.0
-logging_strategy: steps
 logging_steps: 20
 save_strategy: epoch
 eval_strategy: epoch
 seed: 42
 bf16: true
-fp16: false
 deepspeed: configs/deepspeed/ds_config_bf16.json
 report_to: none

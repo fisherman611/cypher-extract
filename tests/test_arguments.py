@@ -11,6 +11,19 @@ CONFIG_PATHS = sorted(
     for family in ("llama3", "qwen3")
     for path in (Path("configs") / family).glob("*.yaml")
 )
+ALL_TRAIN_CONFIG_PATHS = sorted(
+    path
+    for directory in ("distillation", "llama3", "qwen3")
+    for path in (Path("configs") / directory).glob("*.yaml")
+)
+REDUNDANT_RUNTIME_DEFAULTS = {
+    "adam_beta1",
+    "adam_beta2",
+    "adam_epsilon",
+    "fp16",
+    "gradient_checkpointing",
+    "logging_strategy",
+}
 BASELINE_CONFIG_NAMES = {
     "csd.yaml",
     "amid.yaml",
@@ -33,6 +46,12 @@ def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     config_paths = list((Path("configs") / family).glob("*.yaml"))
     actual = {path.name for path in config_paths}
     assert actual == BASELINE_CONFIG_NAMES
+
+
+@pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
+def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert REDUNDANT_RUNTIME_DEFAULTS.isdisjoint(config)
 
 
 @pytest.mark.parametrize(
@@ -202,19 +221,14 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["packing"] is False
     assert config["ignore_pad_token_for_loss"] is True
     assert config["train_on_prompt"] is False
-    assert config["mask_history"] is False
+    assert "mask_history" not in config
     assert config["predict_with_generate"] is True
     assert config["dataloader_num_workers"] == 1
     assert config["dataloader_drop_last"] is False
-    assert config["gradient_checkpointing"] is False
     assert config["optim"] == "adamw_torch"
-    assert config["adam_beta1"] == 0.9
-    assert config["adam_beta2"] == 0.999
-    assert config["adam_epsilon"] == 1.0e-8
     assert config["lr_scheduler_type"] == "cosine_with_min_lr"
     expected_min_lr_rate = 0.01 if distillation_args.uses_da_kd else 0.001
     assert config["lr_scheduler_kwargs"] == {"min_lr_rate": expected_min_lr_rate}
-    assert config["logging_strategy"] == "steps"
     if distillation_args.is_adaptive:
         assert config["student_gen"] is True
         expected_context_length = 797 if config_path.parent.name == "qwen3" else 810

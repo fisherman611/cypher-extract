@@ -38,5 +38,5 @@ def test_baseline_configs_reference_existing_deepspeed_config(path: Path) -> Non
 def test_baseline_configs_use_bf16_only(path: Path) -> None:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert config["bf16"] is True
-    assert config["fp16"] is False
+    assert config.get("fp16", False) is False
     assert config["deepspeed"] == "configs/deepspeed/ds_config_bf16.json"
