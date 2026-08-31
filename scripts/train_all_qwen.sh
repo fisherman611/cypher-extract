@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_DIR="${PROJECT_ROOT}/configs/qwen3"
-TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_sft.yaml"
+TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_lora_qwen3.yaml"
 TEACHER_ADAPTER="${PROJECT_ROOT}/results/qwen3/teacher_lora"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${QWEN_LOG_DIR:-${PROJECT_ROOT}/results/qwen3/run_all_logs/${RUN_ID}}"
@@ -43,17 +43,17 @@ cd "${PROJECT_ROOT}"
 
 echo
 echo "============================================================"
-echo "Running configs/distillation/teacher_sft.yaml"
-echo "Log: ${LOG_DIR}/teacher_sft.log"
+echo "Running configs/distillation/teacher_lora_qwen3.yaml"
+echo "Log: ${LOG_DIR}/teacher_lora_qwen3.log"
 echo "============================================================"
 
 # Every full run starts by training the teacher. A failed teacher cannot be
 # skipped because all KD methods depend on the adapter it produces.
-if bash scripts/train.sh configs/distillation/teacher_sft.yaml "$@" 2>&1 | tee "${LOG_DIR}/teacher_sft.log"; then
-  echo "Completed: teacher_sft"
+if bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml "$@" 2>&1 | tee "${LOG_DIR}/teacher_lora_qwen3.log"; then
+  echo "Completed: teacher_lora_qwen3"
 else
   status=${PIPESTATUS[0]}
-  echo "Failed: teacher_sft (exit ${status}); dependent Qwen runs were not started." >&2
+  echo "Failed: teacher_lora_qwen3 (exit ${status}); dependent Qwen runs were not started." >&2
   exit "${status}"
 fi
 

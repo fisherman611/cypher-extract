@@ -277,13 +277,13 @@ Train teacher `Qwen/Qwen3-4B-Instruct-2507`. Adapter được lưu tại
 `results/qwen3/teacher_lora`:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_sft.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml
 ```
 
 Nếu chỉ dùng một GPU:
 
 ```bash
-RUN_GPUS=0 bash scripts/train.sh configs/distillation/teacher_sft.yaml
+RUN_GPUS=0 bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml
 ```
 
 ### 4. Train SFT student làm baseline
@@ -356,7 +356,7 @@ train đúng LoRA teacher Llama:
 
 ```bash
 export HF_TOKEN=your_huggingface_token
-RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_sft_llama.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_lora_llama3.yaml
 ```
 
 Adapter được lưu tại `results/llama3/teacher_lora` và mọi preset Llama tự nạp

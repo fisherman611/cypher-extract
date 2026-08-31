@@ -57,8 +57,8 @@ def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> Non
 @pytest.mark.parametrize(
     ("teacher_path", "kd_path"),
     [
-        ("configs/distillation/teacher_sft.yaml", "configs/qwen3/fkl.yaml"),
-        ("configs/distillation/teacher_sft_llama.yaml", "configs/llama3/fkl.yaml"),
+        ("configs/distillation/teacher_lora_qwen3.yaml", "configs/qwen3/fkl.yaml"),
+        ("configs/distillation/teacher_lora_llama3.yaml", "configs/llama3/fkl.yaml"),
     ],
 )
 def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
