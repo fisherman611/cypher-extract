@@ -1,19 +1,20 @@
 import json
+import math
 import sys
 from pathlib import Path
 
 import pytest
 
 import cypher_evaluation.cli as evaluation_cli
-from cypher_evaluation.cli import parse_args, resolve_database, resolve_output_path
+from cypher_evaluation.cli import parse_args, resolve_connection, resolve_database, resolve_output_path
 from cypher_evaluation.merge import merge_graph_evaluations
 from cypher_evaluation.metrics import (
-    _provenance_query,
     executable,
     execution_accuracy,
+    get_ps_cypher,
     provenance_subgraph_jaccard_similarity,
 )
-from cypher_evaluation.scoring import aggregate_scores, score_records
+from cypher_evaluation.scoring import aggregate_scores, clean_pred_cypher, safe_compute, score_records
 
 
 class FakeConnector:
@@ -44,6 +45,21 @@ def test_cli_defaults_to_cypherbench_nba(monkeypatch):
 def test_database_defaults_to_dotted_graph_name():
     assert resolve_database(None, "flight_accident") == "flight.accident"
     assert resolve_database("custom-db", "flight_accident") == "custom-db"
+
+
+def test_neo4j_text2cypher_uses_reference_connection_defaults():
+    args = evaluation_cli.argparse.Namespace(
+        name="neo4j_text2cypher_db",
+        graph="movies",
+        uri=None,
+        username=None,
+        password=None,
+        database=None,
+    )
+    uri, username, password, database, config = resolve_connection(args)
+    assert uri == "bolt+s://demo.neo4jlabs.com:7687"
+    assert (username, password, database) == ("movies", "movies", "movies")
+    assert config.debug is True
 
 
 def test_cli_uses_configured_timeout_for_connectivity(monkeypatch, tmp_path: Path):
@@ -113,10 +129,16 @@ def test_merge_graph_evaluations_builds_per_graph_and_overall_summary(tmp_path: 
     assert summary == {
         "count": 2,
         "graphs": {
-            "geography": {"count": 1, "overall": {"executable": 1.0}},
-            "nba": {"count": 1, "overall": {"executable": 0.0}},
+            "geography": {
+                "count": 1,
+                "overall": {"execution_accuracy": math.nan, "psjs": math.nan, "executable": 1.0},
+            },
+            "nba": {
+                "count": 1,
+                "overall": {"execution_accuracy": math.nan, "psjs": math.nan, "executable": 0.0},
+            },
         },
-        "overall": {"executable": 0.5},
+        "overall": {"execution_accuracy": math.nan, "psjs": math.nan, "executable": 0.5},
     }
 
 
@@ -179,52 +201,52 @@ def test_execution_accuracy_constrains_wide_column_permutations():
     assert execution_accuracy("pred", "gold", connector) == 1.0
 
 
-def test_provenance_query_handles_call_with_union():
+def test_reference_provenance_query_handles_call_with_union():
     query = """CALL {
         MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a
         UNION
         MATCH (c:Company) RETURN c
     } RETURN *"""
-    provenance = _provenance_query(query, "element_id")
+    provenance = get_ps_cypher(query, "element_id", node_element_id_only=True)
     assert "elementId(a)" in provenance
     assert "elementId(b)" in provenance
     assert "elementId(c)" in provenance
     assert " UNION " in provenance
 
 
-def test_provenance_parser_ignores_keywords_and_variables_outside_match():
-    provenance = _provenance_query(
-        "MATCH (n:Movie {title: 'MATCH UNION'}) WHERE any(x IN n.tags WHERE x = 'UNION') RETURN n",
-        "element_id",
+def test_reference_provenance_query_adds_anonymous_variables_exactly():
+    provenance = get_ps_cypher(
+        "MATCH (n:A)-[:R]->(:B {name: 'x'}) RETURN n",
+        "rid",
+        node_element_id_only=True,
     )
-    assert "elementId(n)" in provenance
-    assert "elementId(x)" not in provenance
-    assert provenance.count(" UNION ") == 0
+    assert provenance == (
+        "MATCH (n:A)-[rtmp0:R]->(ntmp0:B {name: 'x'}) "
+        "WITH collect(distinct elementId(n)) + collect(distinct elementId(ntmp0)) AS elemIds "
+        "UNWIND elemIds AS elemId RETURN elemId AS rid"
+    )
 
 
-def test_provenance_parser_does_not_treat_relationship_type_as_where_clause():
-    provenance = _provenance_query(
-        "MATCH (n:Location)<-[r:where]-(m:Character) RETURN n",
-        "element_id",
-    )
-    assert "elementId(n)" in provenance
-    assert "elementId(m)" in provenance
+def test_reference_provenance_parser_is_case_sensitive():
+    provenance = get_ps_cypher("match (n:A) return n", "rid", node_element_id_only=True)
+    assert provenance == "UNWIND [] AS elemId RETURN elemId AS rid"
 
 
 def test_incomplete_call_has_empty_provenance():
-    provenance = _provenance_query(
+    provenance = get_ps_cypher(
         "CALL { MATCH (n:A) RETURN n UNION MATCH (m:B) RETURN m",
         "element_id",
+        node_element_id_only=True,
     )
-    assert provenance == "UNWIND [] AS id RETURN id AS element_id"
+    assert provenance == "UNWIND [] AS elemId RETURN elemId AS element_id"
 
 
 def test_psjs_computes_node_set_jaccard():
     class ProvenanceConnector:
         def run_query(self, cypher, *, timeout=None, **parameters):
-            if "target_id" in cypher:
-                return [{"target_id": "1"}, {"target_id": "2"}]
-            return [{"predicted_id": "2"}, {"predicted_id": "3"}]
+            if "elemId1" in cypher:
+                return [{"elemId1": "1"}, {"elemId1": "2"}]
+            return [{"elemId2": "2"}, {"elemId2": "3"}]
 
     score = provenance_subgraph_jaccard_similarity(
         "MATCH (n:B) RETURN n",
@@ -247,20 +269,46 @@ def test_score_records_matches_inference_output_fields():
         metrics=("execution_accuracy", "executable"),
     )
     assert rows[0]["metrics"] == {"execution_accuracy": 1.0, "executable": 1.0}
-    assert aggregate_scores(rows)["overall"] == {"executable": 1.0, "execution_accuracy": 1.0}
+    assert aggregate_scores(rows, metrics=("execution_accuracy", "executable"))["overall"] == {
+        "execution_accuracy": 1.0,
+        "executable": 1.0,
+    }
 
 
-def test_score_records_recovers_cypher_from_malformed_model_json():
+def test_score_records_does_not_recover_malformed_model_json_like_reference():
     connector = FakeConnector({"RETURN 1": [{"value": 1}]})
     rows = score_records(
         [{"id": "one", "predicted_cypher": '{"cypher": "RETURN 1"', "reference_cypher": "RETURN 1"}],
         connector,
         metrics=("executable",),
     )
-    assert rows[0]["predicted_cypher"] == "RETURN 1"
-    assert rows[0]["metrics"] == {"executable": 1.0}
+    assert rows[0]["predicted_cypher"] == '{"cypher": "RETURN 1"'
+    assert rows[0]["metrics"] == {"executable": 0.0}
 
 
 def test_aggregate_scores_accepts_legacy_cypher_metrics_key():
-    summary = aggregate_scores([{"cypher_metrics": {"executable": 1.0}}])
-    assert summary == {"count": 1, "overall": {"executable": 1.0}}
+    summary = aggregate_scores([{"cypher_metrics": {"executable": 1.0}}], metrics=("executable",))
+    assert summary == {"overall": {"executable": 1.0}}
+
+
+def test_reference_cleanup_only_strips_end_of_turn_suffix():
+    assert clean_pred_cypher(" RETURN 1 ") == " RETURN 1 "
+    assert clean_pred_cypher(" RETURN 1 <end_of_turn>") == "RETURN 1"
+
+
+def test_reference_aggregate_turns_metric_errors_into_zero_and_rounds():
+    rows = [
+        {"metrics": {"execution_accuracy": 1.0}},
+        {"metrics": {"execution_accuracy": {"error": "gold failed"}}},
+        {"metrics": {"execution_accuracy": 1.0}},
+    ]
+    assert aggregate_scores(rows, metrics=("execution_accuracy",)) == {
+        "overall": {"execution_accuracy": 0.6667}
+    }
+
+
+def test_reference_target_execution_error_is_preserved_by_safe_compute():
+    connector = FakeConnector({"gold": RuntimeError("database unavailable")})
+    assert safe_compute("execution_accuracy", "pred", "gold", connector) == {
+        "error": "execution_accuracy failed: database unavailable"
+    }

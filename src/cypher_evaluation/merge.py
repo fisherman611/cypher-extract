@@ -44,8 +44,12 @@ def _normalized_record(record: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(metrics, dict) or not metrics:
         raise ValueError(f"Record {record.get('id', '<unknown>')!r} has no metrics")
     for name, value in metrics.items():
-        if not isinstance(value, int | float):
-            raise ValueError(f"Metric {name!r} for record {record.get('id', '<unknown>')!r} is not numeric")
+        is_error = isinstance(value, dict) and isinstance(value.get("error"), str)
+        if not isinstance(value, int | float) and not is_error:
+            raise ValueError(
+                f"Metric {name!r} for record {record.get('id', '<unknown>')!r} "
+                "must be numeric or an error object"
+            )
     normalized = {**record, "metrics": metrics}
     normalized.pop("cypher_metrics", None)
     return normalized
@@ -101,11 +105,11 @@ def merge_graph_evaluations(
                 raise ValueError(f"Duplicate evaluation record id: {record_id}")
             seen_ids.add(record_id)
         merged.extend(rows)
-        per_graph[graph] = aggregate_scores(rows)
+        per_graph[graph] = {"count": len(rows), **aggregate_scores(rows)}
 
     overall = aggregate_scores(merged)
     summary = {
-        "count": overall["count"],
+        "count": len(merged),
         "graphs": per_graph,
         "overall": overall["overall"],
     }

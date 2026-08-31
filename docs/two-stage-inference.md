@@ -136,6 +136,20 @@ Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng da
 ảnh hưởng generator; selector dùng greedy decoding với tối đa một new token và
 generator dùng tối đa 256 new tokens.
 
+Để eval toàn bộ output sau inference (PowerShell hoặc Linux Bash), dùng:
+
+```powershell
+.\scripts\evaluate_cypher_all.ps1
+```
+
+```bash
+bash scripts/evaluate_cypher_all.sh
+```
+
+Hai script đều chạy theo thứ tự `seed -> method -> dataset -> graph`, chỉ merge
+khi đã chấm đủ graph của dataset. Có thể giới hạn phạm vi bằng tham số PowerShell
+`-Seeds`, `-Methods`, `-Datasets`, hoặc các biến Bash `SEEDS`, `METHODS`, `DATASETS`.
+
 Eval graph `nba` cho toàn bộ seed trên PowerShell:
 
 ```powershell

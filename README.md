@@ -657,11 +657,38 @@ python -m pip install -e ".[evaluation]"
 
 Copy-Item .env.example .env
 # Sau đó sửa NEO4J_PASSWORD và các cấu hình Neo4j trong .env.
+# Nên dùng tài khoản Neo4j read-only vì metric sẽ thực thi trực tiếp Cypher dự đoán.
 
 evaluate-cypher `
   --input results/inference/qwen3/seed10/sft/cypherbench/generator_predictions.jsonl `
   --name cypherbench-db `
   --graph nba
+```
+
+Logic của cả ba metric, preprocessing `<end_of_turn>` và cách aggregate được giữ
+theo `CypherKD_ref`; xem bảng đối chiếu tại
+[`docs/cypherkd-metric-parity.md`](docs/cypherkd-metric-parity.md).
+
+Chạy toàn bộ seed, method, dataset và graph bằng script có sẵn. Script hoàn tất
+một seed rồi mới chuyển sang seed tiếp theo, và tự merge sau mỗi dataset:
+
+```powershell
+.\scripts\evaluate_cypher_all.ps1
+```
+
+```bash
+bash scripts/evaluate_cypher_all.sh
+```
+
+Mặc định script tự phát hiện method trong từng folder `seed<seed>`. Có thể chỉ
+chấm một phần, ví dụ SFT/CypherBench:
+
+```powershell
+.\scripts\evaluate_cypher_all.ps1 -Methods sft -Datasets cypherbench
+```
+
+```bash
+METHODS=sft DATASETS=cypherbench bash scripts/evaluate_cypher_all.sh
 ```
 
 Eval toàn bộ 5 inference seed cho SFT/CypherBench graph `nba`:
@@ -721,7 +748,8 @@ Có thể chọn metric với `--metrics execution_accuracy executable`. CLI t�
 `NEO4J_URI`, `NEO4J_USERNAME`, và `NEO4J_PASSWORD` từ `.env`. Database được chọn
 bằng graph (`flight_accident` được đổi thành database `flight.accident`) đúng theo
 CypherKD. `cypherbench-db` và `mind-the-query-db` là logical connector name, chọn
-bằng `--name`; graph chọn bằng `--graph`, mặc định là `nba`. Có thể dùng
+bằng `--name`. `neo4j_text2cypher_db` dùng endpoint demo và username/password bằng
+tên graph, đúng cấu hình reference. Graph chọn bằng `--graph`, mặc định là `nba`. Có thể dùng
 `--database` để override database thực tế. Với command trên, CLI ghi kết quả từng
 mẫu vào `results/evaluation/qwen3/seed10/sft/cypherbench/nba/cypher_scores.jsonl` và
 trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng folder.

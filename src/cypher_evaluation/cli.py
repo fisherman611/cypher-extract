@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,7 +12,26 @@ from .metrics import METRICS
 from .neo4j import Neo4jConnector
 from .scoring import aggregate_scores, read_records, score_records, write_jsonl
 
-CONNECTOR_NAMES = ("cypherbench-db", "mind-the-query-db")
+
+@dataclass(frozen=True)
+class DatasetConnection:
+    uri: str
+    dotted_database: bool
+    subset_credentials: bool = False
+    debug: bool = False
+
+
+DATASET_CONNECTIONS = {
+    "cypherbench-db": DatasetConnection("neo4j://127.0.0.1:7687", dotted_database=True),
+    "mind-the-query-db": DatasetConnection("neo4j://127.0.0.1:7687", dotted_database=True),
+    "neo4j_text2cypher_db": DatasetConnection(
+        "bolt+s://demo.neo4jlabs.com:7687",
+        dotted_database=False,
+        subset_credentials=True,
+        debug=True,
+    ),
+}
+CONNECTOR_NAMES = tuple(DATASET_CONNECTIONS)
 DEFAULT_CONNECTOR_NAME = "cypherbench-db"
 DEFAULT_GRAPH = "nba"
 
@@ -26,9 +46,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output JSONL path; defaults to the matching results/evaluation/.../<graph>/ folder",
     )
-    parser.add_argument("--uri", default=os.getenv("NEO4J_URI", "neo4j://127.0.0.1:7687"))
-    parser.add_argument("--username", default=os.getenv("NEO4J_USERNAME", "neo4j"))
-    parser.add_argument("--password", default=os.getenv("NEO4J_PASSWORD"))
+    parser.add_argument("--uri", default=None, help="Override the dataset-specific Neo4j URI")
+    parser.add_argument("--username", default=None)
+    parser.add_argument("--password", default=None)
     parser.add_argument(
         "--name",
         choices=CONNECTOR_NAMES,
@@ -52,8 +72,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_database(database: str | None, graph: str) -> str:
-    return database or graph.replace("_", ".")
+def resolve_database(database: str | None, graph: str, name: str = DEFAULT_CONNECTOR_NAME) -> str:
+    if database:
+        return database
+    config = DATASET_CONNECTIONS[name]
+    return graph.replace("_", ".") if config.dotted_database else graph
+
+
+def resolve_connection(args: argparse.Namespace) -> tuple[str, str, str, str, DatasetConnection]:
+    config = DATASET_CONNECTIONS[args.name]
+    if config.subset_credentials:
+        uri = args.uri or config.uri
+        username = args.username or args.graph
+        password = args.password or args.graph
+    else:
+        uri = args.uri or os.getenv("NEO4J_URI") or config.uri
+        username = args.username or os.getenv("NEO4J_USERNAME", "neo4j")
+        password = args.password or os.getenv("NEO4J_PASSWORD")
+        if not password:
+            raise SystemExit("Set NEO4J_PASSWORD in .env or pass --password")
+    database = resolve_database(args.database, args.graph, args.name)
+    return uri, username, password, database, config
 
 
 def resolve_output_path(input_path: Path, output_path: Path | None, graph: str) -> Path:
@@ -76,14 +115,19 @@ def resolve_output_path(input_path: Path, output_path: Path | None, graph: str) 
 
 def main() -> None:
     args = parse_args()
-    if not args.password:
-        raise SystemExit("Set NEO4J_PASSWORD in .env or pass --password")
     records = read_records(args.input)
     if args.graph:
         records = [row for row in records if row.get("graph") == args.graph]
-    database = resolve_database(args.database, args.graph)
+    uri, username, password, database, connection = resolve_connection(args)
     output_path = resolve_output_path(args.input, args.output, args.graph)
-    with Neo4jConnector(args.uri, args.username, args.password, database=database) as connector:
+    with Neo4jConnector(
+        uri,
+        username,
+        password,
+        database=database,
+        name=args.name,
+        debug=connection.debug,
+    ) as connector:
         connector.verify_connectivity(timeout=args.timeout)
         scored = score_records(
             records,
@@ -95,7 +139,7 @@ def main() -> None:
             desc=f"Evaluating {args.name}/{database}",
         )
     write_jsonl(output_path, scored)
-    summary = aggregate_scores(scored)
+    summary = aggregate_scores(scored, metrics=args.metrics)
     summary_path = output_path.with_name(f"{output_path.stem}_summary.json")
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(output_path), "summary": str(summary_path), **summary}, indent=2))
