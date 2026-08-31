@@ -31,7 +31,7 @@ from schema_grounding.inference.pipeline import (  # noqa: E402
     prepare_run_directory,
     run_dataset_pipeline,
 )
-from schema_grounding.inference.prompting import QWEN3_NOTHINK_TEMPLATE_NAME, PromptTemplates  # noqa: E402
+from schema_grounding.inference.prompting import PromptTemplates, chat_template_metadata  # noqa: E402
 
 DEFAULT_INFERENCE_SEEDS = (10, 42, 50, 100, 1234)
 
@@ -188,7 +188,7 @@ def main() -> None:
                     "top_k": options.top_k,
                     "num_beams": options.num_beams,
                 },
-                "chat_template": QWEN3_NOTHINK_TEMPLATE_NAME,
+                "chat_template": chat_template_metadata(args.model_family)["name"],
                 "output_dir": str(args.output_dir.resolve()),
             },
             ensure_ascii=False,
@@ -233,9 +233,9 @@ def main() -> None:
             checkpoint = checkpoints[method]
             runner = None
             if any(model_runner_required(output_directory) for _, output_directory, _ in planned_runs):
-                adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
-                runner = ModelRunner.from_adapter(
-                    adapter_path,
+                checkpoint_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
+                runner = ModelRunner.from_checkpoint(
+                    checkpoint_path,
                     dtype=args.dtype,
                     device=args.device,
                     merge_adapter=not args.no_merge_adapter,

@@ -25,6 +25,7 @@ from .da_kd import (
 )
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
+from .generation import resolve_eos_token_ids
 from .losses import compute_distillation_loss, compute_hpd_loss
 from .sampling import DifficultyAwareDistributedBatchSampler, TemplateDistributedBatchSampler
 from .utils import all_gather_tensor, distributed_is_initialized, get_rank, get_world_size, print_rank
@@ -165,6 +166,10 @@ class KDTrainer(CustomSeq2SeqTrainer):
                 top_k=self.generating_args.top_k,
                 temperature=self.generating_args.temperature,
                 repetition_penalty=self.generating_args.repetition_penalty,
+                eos_token_ids=resolve_eos_token_ids(
+                    self.processing_class,
+                    getattr(self.model, "generation_config", None),
+                ),
             )
             self.add_callback(_DistillMInitialEvalCallback(self))
             self.add_callback(_DistillMStateCallback(self))

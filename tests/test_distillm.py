@@ -67,7 +67,7 @@ def test_scheduler_fills_buffer_with_fresh_rollouts_before_replay() -> None:
 
 
 class _Tokenizer:
-    pad_token_id = 2
+    pad_token_id = 0
     eos_token_id = 2
 
 
@@ -98,7 +98,7 @@ def test_student_rollout_keeps_full_chat_context_and_masks_it() -> None:
         "labels": torch.tensor([[-100, -100, -100, 20, 2, -100], [-100, -100, -100, 40, 2, -100]]),
     }
     features = generator.generate(_GenerateModel(), inputs)
-    assert generator.generation_config.pad_token_id == _Tokenizer.eos_token_id
+    assert generator.generation_config.pad_token_id == _Tokenizer.pad_token_id
     assert features[0]["input_ids"].tolist() == [10, 2, 12, 7]
     assert features[0]["labels"].tolist() == [-100, -100, -100, 7]
     assert features[1]["input_ids"].tolist() == [30, 31, 8]
@@ -136,3 +136,29 @@ def test_student_rollout_discards_immediate_eos_without_creating_empty_labels() 
         "labels": torch.tensor([[-100, -100, -100, 20, 2]]),
     }
     assert generator.generate(_ImmediateEosModel(), inputs) == []
+
+
+def test_student_rollout_stops_on_every_model_declared_eos() -> None:
+    class AlternateEosModel(torch.nn.Module):
+        def generate(self, input_ids, attention_mask, **kwargs):
+            del attention_mask, kwargs
+            response = torch.tensor([[7, 3, 8]], device=input_ids.device)
+            return SimpleNamespace(sequences=torch.cat((input_ids, response), dim=1))
+
+    generator = StudentRolloutGenerator(
+        tokenizer=_Tokenizer(),
+        cutoff_len=8,
+        rollout_context_length=5,
+        do_sample=False,
+        eos_token_ids=[2, 3],
+    )
+    inputs = {
+        "input_ids": torch.tensor([[10, 11, 12, 20, 2]]),
+        "attention_mask": torch.ones(1, 5, dtype=torch.long),
+        "labels": torch.tensor([[-100, -100, -100, 20, 2]]),
+    }
+
+    features = generator.generate(AlternateEosModel(), inputs)
+
+    assert generator.generation_config.eos_token_id == [2, 3]
+    assert features[0]["input_ids"].tolist() == [10, 11, 12, 7]

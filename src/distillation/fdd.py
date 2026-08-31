@@ -95,6 +95,11 @@ def fdd_loss(
         student_hidden_logits = student_lm_head(student_hidden)
         with torch.no_grad():
             teacher_hidden_logits = teacher_lm_head(teacher_hidden)
+        shared_vocab_size = min(student_hidden_logits.shape[-1], teacher_hidden_logits.shape[-1])
+        if shared_vocab_size <= 0:
+            raise ValueError("Student and teacher vocabularies must be non-empty.")
+        student_hidden_logits = student_hidden_logits[..., :shared_vocab_size]
+        teacher_hidden_logits = teacher_hidden_logits[..., :shared_vocab_size]
         current_trajectory_loss = soft_label_distillation_loss(
             student_hidden_logits, teacher_hidden_logits, attention_mask
         )

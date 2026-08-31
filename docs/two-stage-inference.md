@@ -49,7 +49,7 @@ Base model được đọc từ `adapter_config.json`, vì vậy student adapter
 Chạy toàn bộ model và cả ba benchmark:
 
 ```bash
-bash scripts/infer_all_qwen.sh
+bash scripts/infer_all_qwen3.sh
 ```
 
 Hoặc chạy trực tiếp trên Linux:

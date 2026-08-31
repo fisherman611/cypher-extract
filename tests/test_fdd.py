@@ -51,6 +51,28 @@ def test_fdd_is_finite_and_backpropagates_to_student() -> None:
     assert teacher_head.weight.grad is None
 
 
+def test_fdd_aligns_different_padded_vocab_sizes() -> None:
+    generator = torch.Generator().manual_seed(19)
+    student_hidden = tuple(torch.randn(1, 3, 4, generator=generator, requires_grad=True) for _ in range(3))
+    teacher_hidden = tuple(torch.randn(1, 3, 6, generator=generator) for _ in range(3))
+    student_head = torch.nn.Linear(4, 7, bias=False)
+    teacher_head = torch.nn.Linear(6, 9, bias=False)
+
+    actual = fdd_loss(
+        student_hidden,
+        teacher_hidden,
+        torch.ones(1, 3),
+        student_head,
+        teacher_head,
+        [1, 2],
+        [1, 2],
+    )
+    actual.backward()
+
+    assert torch.isfinite(actual)
+    assert student_hidden[1].grad is not None
+
+
 def test_fdd_rejects_single_layer_mapping() -> None:
     hidden = (torch.zeros(1, 2, 3), torch.zeros(1, 2, 3))
     head = torch.nn.Linear(3, 4, bias=False)

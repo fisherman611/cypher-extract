@@ -42,6 +42,13 @@ _INFERENCE_FILES = (
     "added_tokens.json",
     "chat_template.jinja",
     "generation_config.json",
+    "config.json",
+    "model.safetensors",
+    "model.safetensors.index.json",
+    "model-*.safetensors",
+    "pytorch_model.bin",
+    "pytorch_model.bin.index.json",
+    "pytorch_model-*.bin",
 )
 
 
@@ -115,7 +122,7 @@ def download_inference_checkpoint(
     cache_dir: str | Path | None = None,
     token: str | None = None,
 ) -> Path:
-    """Download an adapter without DeepSpeed/optimizer checkpoint state."""
+    """Download adapter or full-model inference files without optimizer state."""
 
     token = token or os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
     allow_patterns = [f"{checkpoint.subfolder}/{filename}" for filename in _INFERENCE_FILES]
@@ -127,9 +134,17 @@ def download_inference_checkpoint(
         token=token,
     )
     directory = Path(snapshot, checkpoint.subfolder)
-    required = (directory / "adapter_config.json", directory / "adapter_model.safetensors")
-    if not required[0].is_file():
-        raise FileNotFoundError(f"Missing adapter config in {checkpoint.uri}")
-    if not required[1].is_file() and not (directory / "adapter_model.bin").is_file():
-        raise FileNotFoundError(f"Missing adapter weights in {checkpoint.uri}")
+    adapter_config = directory / "adapter_config.json"
+    if adapter_config.is_file():
+        if not (directory / "adapter_model.safetensors").is_file() and not (
+            directory / "adapter_model.bin"
+        ).is_file():
+            raise FileNotFoundError(f"Missing adapter weights in {checkpoint.uri}")
+    else:
+        full_model_files = (
+            list(directory.glob("model*.safetensors"))
+            + list(directory.glob("pytorch_model*.bin"))
+        )
+        if not (directory / "config.json").is_file() or not full_model_files:
+            raise FileNotFoundError(f"Missing adapter or full-model weights in {checkpoint.uri}")
     return directory

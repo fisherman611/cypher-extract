@@ -21,10 +21,9 @@ from schema_grounding.inference.merge import merge_schema_units
 from schema_grounding.inference.outputs import ResumableJsonl, write_json_atomic, write_json_line
 from schema_grounding.inference.parsing import parse_selector_label
 from schema_grounding.inference.prompting import (
-    QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
-    QWEN3_NOTHINK_TEMPLATE_NAME,
     Message,
     PromptTemplates,
+    chat_template_metadata,
 )
 from schema_grounding.selector_labels import (
     NEGATIVE_SELECTOR_LABEL,
@@ -490,10 +489,7 @@ def prepare_run_directory(
             "generation_test": _file_sha256(spec.generation_test),
         },
         "prompt_fingerprints": templates.fingerprints(),
-        "chat_template": {
-            "name": QWEN3_NOTHINK_TEMPLATE_NAME,
-            "fingerprint": QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
-        },
+        "chat_template": chat_template_metadata(checkpoint.subfolder.split("/", 1)[0]),
         "selector_protocol": {
             "positive_label": POSITIVE_SELECTOR_LABEL,
             "negative_label": NEGATIVE_SELECTOR_LABEL,

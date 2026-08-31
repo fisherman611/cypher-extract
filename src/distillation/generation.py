@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
+
+
+def _token_ids(value: Any) -> Iterable[int]:
+    if isinstance(value, int):
+        yield value
+    elif isinstance(value, list | tuple | set):
+        for token_id in value:
+            if isinstance(token_id, int):
+                yield token_id
+
+
+def resolve_eos_token_ids(tokenizer: Any, generation_config: Any | None = None) -> list[int]:
+    """Return the model-declared EOS IDs plus the tokenizer EOS, in stable order."""
+
+    candidates = []
+    if generation_config is not None:
+        candidates.extend(_token_ids(getattr(generation_config, "eos_token_id", None)))
+    candidates.extend(_token_ids(getattr(tokenizer, "eos_token_id", None)))
+    eos_token_ids = list(dict.fromkeys(token_id for token_id in candidates if token_id >= 0))
+    if not eos_token_ids:
+        raise ValueError("Generation requires at least one valid EOS token ID.")
+    return eos_token_ids
+
+
+def generation_eos_value(eos_token_ids: list[int]) -> int | list[int]:
+    """Use Transformers' scalar form for one EOS and list form for multiple EOS IDs."""
+
+    if not eos_token_ids:
+        raise ValueError("Generation requires at least one EOS token ID.")
+    return eos_token_ids[0] if len(eos_token_ids) == 1 else eos_token_ids

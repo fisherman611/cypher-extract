@@ -6,6 +6,8 @@ from typing import Any
 import torch
 from transformers import GenerationConfig
 
+from ..generation import generation_eos_value, resolve_eos_token_ids
+
 IGNORE_INDEX = -100
 
 
@@ -19,23 +21,26 @@ class StudentRolloutGenerator:
     top_k: int = 0
     temperature: float = 0.5
     repetition_penalty: float = 1.0
+    eos_token_ids: list[int] | None = None
     generation_config: GenerationConfig = field(init=False, repr=False)
+    _stop_token_ids: frozenset[int] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not 0 < self.rollout_context_length < self.cutoff_len:
             raise ValueError("rollout_context_length must be positive and smaller than cutoff_len.")
-        if self.tokenizer.pad_token_id is None or self.tokenizer.eos_token_id is None:
+        if self.tokenizer.pad_token_id is None:
             raise ValueError("Student rollout generation requires tokenizer pad and EOS tokens.")
+        eos_token_ids = self.eos_token_ids or resolve_eos_token_ids(self.tokenizer)
+        self.eos_token_ids = list(dict.fromkeys(eos_token_ids))
+        self._stop_token_ids = frozenset((*self.eos_token_ids, self.tokenizer.pad_token_id))
         self.generation_config = GenerationConfig(
             do_sample=self.do_sample,
             top_p=self.top_p,
             top_k=self.top_k,
             temperature=self.temperature,
             repetition_penalty=self.repetition_penalty,
-            eos_token_id=self.tokenizer.eos_token_id,
-            # The reference sampler pads completed generations with EOS and
-            # removes those tokens before adding the rollout to replay.
-            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=generation_eos_value(self.eos_token_ids),
+            pad_token_id=self.tokenizer.pad_token_id,
             return_dict_in_generate=True,
             output_scores=False,
         )
@@ -91,12 +96,10 @@ class StudentRolloutGenerator:
         return input_ids, attention_mask
 
     def _trim_response(self, response_ids: torch.Tensor) -> torch.Tensor:
-        eos_id = self.tokenizer.eos_token_id
-        pad_id = self.tokenizer.pad_token_id
         kept: list[torch.Tensor] = []
         for token in response_ids:
             token_id = int(token.item())
-            if token_id == pad_id or token_id == eos_id:
+            if token_id in self._stop_token_ids:
                 break
             kept.append(token)
         if not kept:

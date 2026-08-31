@@ -379,7 +379,36 @@ LLAMA3_LOG_DIR=results/llama3/custom_logs \
 RUN_GPUS=0,1 bash scripts/train_all_llama3.sh num_train_epochs=1
 ```
 
+Chạy inference cho model family Llama 3:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_llama3.sh \
+  --repo-id distillation-sql/nothing-extract
+```
+
 Không dùng adapter Qwen cho config Llama hoặc ngược lại.
+
+### Qwen2.5-Coder 3B/7B
+
+Các preset trong `configs/qwen2.5_coder` dùng
+`Qwen/Qwen2.5-Coder-3B-Instruct` làm student và
+`Qwen/Qwen2.5-Coder-7B-Instruct` làm teacher. Template phải là `qwen`;
+EOS generation được lấy từ generation config của model để hỗ trợ cả
+`<|im_end|>` và `<|endoftext|>`.
+
+Train teacher LoRA rồi chạy toàn bộ SFT/KD preset:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
+```
+
+Chạy inference cho các checkpoint đã upload dưới model family
+`qwen2.5_coder`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen2_5_coder.sh \
+  --repo-id distillation-sql/nothing-extract
+```
 
 ### 7. GPU, resume và kiểm tra
 
@@ -497,7 +526,7 @@ Chạy đủ 13 model trên cả ba benchmark bằng GPU 0:
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3.sh \
   --selector-batch-size 128 \
   --generator-batch-size 16 \
   --dtype bfloat16 \
@@ -512,7 +541,7 @@ sample, sau đó ghi nhớ batch size an toàn cho các batch có cùng token bu
 Để chỉ định Hugging Face cache qua CLI:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3.sh \
   --cache-dir /mnt/models/huggingface \
   --selector-batch-size 128 \
   --generator-batch-size 16

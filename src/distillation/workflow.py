@@ -4,6 +4,7 @@ from typing import Any
 
 from .arguments import DistillationArguments
 from .data import register_tool_dataset_converters
+from .generation import generation_eos_value, resolve_eos_token_ids
 from .metrics import ComputeTaskMetrics
 from .trainer import KDTrainer
 
@@ -71,10 +72,8 @@ def run_kd(
     # the prepared corpus is well below this budget.
     gen_kwargs = generating_args.to_dict(obey_generation_config=True)
     gen_kwargs.update(do_sample=False, max_new_tokens=256, pad_token_id=tokenizer.pad_token_id)
-    extra_eos_ids = getattr(tokenizer, "additional_special_tokens_ids", []) or []
-    eos_ids = [tokenizer.eos_token_id, *extra_eos_ids]
-    valid_eos_ids = (token_id for token_id in eos_ids if token_id is not None and token_id >= 0)
-    gen_kwargs["eos_token_id"] = list(dict.fromkeys(valid_eos_ids))
+    eos_token_ids = resolve_eos_token_ids(tokenizer, getattr(model, "generation_config", None))
+    gen_kwargs["eos_token_id"] = generation_eos_value(eos_token_ids)
 
     trainer = KDTrainer(
         model=model,

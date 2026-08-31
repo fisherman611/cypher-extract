@@ -6,14 +6,15 @@ import yaml
 from distillation.arguments import DistillationArguments
 from distillation.cli import _validate_deepspeed_platform, _validate_required_placeholders
 
+MODEL_FAMILIES = ("llama3", "qwen3", "qwen2.5_coder")
 CONFIG_PATHS = sorted(
     path
-    for family in ("llama3", "qwen3")
+    for family in MODEL_FAMILIES
     for path in (Path("configs") / family).glob("*.yaml")
 )
 ALL_TRAIN_CONFIG_PATHS = sorted(
     path
-    for directory in ("distillation", "llama3", "qwen3")
+    for directory in ("distillation", *MODEL_FAMILIES)
     for path in (Path("configs") / directory).glob("*.yaml")
 )
 REDUNDANT_RUNTIME_DEFAULTS = {
@@ -41,7 +42,7 @@ BASELINE_CONFIG_NAMES = {
 }
 
 
-@pytest.mark.parametrize("family", ["llama3", "qwen3"])
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
 def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     config_paths = list((Path("configs") / family).glob("*.yaml"))
     actual = {path.name for path in config_paths}
@@ -59,6 +60,7 @@ def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> Non
     [
         ("configs/distillation/teacher_lora_qwen3.yaml", "configs/qwen3/fkl.yaml"),
         ("configs/distillation/teacher_lora_llama3.yaml", "configs/llama3/fkl.yaml"),
+        ("configs/distillation/teacher_lora_qwen2.5_coder.yaml", "configs/qwen2.5_coder/fkl.yaml"),
     ],
 )
 def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
@@ -83,6 +85,7 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
         Path("configs/distillation/student_sft.yaml"),
         Path("configs/llama3/sft.yaml"),
         Path("configs/qwen3/sft.yaml"),
+        Path("configs/qwen2.5_coder/sft.yaml"),
     ],
 )
 def test_student_sft_configs_use_full_finetuning(config_path: Path) -> None:
@@ -105,6 +108,22 @@ def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     if config["distill_method"].startswith("fdd_"):
         assert config["student_layer_mapping"] == [13, 27]
         assert config["teacher_layer_mapping"] == [17, 35]
+
+
+@pytest.mark.parametrize("config_path", sorted(Path("configs/qwen2.5_coder").glob("*.yaml")))
+def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["model_name_or_path"] == "Qwen/Qwen2.5-Coder-3B-Instruct"
+    if config["distill_method"] != "sft":
+        assert config["ref_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
+    assert config["template"] == "qwen"
+    assert config["cutoff_len"] == 892
+    assert config["per_device_train_batch_size"] == 1
+    assert config["per_device_eval_batch_size"] == 8
+    assert config["gradient_accumulation_steps"] == 16
+    if config["distill_method"].startswith("fdd_"):
+        assert config["student_layer_mapping"] == [17, 35]
+        assert config["teacher_layer_mapping"] == [13, 27]
 
 
 def test_adaptive_method_requires_student_generation() -> None:
@@ -203,7 +222,7 @@ def test_da_kd_rejects_zero_bdl_and_invalid_audit_size() -> None:
         DistillationArguments(distill_method="da_kd", da_kd_audit_samples=-1)
 
 
-@pytest.mark.parametrize("family", ["qwen3", "llama3"])
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
 def test_da_kd_configs_keep_five_epochs_and_enable_cypher_audit(family: str) -> None:
     config = yaml.safe_load((Path("configs") / family / "da_kd.yaml").read_text(encoding="utf-8"))
     assert config["num_train_epochs"] == 5
@@ -221,16 +240,22 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     distillation_args, _ = DistillationArguments.split_config(config)
     if distillation_args.uses_kd:
-        expected_adapter = (
-            "results/qwen3/teacher_lora" if config_path.parent.name == "qwen3" else "results/llama3/teacher_lora"
-        )
+        expected_adapter = {
+            "qwen3": "results/qwen3/teacher_lora",
+            "llama3": "results/llama3/teacher_lora",
+            "qwen2.5_coder": "results/qwen2.5_coder/teacher_lora",
+        }[config_path.parent.name]
         assert config["ref_model_adapters"] == expected_adapter
     else:
         assert "ref_model_adapters" not in config
     assert config["dataset"] == "cypher_prepared_train"
     assert config["eval_dataset"] == "cypher_prepared_eval"
     assert config["dataset_dir"] == "data/llamafactory"
-    expected_template = "qwen3_nothink" if config_path.parent.name == "qwen3" else "llama3"
+    expected_template = {
+        "qwen3": "qwen3_nothink",
+        "llama3": "llama3",
+        "qwen2.5_coder": "qwen",
+    }[config_path.parent.name]
     assert config["template"] == expected_template
     assert config["packing"] is False
     assert config["ignore_pad_token_for_loss"] is True
@@ -245,7 +270,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["lr_scheduler_kwargs"] == {"min_lr_rate": expected_min_lr_rate}
     if distillation_args.is_adaptive:
         assert config["student_gen"] is True
-        expected_context_length = 797 if config_path.parent.name == "qwen3" else 810
+        expected_context_length = {"qwen3": 797, "llama3": 810, "qwen2.5_coder": 797}[config_path.parent.name]
         assert config["rollout_context_length"] == expected_context_length
         assert config["repetition_penalty"] == 1.0
     else:

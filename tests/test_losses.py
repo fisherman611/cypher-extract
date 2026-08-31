@@ -83,6 +83,23 @@ def test_causal_alignment_uses_shifted_response_mask() -> None:
     assert unmasked > baseline
 
 
+@pytest.mark.parametrize("method", ["fkl", "rkl", "sfkl", "srkl", "csd", "bdl", "amid"])
+def test_distillation_aligns_different_padded_vocab_sizes(method: str) -> None:
+    generator = torch.Generator().manual_seed(41)
+    student = torch.randn(1, 4, 7, generator=generator, requires_grad=True)
+    teacher = torch.randn(1, 4, 9, generator=generator)
+    labels = torch.tensor([[-100, -100, 3, 8]])
+
+    actual = compute_distillation_loss(method, student, teacher, labels)
+    actual.backward()
+
+    assert torch.isfinite(actual)
+    assert student.grad is not None
+    # Token 8 exists only in the teacher's padded output vocabulary and is
+    # excluded from the shared-vocabulary supervision mask.
+    torch.testing.assert_close(student.grad[:, 2], torch.zeros_like(student.grad[:, 2]))
+
+
 def test_empty_response_mask_is_rejected() -> None:
     logits = torch.zeros(1, 3, 4)
     labels = torch.full((1, 3), -100)

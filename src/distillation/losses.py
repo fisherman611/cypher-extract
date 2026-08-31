@@ -27,12 +27,18 @@ def align_causal_logits_and_labels(
         raise ValueError("labels must have shape [batch, sequence].")
     if student_logits.shape[:2] != teacher_logits.shape[:2] or student_logits.shape[:2] != labels.shape:
         raise ValueError("Student logits, teacher logits, and labels must share batch/sequence dimensions.")
-    if student_logits.shape[-1] != teacher_logits.shape[-1]:
-        raise ValueError("Student and teacher vocabularies must have the same size.")
     if labels.shape[1] < 2:
         raise ValueError("At least two tokens are required for causal distillation.")
 
-    return student_logits[:, :-1], teacher_logits[:, :-1], labels[:, 1:]
+    shared_vocab_size = min(student_logits.shape[-1], teacher_logits.shape[-1])
+    if shared_vocab_size <= 0:
+        raise ValueError("Student and teacher vocabularies must be non-empty.")
+    shifted_labels = labels[:, 1:].masked_fill(labels[:, 1:] >= shared_vocab_size, IGNORE_INDEX)
+    return (
+        student_logits[:, :-1, :shared_vocab_size],
+        teacher_logits[:, :-1, :shared_vocab_size],
+        shifted_labels,
+    )
 
 
 def _masked_token_mean(token_values: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:

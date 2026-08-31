@@ -27,9 +27,15 @@ from schema_grounding.inference.pipeline import (
     run_selector_stage,
 )
 from schema_grounding.inference.prompting import (
+    LLAMA3_TEMPLATE_FINGERPRINT,
+    LLAMA3_TEMPLATE_NAME,
+    QWEN2_5_TEMPLATE_FINGERPRINT,
+    QWEN2_5_TEMPLATE_NAME,
     QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
     QWEN3_NOTHINK_TEMPLATE_NAME,
     PromptTemplates,
+    chat_template_metadata,
+    qwen_template_metadata,
     render_qwen3_nothink,
 )
 from scripts.infer_two_stage import (
@@ -194,6 +200,22 @@ def test_checkpoint_download_excludes_training_state(monkeypatch, tmp_path: Path
     assert download_inference_checkpoint(checkpoint, token="test") == adapter
 
 
+def test_checkpoint_download_accepts_full_model_weights(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 10, "qwen2.5_coder/sft/checkpoint-10")
+    model_dir = tmp_path / checkpoint.subfolder
+    model_dir.mkdir(parents=True)
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    def fake_snapshot_download(**kwargs) -> str:
+        assert f"{checkpoint.subfolder}/model.safetensors" in kwargs["allow_patterns"]
+        assert not any("optimizer" in pattern for pattern in kwargs["allow_patterns"])
+        return str(tmp_path)
+
+    monkeypatch.setattr(checkpoints, "snapshot_download", fake_snapshot_download)
+    assert download_inference_checkpoint(checkpoint, token="test") == model_dir
+
+
 def test_prompt_messages_match_training_format() -> None:
     templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
     generator = templates.generator_messages(
@@ -233,21 +255,44 @@ def test_qwen3_nothink_renderer_exactly_matches_llamafactory_chatml() -> None:
     assert len(QWEN3_NOTHINK_TEMPLATE_FINGERPRINT) == 64
 
 
+def test_qwen2_5_uses_qwen_template_with_the_same_chatml_serialization() -> None:
+    assert qwen_template_metadata("qwen2.5_coder") == {
+        "name": QWEN2_5_TEMPLATE_NAME,
+        "fingerprint": QWEN2_5_TEMPLATE_FINGERPRINT,
+    }
+    assert QWEN2_5_TEMPLATE_NAME == "llamafactory:qwen"
+    assert QWEN2_5_TEMPLATE_FINGERPRINT == QWEN3_NOTHINK_TEMPLATE_FINGERPRINT
+
+
+def test_llama3_inference_records_the_llamafactory_template() -> None:
+    assert chat_template_metadata("llama3") == {
+        "name": LLAMA3_TEMPLATE_NAME,
+        "fingerprint": LLAMA3_TEMPLATE_FINGERPRINT,
+    }
+    assert LLAMA3_TEMPLATE_NAME == "llamafactory:llama3"
+    assert len(LLAMA3_TEMPLATE_FINGERPRINT) == 64
+
+
 def test_model_runner_tokenizes_rendered_llamafactory_template() -> None:
     class RecordingTokenizer:
-        rendered: str | None = None
+        messages = None
+        kwargs = None
 
-        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
-            assert not add_special_tokens
-            self.rendered = text
+        def apply_chat_template(self, messages, **kwargs) -> list[int]:
+            self.messages = messages
+            self.kwargs = kwargs
             return [1, 2, 3]
 
     tokenizer = RecordingTokenizer()
     runner = ModelRunner(model=None, tokenizer=tokenizer, device=torch.device("cpu"))
 
     assert runner.prompt_length([{"role": "user", "content": "Question"}]) == 3
-    assert tokenizer.rendered == "<|im_start|>user\nQuestion<|im_end|>\n<|im_start|>assistant\n"
-    assert "<think>" not in tokenizer.rendered
+    assert tokenizer.messages == [{"role": "user", "content": "Question"}]
+    assert tokenizer.kwargs == {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "enable_thinking": False,
+    }
 
 
 class FakeRunner:
@@ -312,6 +357,7 @@ def test_inference_options_enforces_one_token_selector_protocol() -> None:
 def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenizer(monkeypatch, tmp_path: Path) -> None:
     adapter = tmp_path / "adapter"
     adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
     (adapter / "tokenizer_config.json").write_text("{}", encoding="utf-8")
     calls: dict[str, tuple] = {}
 
@@ -346,6 +392,40 @@ def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenize
     assert calls["tokenizer"] == ("owner/base", {"revision": "base-commit", "use_fast": True})
     assert calls["model"][0] == "owner/base"
     assert calls["model"][1]["revision"] == "base-commit"
+
+
+def test_model_runner_loads_full_checkpoint_without_peft(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "full"
+    checkpoint.mkdir()
+    calls: dict[str, str] = {}
+
+    class DummyModel:
+        def to(self, device):
+            calls["device"] = str(device)
+            return self
+
+        def eval(self):
+            return self
+
+    def fake_tokenizer(source, **kwargs):
+        calls["tokenizer"] = str(source)
+        return SimpleNamespace(pad_token_id=0, padding_side="right")
+
+    def fake_model(source, **kwargs):
+        calls["model"] = str(source)
+        return DummyModel()
+
+    monkeypatch.setattr(inference_model.AutoTokenizer, "from_pretrained", fake_tokenizer)
+    monkeypatch.setattr(inference_model.AutoModelForCausalLM, "from_pretrained", fake_model)
+    monkeypatch.setattr(
+        inference_model.PeftConfig,
+        "from_pretrained",
+        lambda path: pytest.fail("PEFT must not load for a full checkpoint"),
+    )
+
+    ModelRunner.from_checkpoint(checkpoint, device="cpu")
+
+    assert calls == {"tokenizer": str(checkpoint), "model": str(checkpoint), "device": "cpu"}
 
 
 def test_model_runner_remembers_safe_batch_size_after_oom(monkeypatch) -> None:

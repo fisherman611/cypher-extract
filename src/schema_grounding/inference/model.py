@@ -9,7 +9,8 @@ import torch
 from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from schema_grounding.inference.prompting import Message, render_qwen3_nothink
+from distillation.generation import generation_eos_value, resolve_eos_token_ids
+from schema_grounding.inference.prompting import Message
 
 _DTYPES = {
     "auto": "auto",
@@ -34,9 +35,9 @@ class ModelRunner:
     safe_batch_sizes: dict[int, int] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_adapter(
+    def from_checkpoint(
         cls,
-        adapter_path: str | Path,
+        checkpoint_path: str | Path,
         *,
         dtype: str = "bfloat16",
         device: str = "cuda",
@@ -44,16 +45,31 @@ class ModelRunner:
     ) -> ModelRunner:
         if dtype not in _DTYPES:
             raise ValueError(f"Unsupported dtype {dtype!r}; choose from {', '.join(_DTYPES)}")
-        adapter_path = str(adapter_path)
-        peft_config = PeftConfig.from_pretrained(adapter_path)
+        checkpoint_path = str(checkpoint_path)
+        if not (Path(checkpoint_path) / "adapter_config.json").is_file():
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, use_fast=True)
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+            target_device = torch.device(device)
+            model = AutoModelForCausalLM.from_pretrained(
+                checkpoint_path,
+                dtype=_DTYPES[dtype],
+                low_cpu_mem_usage=True,
+            )
+            model.to(target_device)
+            model.eval()
+            return cls(model=model, tokenizer=tokenizer, device=target_device)
+
+        peft_config = PeftConfig.from_pretrained(checkpoint_path)
         base_name = peft_config.base_model_name_or_path
         if not base_name:
-            raise ValueError(f"Adapter {adapter_path} does not declare a base model")
+            raise ValueError(f"Adapter {checkpoint_path} does not declare a base model")
         base_revision = peft_config.revision
-        has_local_tokenizer = (Path(adapter_path) / "tokenizer_config.json").is_file() and any(
-            (Path(adapter_path) / filename).is_file() for filename in _TOKENIZER_ASSETS
+        has_local_tokenizer = (Path(checkpoint_path) / "tokenizer_config.json").is_file() and any(
+            (Path(checkpoint_path) / filename).is_file() for filename in _TOKENIZER_ASSETS
         )
-        tokenizer_source = adapter_path if has_local_tokenizer else base_name
+        tokenizer_source = checkpoint_path if has_local_tokenizer else base_name
         tokenizer_revision = None if has_local_tokenizer else base_revision
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, revision=tokenizer_revision, use_fast=True)
         if tokenizer.pad_token_id is None:
@@ -67,19 +83,43 @@ class ModelRunner:
             dtype=_DTYPES[dtype],
             low_cpu_mem_usage=True,
         )
-        model = PeftModel.from_pretrained(model, adapter_path)
+        model = PeftModel.from_pretrained(model, checkpoint_path)
         if merge_adapter:
             model = model.merge_and_unload()
         model.to(target_device)
         model.eval()
         return cls(model=model, tokenizer=tokenizer, device=target_device)
 
+    @classmethod
+    def from_adapter(
+        cls,
+        adapter_path: str | Path,
+        *,
+        dtype: str = "bfloat16",
+        device: str = "cuda",
+        merge_adapter: bool = True,
+    ) -> ModelRunner:
+        """Backward-compatible adapter entry point."""
+
+        return cls.from_checkpoint(
+            adapter_path,
+            dtype=dtype,
+            device=device,
+            merge_adapter=merge_adapter,
+        )
+
     def prompt_length(self, messages: Sequence[Message]) -> int:
         return len(self._tokenize_chat(messages))
 
     def _tokenize_chat(self, messages: Sequence[Message]) -> list[int]:
-        rendered = render_qwen3_nothink(list(messages), add_generation_prompt=True)
-        token_ids = self.tokenizer.encode(rendered, add_special_tokens=False)
+        token_ids = self.tokenizer.apply_chat_template(
+            list(messages),
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        if hasattr(token_ids, "keys") and "input_ids" in token_ids:
+            token_ids = token_ids["input_ids"]
         if not isinstance(token_ids, list):
             token_ids = token_ids.tolist()
         return token_ids
@@ -175,7 +215,9 @@ class ModelRunner:
             "max_new_tokens": max_new_tokens,
             "use_cache": True,
             "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
+            "eos_token_id": generation_eos_value(
+                resolve_eos_token_ids(self.tokenizer, getattr(self.model, "generation_config", None))
+            ),
         }
         if do_sample:
             generation_kwargs.update(temperature=temperature, top_p=top_p, top_k=top_k)

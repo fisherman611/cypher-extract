@@ -11,9 +11,31 @@ Message = dict[str, str]
 _QWEN3_NOTHINK_MESSAGE = "<|im_start|>{role}\n{content}<|im_end|>\n"
 _QWEN3_NOTHINK_GENERATION_PROMPT = "<|im_start|>assistant\n"
 QWEN3_NOTHINK_TEMPLATE_NAME = "llamafactory:qwen3_nothink"
+QWEN2_5_TEMPLATE_NAME = "llamafactory:qwen"
 QWEN3_NOTHINK_TEMPLATE_FINGERPRINT = sha256(
     f"{_QWEN3_NOTHINK_MESSAGE}\0{_QWEN3_NOTHINK_GENERATION_PROMPT}".encode()
 ).hexdigest()
+QWEN2_5_TEMPLATE_FINGERPRINT = QWEN3_NOTHINK_TEMPLATE_FINGERPRINT
+LLAMA3_TEMPLATE_NAME = "llamafactory:llama3"
+LLAMA3_TEMPLATE_FINGERPRINT = sha256(
+    b"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+    b"\0<|start_header_id|>assistant<|end_header_id|>\n\n"
+).hexdigest()
+
+
+def qwen_template_metadata(model_family: str) -> dict[str, str]:
+    if model_family == "qwen2.5_coder":
+        return {"name": QWEN2_5_TEMPLATE_NAME, "fingerprint": QWEN2_5_TEMPLATE_FINGERPRINT}
+    return {
+        "name": QWEN3_NOTHINK_TEMPLATE_NAME,
+        "fingerprint": QWEN3_NOTHINK_TEMPLATE_FINGERPRINT,
+    }
+
+
+def chat_template_metadata(model_family: str) -> dict[str, str]:
+    if model_family == "llama3":
+        return {"name": LLAMA3_TEMPLATE_NAME, "fingerprint": LLAMA3_TEMPLATE_FINGERPRINT}
+    return qwen_template_metadata(model_family)
 
 
 def render_qwen3_nothink(
