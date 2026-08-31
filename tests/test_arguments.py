@@ -77,6 +77,20 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert teacher["dataset_dir"] == kd["dataset_dir"]
 
 
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        Path("configs/distillation/student_sft.yaml"),
+        Path("configs/llama3/sft.yaml"),
+        Path("configs/qwen3/sft.yaml"),
+    ],
+)
+def test_student_sft_configs_use_full_finetuning(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["finetuning_type"] == "full"
+    assert not any(key.startswith("lora_") for key in config)
+
+
 @pytest.mark.parametrize("config_path", sorted(Path("configs/qwen3").glob("*.yaml")))
 def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))

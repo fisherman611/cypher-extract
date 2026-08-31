@@ -8,10 +8,11 @@ Every shipped config already selects the appropriate model-native template:
 | Llama 3.x | `llama3` |
 | Qwen 3 without synthetic reasoning spans | `qwen3_nothink` |
 
-The supplied [`sft.yaml`](../configs/qwen3/sft.yaml) configs make these choices
-and set `mask_history: false`. The latter matters: every
-assistant/function-call turn receives supervision; `mask_history: true` would
-keep only the final assistant turn.
+The supplied [`sft.yaml`](../configs/qwen3/sft.yaml) configs make these template
+choices. They omit `mask_history` because the Cypher datasets are single-turn.
+For a multi-turn tool dataset, keep `mask_history: false` (the LlamaFactory
+default) so every assistant/function-call turn receives supervision;
+`mask_history: true` would keep only the final assistant turn.
 
 ## Recommended OpenAI-style JSONL
 

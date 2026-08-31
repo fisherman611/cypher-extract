@@ -15,11 +15,7 @@ preprocessing_num_workers: 1
 dataloader_num_workers: 1
 dataloader_drop_last: false
 
-finetuning_type: lora
-lora_target: all
-lora_rank: 32
-lora_alpha: 64
-lora_dropout: 0.1
+finetuning_type: full
 train_on_prompt: false
 
 distill_method: sft
