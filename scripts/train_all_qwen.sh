@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_DIR="${PROJECT_ROOT}/configs/qwen"
+CONFIG_DIR="${PROJECT_ROOT}/configs/qwen3"
 TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_sft.yaml"
 TEACHER_ADAPTER="${PROJECT_ROOT}/results/qwen3/teacher_lora"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
@@ -65,7 +65,7 @@ fi
 failed=()
 for config_name in "${CONFIG_NAMES[@]}"; do
   method="${config_name%.yaml}"
-  config_path="configs/qwen/${config_name}"
+  config_path="configs/qwen3/${config_name}"
   log_path="${LOG_DIR}/${method}.log"
 
   echo

@@ -52,7 +52,7 @@ def test_bf16_config_sets_llamafactory_compute_dtype(monkeypatch) -> None:
     except (ImportError, ModuleNotFoundError) as exc:
         pytest.skip(f"LlamaFactory integration dependencies are unavailable: {exc}")
 
-    config = yaml.safe_load(Path("configs/llama/fkl.yaml").read_text(encoding="utf-8"))
+    config = yaml.safe_load(Path("configs/llama3/fkl.yaml").read_text(encoding="utf-8"))
     _, llamafactory_config = DistillationArguments.split_config(config)
     llamafactory_config.update(
         deepspeed=None,

@@ -8,7 +8,7 @@ Every shipped config already selects the appropriate model-native template:
 | Llama 3.x | `llama3` |
 | Qwen 3 without synthetic reasoning spans | `qwen3_nothink` |
 
-The supplied [`sft.yaml`](../configs/qwen/sft.yaml) configs make these choices
+The supplied [`sft.yaml`](../configs/qwen3/sft.yaml) configs make these choices
 and set `mask_history: false`. The latter matters: every
 assistant/function-call turn receives supervision; `mask_history: true` would
 keep only the final assistant turn.
@@ -116,15 +116,15 @@ the FDD feature-loss branch.
 `tool_use_demo`.
 
 ```bash
-uv run bash scripts/train.sh configs/qwen/sft.yaml \
+uv run bash scripts/train.sh configs/qwen3/sft.yaml \
   dataset=tool_use_demo eval_dataset=tool_use_demo
 ```
 
-Use `configs/llama/sft.yaml` for Llama 3. All static KD configs already use
+Use `configs/llama3/sft.yaml` for Llama 3. All static KD configs already use
 the native template, for example:
 
 ```bash
-uv run bash scripts/train.sh configs/qwen/fkl.yaml \
+uv run bash scripts/train.sh configs/qwen3/fkl.yaml \
   dataset=tool_train eval_dataset=tool_validation \
   ref_model_adapters=/path/to/teacher-adapter
 ```

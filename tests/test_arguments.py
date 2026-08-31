@@ -8,7 +8,7 @@ from distillation.cli import _validate_deepspeed_platform, _validate_required_pl
 
 CONFIG_PATHS = sorted(
     path
-    for family in ("llama", "qwen")
+    for family in ("llama3", "qwen3")
     for path in (Path("configs") / family).glob("*.yaml")
 )
 BASELINE_CONFIG_NAMES = {
@@ -28,7 +28,7 @@ BASELINE_CONFIG_NAMES = {
 }
 
 
-@pytest.mark.parametrize("family", ["llama", "qwen"])
+@pytest.mark.parametrize("family", ["llama3", "qwen3"])
 def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     config_paths = list((Path("configs") / family).glob("*.yaml"))
     actual = {path.name for path in config_paths}
@@ -38,8 +38,8 @@ def test_each_model_family_has_all_baseline_configs(family: str) -> None:
 @pytest.mark.parametrize(
     ("teacher_path", "kd_path"),
     [
-        ("configs/distillation/teacher_sft.yaml", "configs/qwen/fkl.yaml"),
-        ("configs/distillation/teacher_sft_llama.yaml", "configs/llama/fkl.yaml"),
+        ("configs/distillation/teacher_sft.yaml", "configs/qwen3/fkl.yaml"),
+        ("configs/distillation/teacher_sft_llama.yaml", "configs/llama3/fkl.yaml"),
     ],
 )
 def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
@@ -58,7 +58,7 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert teacher["dataset_dir"] == kd["dataset_dir"]
 
 
-@pytest.mark.parametrize("config_path", sorted(Path("configs/qwen").glob("*.yaml")))
+@pytest.mark.parametrize("config_path", sorted(Path("configs/qwen3").glob("*.yaml")))
 def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["model_name_or_path"] == "Qwen/Qwen3-0.6B"
@@ -170,7 +170,7 @@ def test_da_kd_rejects_zero_bdl_and_invalid_audit_size() -> None:
         DistillationArguments(distill_method="da_kd", da_kd_audit_samples=-1)
 
 
-@pytest.mark.parametrize("family", ["qwen", "llama"])
+@pytest.mark.parametrize("family", ["qwen3", "llama3"])
 def test_da_kd_configs_keep_five_epochs_and_enable_cypher_audit(family: str) -> None:
     config = yaml.safe_load((Path("configs") / family / "da_kd.yaml").read_text(encoding="utf-8"))
     assert config["num_train_epochs"] == 5
@@ -189,7 +189,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     distillation_args, _ = DistillationArguments.split_config(config)
     if distillation_args.uses_kd:
         expected_adapter = (
-            "results/qwen3/teacher_lora" if config_path.parent.name == "qwen" else "results/llama3/teacher_lora"
+            "results/qwen3/teacher_lora" if config_path.parent.name == "qwen3" else "results/llama3/teacher_lora"
         )
         assert config["ref_model_adapters"] == expected_adapter
     else:
@@ -197,7 +197,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["dataset"] == "cypher_prepared_train"
     assert config["eval_dataset"] == "cypher_prepared_eval"
     assert config["dataset_dir"] == "data/llamafactory"
-    expected_template = "qwen3_nothink" if config_path.parent.name == "qwen" else "llama3"
+    expected_template = "qwen3_nothink" if config_path.parent.name == "qwen3" else "llama3"
     assert config["template"] == expected_template
     assert config["packing"] is False
     assert config["ignore_pad_token_for_loss"] is True
@@ -217,7 +217,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["logging_strategy"] == "steps"
     if distillation_args.is_adaptive:
         assert config["student_gen"] is True
-        expected_context_length = 797 if config_path.parent.name == "qwen" else 810
+        expected_context_length = 797 if config_path.parent.name == "qwen3" else 810
         assert config["rollout_context_length"] == expected_context_length
         assert config["repetition_penalty"] == 1.0
     else:

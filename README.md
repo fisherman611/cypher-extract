@@ -321,11 +321,11 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
 
 ### 6. Chạy các method khác
 
-Các preset trong `configs/qwen` đã dùng dataset local và tự nạp adapter tại
+Các preset trong `configs/qwen3` đã dùng dataset local và tự nạp adapter tại
 `results/qwen3/teacher_lora`. Ví dụ AMID:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train.sh configs/qwen/amid.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/amid.yaml
 ```
 
 Tương tự có thể thay `amid.yaml` bằng `fkl.yaml`, `rkl.yaml`, `sfkl.yaml`,
@@ -350,7 +350,7 @@ Teacher là dependency bắt buộc nên nếu bước teacher lỗi, script lu�
 chạy các method còn lại. Log riêng của từng method nằm trong
 `results/qwen3/run_all_logs/<timestamp>/`.
 
-Preset trong `configs/llama` dùng student Llama 3.2 1B và teacher Llama 3 8B.
+Preset trong `configs/llama3` dùng student Llama 3.2 1B và teacher Llama 3 8B.
 Đăng nhập Hugging Face với tài khoản có quyền truy cập model gated, sau đó
 train đúng LoRA teacher Llama:
 
@@ -363,7 +363,7 @@ Adapter được lưu tại `results/llama3/teacher_lora` và mọi preset Llama
 đường dẫn này. Ví dụ:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train.sh configs/llama/amid.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/llama3/amid.yaml
 ```
 
 Không dùng adapter Qwen cho config Llama hoặc ngược lại.
