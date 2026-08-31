@@ -122,6 +122,32 @@ def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     return methods, datasets
 
 
+def build_seed_first_run_groups(
+    *,
+    methods: list[str],
+    dataset_names: list[str],
+    seeds: list[int],
+    output_root: Path,
+    options: InferenceOptions,
+) -> list[tuple[int, str, list[tuple[str, Path, InferenceOptions]]]]:
+    """Plan every dataset run, completing one seed before moving to the next."""
+
+    groups = []
+    for seed in seeds:
+        seed_options = replace(options, seed=seed)
+        for method in methods:
+            runs = [
+                (
+                    dataset_name,
+                    output_root / f"seed{seed}" / method / dataset_name,
+                    seed_options,
+                )
+                for dataset_name in dataset_names
+            ]
+            groups.append((seed, method, runs))
+    return groups
+
+
 def main() -> None:
     args = parse_args()
     methods, dataset_names = validate_choices(args)
@@ -169,22 +195,27 @@ def main() -> None:
             indent=2,
         )
     )
+    checkpoints = {}
     for method in methods:
-        checkpoint = resolve_last_checkpoint(
+        checkpoints[method] = resolve_last_checkpoint(
             method,
             repo_id=args.repo_id,
             model_family=args.model_family,
             revision=args.revision,
         )
+        checkpoint = checkpoints[method]
         print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step}, revision {checkpoint.revision})")
-        planned_runs = []
-        for seed in seeds:
-            seed_options = replace(options, seed=seed)
-            for dataset_name in dataset_names:
-                output_directory = args.output_dir.resolve() / f"seed{seed}" / method / dataset_name
-                planned_runs.append((seed, dataset_name, output_directory, seed_options))
 
-        for _seed, dataset_name, output_directory, seed_options in planned_runs:
+    run_groups = build_seed_first_run_groups(
+        methods=methods,
+        dataset_names=dataset_names,
+        seeds=seeds,
+        output_root=args.output_dir.resolve(),
+        options=options,
+    )
+    for _seed, method, planned_runs in run_groups:
+        checkpoint = checkpoints[method]
+        for dataset_name, output_directory, seed_options in planned_runs:
             prepare_run_directory(
                 method=method,
                 checkpoint=checkpoint,
@@ -194,37 +225,44 @@ def main() -> None:
                 options=seed_options,
             )
 
-        runner = None
-        if any(model_runner_required(output_directory) for _, _, output_directory, _ in planned_runs):
-            adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
-            runner = ModelRunner.from_adapter(
-                adapter_path,
-                dtype=args.dtype,
-                device=args.device,
-                merge_adapter=not args.no_merge_adapter,
-            )
-        else:
-            print(f"[{method}] all model-backed stages are complete; skipping model load")
-        try:
-            for seed, dataset_name, output_directory, seed_options in planned_runs:
-                seed_everything(seed, rank_offset=False)
-                print(f"[seed{seed}/{method}/{dataset_name}] starting")
-                run_dataset_pipeline(
-                    method=method,
-                    checkpoint=checkpoint,
-                    spec=specs[dataset_name],
-                    runner=runner,
-                    templates=templates,
-                    output_directory=output_directory,
-                    options=seed_options,
+    for seed in seeds:
+        print(f"[seed{seed}] starting all methods and datasets")
+        for group_seed, method, planned_runs in run_groups:
+            if group_seed != seed:
+                continue
+            checkpoint = checkpoints[method]
+            runner = None
+            if any(model_runner_required(output_directory) for _, output_directory, _ in planned_runs):
+                adapter_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
+                runner = ModelRunner.from_adapter(
+                    adapter_path,
+                    dtype=args.dtype,
+                    device=args.device,
+                    merge_adapter=not args.no_merge_adapter,
                 )
-                print(f"[seed{seed}/{method}/{dataset_name}] completed")
-        finally:
-            if runner is not None:
-                del runner
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            else:
+                print(f"[seed{seed}/{method}] all model-backed stages are complete; skipping model load")
+            try:
+                for dataset_name, output_directory, seed_options in planned_runs:
+                    seed_everything(seed, rank_offset=False)
+                    print(f"[seed{seed}/{method}/{dataset_name}] starting")
+                    run_dataset_pipeline(
+                        method=method,
+                        checkpoint=checkpoint,
+                        spec=specs[dataset_name],
+                        runner=runner,
+                        templates=templates,
+                        output_directory=output_directory,
+                        options=seed_options,
+                    )
+                    print(f"[seed{seed}/{method}/{dataset_name}] completed")
+            finally:
+                if runner is not None:
+                    del runner
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+        print(f"[seed{seed}] completed all methods and datasets")
 
 
 if __name__ == "__main__":

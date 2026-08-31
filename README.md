@@ -745,8 +745,9 @@ merge bằng `--no-merge-adapter`, nhưng inference thường chậm hơn.
 
 Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
 `temperature=0.5`, `top_p=0.95`, `top_k=0`, `num_beams=1`) và ChatML
-`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Mỗi method/dataset chạy lần lượt với các seed
-`10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng greedy
+`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Pipeline chạy theo thứ tự
+`seed -> method -> dataset`: hoàn tất mọi method/dataset của một seed rồi mới chuyển sang seed tiếp theo.
+Các seed mặc định là `10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng greedy
 decoding với nhãn một-token `YES/NO`; generator dùng tối đa 256 new tokens. Có thể override:
 
 ```bash

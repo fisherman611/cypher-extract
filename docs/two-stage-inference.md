@@ -129,7 +129,9 @@ sẽ từ chối reuse output nếu một trong các giá trị này thay đổi
 
 Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
 `temperature=0.5`, `top_p=0.95`, `top_k=0`, `num_beams=1`) và ChatML
-`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Script mặc định chạy các seed `10,42,50,100,1234`;
+`qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Script chạy theo thứ tự
+`seed -> method -> dataset`, hoàn tất mọi method/dataset của một seed trước khi chuyển seed. Các seed mặc định là
+`10,42,50,100,1234`;
 Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng dataset. Seed chỉ
 ảnh hưởng generator; selector dùng greedy decoding với tối đa một new token và
 generator dùng tối đa 256 new tokens.

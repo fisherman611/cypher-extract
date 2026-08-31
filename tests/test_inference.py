@@ -32,7 +32,12 @@ from schema_grounding.inference.prompting import (
     PromptTemplates,
     render_qwen3_nothink,
 )
-from scripts.infer_two_stage import DEFAULT_INFERENCE_SEEDS, parse_seeds, validate_choices
+from scripts.infer_two_stage import (
+    DEFAULT_INFERENCE_SEEDS,
+    build_seed_first_run_groups,
+    parse_seeds,
+    validate_choices,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -131,6 +136,43 @@ def test_default_inference_seeds_and_seed_parser() -> None:
     assert parse_seeds("10,42,50,100,1234") == [10, 42, 50, 100, 1234]
     with pytest.raises(ValueError, match="duplicates"):
         parse_seeds("10,10")
+
+
+def test_inference_plan_completes_each_seed_before_the_next(tmp_path: Path) -> None:
+    groups = build_seed_first_run_groups(
+        methods=["sft", "fkl"],
+        dataset_names=["cypherbench", "mind_the_query"],
+        seeds=[10, 42],
+        output_root=tmp_path,
+        options=InferenceOptions(),
+    )
+
+    assert [(seed, method) for seed, method, _runs in groups] == [
+        (10, "sft"),
+        (10, "fkl"),
+        (42, "sft"),
+        (42, "fkl"),
+    ]
+    assert [dataset for _seed, _method, runs in groups for dataset, _path, _options in runs] == [
+        "cypherbench",
+        "mind_the_query",
+        "cypherbench",
+        "mind_the_query",
+        "cypherbench",
+        "mind_the_query",
+        "cypherbench",
+        "mind_the_query",
+    ]
+    assert [run_options.seed for _seed, _method, runs in groups for _dataset, _path, run_options in runs] == [
+        10,
+        10,
+        10,
+        10,
+        42,
+        42,
+        42,
+        42,
+    ]
 
 
 def test_checkpoint_download_excludes_training_state(monkeypatch, tmp_path: Path) -> None:
