@@ -213,7 +213,10 @@ def main() -> None:
             model_family=args.model_family,
         )
         checkpoint = checkpoints[method]
-        print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step})")
+        print(
+            f"[{method}] resolved {checkpoint.uri} "
+            f"(step {checkpoint.step}, fingerprint {checkpoint.fingerprint[:12]})"
+        )
 
     run_groups = build_seed_first_run_groups(
         methods=methods,

@@ -6,9 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_DIR="${PROJECT_ROOT}/configs/qwen3"
 TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_lora_qwen3.yaml"
-TEACHER_ADAPTER="${PROJECT_ROOT}/results/qwen3/teacher_lora"
+RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_ROOT}/results}"
+if [[ "${RESULTS_ROOT}" != /* ]]; then
+  RESULTS_ROOT="${PROJECT_ROOT}/${RESULTS_ROOT}"
+fi
+FAMILY_RESULTS="${RESULTS_ROOT}/qwen3"
+TEACHER_ADAPTER="${FAMILY_RESULTS}/teacher_lora"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="${QWEN_LOG_DIR:-${PROJECT_ROOT}/results/qwen3/run_all_logs/${RUN_ID}}"
+LOG_DIR="${QWEN_LOG_DIR:-${FAMILY_RESULTS}/run_all_logs/${RUN_ID}}"
 
 CONFIG_NAMES=(
   sft.yaml
@@ -43,12 +48,14 @@ cd "${PROJECT_ROOT}"
 echo
 echo "============================================================"
 echo "Running configs/distillation/teacher_lora_qwen3.yaml"
+echo "Output: ${TEACHER_ADAPTER}"
 echo "Log: ${LOG_DIR}/teacher_lora_qwen3.log"
 echo "============================================================"
 
 # Every full run starts by training the teacher. A failed teacher cannot be
 # skipped because all KD methods depend on the adapter it produces.
-if bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml "$@" 2>&1 | tee "${LOG_DIR}/teacher_lora_qwen3.log"; then
+if bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml "$@" \
+  "output_dir=${TEACHER_ADAPTER}" 2>&1 | tee "${LOG_DIR}/teacher_lora_qwen3.log"; then
   echo "Completed: teacher_lora_qwen3"
 else
   status=${PIPESTATUS[0]}
@@ -66,14 +73,20 @@ for config_name in "${CONFIG_NAMES[@]}"; do
   method="${config_name%.yaml}"
   config_path="configs/qwen3/${config_name}"
   log_path="${LOG_DIR}/${method}.log"
+  output_dir="${FAMILY_RESULTS}/${method}"
+  method_overrides=("output_dir=${output_dir}")
+  if [[ "${method}" != "sft" ]]; then
+    method_overrides+=("ref_model_adapters=${TEACHER_ADAPTER}")
+  fi
 
   echo
   echo "============================================================"
   echo "Running ${config_path}"
+  echo "Output: ${output_dir}"
   echo "Log: ${log_path}"
   echo "============================================================"
 
-  if bash scripts/train.sh "${config_path}" "$@" 2>&1 | tee "${log_path}"; then
+  if bash scripts/train.sh "${config_path}" "$@" "${method_overrides[@]}" 2>&1 | tee "${log_path}"; then
     echo "Completed: ${method}"
   else
     status=${PIPESTATUS[0]}

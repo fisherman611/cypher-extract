@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -24,6 +26,27 @@ DEFAULT_METHODS = (
     "distillm_adaptive_srkl",
 )
 _CHECKPOINT_RE = re.compile(r"(?:^|/)checkpoint-(?P<step>\d+)$")
+_FULL_HASH_FILES = frozenset(
+    {
+        "adapter_config.json",
+        "added_tokens.json",
+        "chat_template.jinja",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors.index.json",
+        "pytorch_model.bin.index.json",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "spiece.model",
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer_config.json",
+        "trainer_state.json",
+        "vocab.json",
+    }
+)
+_WEIGHT_SAMPLE_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -33,6 +56,7 @@ class LastCheckpoint:
     method: str
     step: int
     subfolder: str
+    fingerprint: str = ""
 
     @property
     def path(self) -> Path:
@@ -56,6 +80,49 @@ def select_last_checkpoint(paths: Iterable[str], method_prefix: str) -> tuple[in
     return max(candidates, key=lambda item: item[0])
 
 
+def _is_weight_file(path: Path) -> bool:
+    return path.name in {"adapter_model.bin", "adapter_model.safetensors"} or (
+        path.name.startswith("model-") and path.suffix == ".safetensors"
+    ) or path.name == "model.safetensors" or (
+        path.name.startswith("pytorch_model-") and path.suffix == ".bin"
+    ) or path.name == "pytorch_model.bin"
+
+
+def _file_sha256(path: Path, *, sampled: bool) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        if not sampled:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        else:
+            digest.update(handle.read(_WEIGHT_SAMPLE_BYTES))
+            if path.stat().st_size > _WEIGHT_SAMPLE_BYTES:
+                handle.seek(max(path.stat().st_size - _WEIGHT_SAMPLE_BYTES, 0))
+                digest.update(handle.read(_WEIGHT_SAMPLE_BYTES))
+    return digest.hexdigest()
+
+
+def checkpoint_fingerprint(directory: Path) -> str:
+    """Fingerprint inference assets without hashing complete multi-GB model shards."""
+
+    entries = []
+    for path in sorted((item for item in directory.iterdir() if item.is_file()), key=lambda item: item.name):
+        if _is_weight_file(path):
+            stat = path.stat()
+            entries.append(
+                {
+                    "name": path.name,
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "sample_sha256": _file_sha256(path, sampled=True),
+                }
+            )
+        elif path.name in _FULL_HASH_FILES:
+            entries.append({"name": path.name, "sha256": _file_sha256(path, sampled=False)})
+    serialized = json.dumps(entries, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(f"checkpoint-fingerprint-v1\0{serialized}".encode()).hexdigest()
+
+
 def resolve_last_checkpoint(
     method: str,
     *,
@@ -77,7 +144,15 @@ def resolve_last_checkpoint(
 
     paths = (path.relative_to(root).as_posix() for path in method_directory.iterdir() if path.is_dir())
     step, subfolder = select_last_checkpoint(paths, method_prefix)
-    return LastCheckpoint(str(root), model_family, method, step, subfolder)
+    directory = root / Path(*subfolder.split("/"))
+    return LastCheckpoint(
+        str(root),
+        model_family,
+        method,
+        step,
+        subfolder,
+        fingerprint=checkpoint_fingerprint(directory),
+    )
 
 
 def resolve_checkpoint_directory(checkpoint: LastCheckpoint) -> Path:

@@ -121,6 +121,23 @@ def test_select_and_resolve_last_local_checkpoint(tmp_path: Path) -> None:
     assert checkpoint.subfolder == "qwen3/sft/checkpoint-1570"
     assert checkpoint.model_family == "qwen3"
     assert checkpoint.path == tmp_path.resolve() / "qwen3/sft/checkpoint-1570"
+    assert len(checkpoint.fingerprint) == 64
+
+
+def test_checkpoint_fingerprint_changes_when_weights_are_replaced_in_place(tmp_path: Path) -> None:
+    checkpoint_directory = tmp_path / "qwen3/sft/checkpoint-10"
+    checkpoint_directory.mkdir(parents=True)
+    (checkpoint_directory / "adapter_config.json").write_text('{"base": "model"}', encoding="utf-8")
+    weights = checkpoint_directory / "adapter_model.safetensors"
+    weights.write_bytes(b"old-weights")
+    original = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    weights.write_bytes(b"new-weights")
+    replaced = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    assert replaced.path == original.path
+    assert replaced.step == original.step
+    assert replaced.fingerprint != original.fingerprint
 
 
 def test_training_output_dirs_match_local_inference_layout() -> None:
@@ -573,6 +590,29 @@ def test_preflight_rejects_orphaned_outputs_without_run_config(tmp_path: Path) -
 def test_pipeline_rejects_stale_outputs_from_another_checkpoint(tmp_path: Path) -> None:
     test_end_to_end_pipeline_with_fake_model(tmp_path)
     changed_checkpoint = LastCheckpoint("results", "qwen3", "sft", 8, "qwen3/sft/checkpoint-8")
+    with pytest.raises(ValueError, match="different configuration"):
+        run_dataset_pipeline(
+            method="sft",
+            checkpoint=changed_checkpoint,
+            spec=DatasetSpec("fixture", tmp_path / "benchmark"),
+            runner=FakeRunner(),
+            templates=PromptTemplates.from_repository(REPOSITORY_ROOT),
+            output_directory=tmp_path / "output",
+            options=InferenceOptions(selector_batch_size=2, generator_batch_size=1),
+        )
+
+
+def test_pipeline_rejects_replaced_weights_at_same_checkpoint_path(tmp_path: Path) -> None:
+    test_end_to_end_pipeline_with_fake_model(tmp_path)
+    changed_checkpoint = LastCheckpoint(
+        "results",
+        "qwen3",
+        "sft",
+        7,
+        "qwen3/sft/checkpoint-7",
+        fingerprint="replaced-weights",
+    )
+
     with pytest.raises(ValueError, match="different configuration"):
         run_dataset_pipeline(
             method="sft",

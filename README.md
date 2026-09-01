@@ -336,16 +336,30 @@ tất cả KD baseline):
 RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
 ```
 
-Mọi override phía sau script được chuyển cho từng run. Ví dụ smoke-test một epoch:
+Mọi override phía sau script, trừ `output_dir` và `ref_model_adapters` do script
+quản lý, được chuyển cho từng run. Ví dụ smoke-test một epoch:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh num_train_epochs=1
 ```
 
+Để train lại vào một cây output mới mà vẫn giữ đúng đường dẫn riêng cho teacher
+và từng method, đặt `RESULTS_ROOT`:
+
+```bash
+RESULTS_ROOT=results_run2 \
+RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
+```
+
+Output tương ứng là `results_run2/qwen3/teacher_lora`,
+`results_run2/qwen3/sft`, `results_run2/qwen3/fkl`, ...; mọi KD config trong
+run này tự dùng teacher tại root mới. Không truyền `output_dir=...` cho
+`train_all_*`, vì script quản lý riêng output của từng method.
+
 Teacher là dependency bắt buộc nên nếu bước teacher lỗi, script luôn dừng. Sau
 đó, mặc định script dừng ngay khi một method lỗi; đặt `CONTINUE_ON_ERROR=1` để
 chạy các method còn lại. Log riêng của từng method nằm trong
-`results/qwen3/run_all_logs/<timestamp>/`.
+`<RESULTS_ROOT>/qwen3/run_all_logs/<timestamp>/`.
 
 Preset trong `configs/llama3` dùng student Llama 3.2 1B và teacher Llama 3 8B.
 Đăng nhập Hugging Face với tài khoản có quyền truy cập model gated, sau đó
@@ -369,11 +383,19 @@ Train teacher trước, sau đó chạy tuần tự toàn bộ preset Llama 3:
 RUN_GPUS=0,1 bash scripts/train_all_llama3.sh
 ```
 
-Có thể truyền override cho mọi run và đổi thư mục log qua `LLAMA3_LOG_DIR`:
+Có thể truyền override cho mọi run, đổi cả cây output qua `RESULTS_ROOT`, và
+đổi riêng thư mục log qua `LLAMA3_LOG_DIR`:
 
 ```bash
 LLAMA3_LOG_DIR=results/llama3/custom_logs \
 RUN_GPUS=0,1 bash scripts/train_all_llama3.sh num_train_epochs=1
+```
+
+Ví dụ train vào root mới:
+
+```bash
+RESULTS_ROOT=results_run2 \
+RUN_GPUS=0,1 bash scripts/train_all_llama3.sh
 ```
 
 Chạy inference cho model family Llama 3:
@@ -399,8 +421,14 @@ Train teacher LoRA rồi chạy toàn bộ SFT/KD preset:
 RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
 ```
 
-Chạy inference cho các checkpoint đã upload dưới model family
-`qwen2.5_coder`:
+Có thể đổi toàn bộ output sang root khác mà không sửa config:
+
+```bash
+RESULTS_ROOT=results_run2 \
+RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
+```
+
+Chạy inference cho các checkpoint local dưới model family `qwen2.5_coder`:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen2_5_coder.sh \
@@ -512,6 +540,12 @@ Với mỗi model, script đọc checkpoint local tại
 khớp trực tiếp với `output_dir` trong config training; inference không tải
 checkpoint từ một Hugging Face result repository. Trong một method directory,
 inference chọn checkpoint có `N` lớn nhất.
+
+`run_config.json` lưu fingerprint của checkpoint đã chọn. Fingerprint bao gồm
+metadata và hash của config/tokenizer/trainer state, cùng size, modification
+time và hash mẫu của weight files. Nếu weights bị thay ngay tại cùng path và
+cùng `checkpoint-N`, pipeline từ chối reuse prediction cũ và yêu cầu một
+`--output-dir` mới.
 
 Base model được lấy từ `adapter_config.json`:
 

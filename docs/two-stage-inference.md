@@ -22,6 +22,10 @@ Với mỗi method, script đọc
 `output_dir` của config training. Inference không tải checkpoint từ Hugging
 Face result repository và chọn checkpoint có `N` lớn nhất trong method directory.
 
+Checkpoint được fingerprint từ các inference assets. Vì vậy nếu weight files
+bị thay tại cùng path và cùng step, `run_config.json` không còn khớp và pipeline
+sẽ từ chối reuse output cũ. Hãy chọn một `--output-dir` inference mới cho run đó.
+
 `--methods all` gồm 13 model:
 
 ```text
