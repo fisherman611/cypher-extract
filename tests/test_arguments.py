@@ -55,6 +55,13 @@ def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> Non
     assert REDUNDANT_RUNTIME_DEFAULTS.isdisjoint(config)
 
 
+@pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
+def test_all_train_configs_use_the_same_effective_batch_settings(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["per_device_train_batch_size"] == 2
+    assert config["gradient_accumulation_steps"] == 8
+
+
 @pytest.mark.parametrize(
     ("teacher_path", "kd_path"),
     [
@@ -77,6 +84,11 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert teacher["dataset"] == kd["dataset"]
     assert teacher["eval_dataset"] == kd["eval_dataset"]
     assert teacher["dataset_dir"] == kd["dataset_dir"]
+    assert teacher["learning_rate"] == 1e-5
+    assert teacher["lr_scheduler_type"] == "cosine"
+    assert teacher["warmup_ratio"] == 0.1
+    assert "warmup_steps" not in teacher
+    assert "lr_scheduler_kwargs" not in teacher
 
 
 @pytest.mark.parametrize(
@@ -118,9 +130,9 @@ def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -
         assert config["ref_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
     assert config["template"] == "qwen"
     assert config["cutoff_len"] == 892
-    assert config["per_device_train_batch_size"] == 1
+    assert config["per_device_train_batch_size"] == 2
     assert config["per_device_eval_batch_size"] == 8
-    assert config["gradient_accumulation_steps"] == 16
+    assert config["gradient_accumulation_steps"] == 8
     if config["distill_method"].startswith("fdd_"):
         assert config["student_layer_mapping"] == [17, 35]
         assert config["teacher_layer_mapping"] == [13, 27]

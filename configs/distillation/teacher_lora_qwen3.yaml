@@ -30,16 +30,14 @@ kd_ratio: 0.0
 # through ref_model_adapters while keeping the 4B base model frozen.
 output_dir: results/qwen3/teacher_lora
 overwrite_output_dir: true
-per_device_train_batch_size: 1
+per_device_train_batch_size: 2
 per_device_eval_batch_size: 8
-gradient_accumulation_steps: 16
-learning_rate: 0.0001
+gradient_accumulation_steps: 8
+learning_rate: 0.00001
 num_train_epochs: 5
 optim: adamw_torch
-lr_scheduler_type: cosine_with_min_lr
-lr_scheduler_kwargs:
-  min_lr_rate: 0.001
-warmup_steps: 0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
 weight_decay: 0.01
 max_grad_norm: 1.0
 logging_steps: 20

@@ -29,9 +29,9 @@ da_kd_schedule: cosine
 da_kd_audit_samples: 10
 output_dir: results/qwen2.5_coder/da_kd
 overwrite_output_dir: true
-per_device_train_batch_size: 1
+per_device_train_batch_size: 2
 per_device_eval_batch_size: 8
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 8
 learning_rate: 0.00001
 num_train_epochs: 5
 optim: adamw_torch
