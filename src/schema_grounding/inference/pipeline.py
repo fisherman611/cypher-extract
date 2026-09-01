@@ -489,7 +489,7 @@ def prepare_run_directory(
             "generation_test": _file_sha256(spec.generation_test),
         },
         "prompt_fingerprints": templates.fingerprints(),
-        "chat_template": chat_template_metadata(checkpoint.subfolder.split("/", 1)[0]),
+        "chat_template": chat_template_metadata(checkpoint.model_family),
         "selector_protocol": {
             "positive_label": POSITIVE_SELECTOR_LABEL,
             "negative_label": NEGATIVE_SELECTOR_LABEL,

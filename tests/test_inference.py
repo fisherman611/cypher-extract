@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 
-from schema_grounding.inference import checkpoints
 from schema_grounding.inference import model as inference_model
 from schema_grounding.inference.checkpoints import (
     DEFAULT_METHODS,
     LastCheckpoint,
-    download_inference_checkpoint,
+    resolve_checkpoint_directory,
     resolve_last_checkpoint,
     select_last_checkpoint,
 )
@@ -108,25 +108,58 @@ def test_merge_can_return_the_exact_empty_schema() -> None:
     assert result.sub_schema == {"nodes": [], "relationships": []}
 
 
-def test_select_and_resolve_last_checkpoint() -> None:
+def test_select_and_resolve_last_local_checkpoint(tmp_path: Path) -> None:
     prefix = "qwen3/sft"
     paths = [f"{prefix}/checkpoint-{step}" for step in (314, 1570, 628)]
     assert select_last_checkpoint(paths, prefix) == (1570, f"{prefix}/checkpoint-1570")
 
-    class FakeApi:
-        def repo_info(self, **kwargs):
-            assert kwargs["revision"] == "main"
-            return SimpleNamespace(sha="a" * 40)
+    for path in paths:
+        (tmp_path / Path(*path.split("/"))).mkdir(parents=True)
 
-        def list_repo_tree(self, **kwargs):
-            assert kwargs["path_in_repo"] == prefix
-            assert kwargs["revision"] == "a" * 40
-            return [SimpleNamespace(path=path) for path in paths]
-
-    checkpoint = resolve_last_checkpoint("sft", api=FakeApi(), token="test")
+    checkpoint = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
     assert checkpoint.step == 1570
     assert checkpoint.subfolder == "qwen3/sft/checkpoint-1570"
-    assert checkpoint.revision == "a" * 40
+    assert checkpoint.model_family == "qwen3"
+    assert checkpoint.path == tmp_path.resolve() / "qwen3/sft/checkpoint-1570"
+
+
+def test_local_checkpoint_pointer_prevents_selecting_stale_higher_step(tmp_path: Path) -> None:
+    method_directory = tmp_path / "qwen3/sft"
+    (method_directory / "checkpoint-1570").mkdir(parents=True)
+    (method_directory / "checkpoint-314").mkdir()
+    (method_directory / "latest_checkpoint").write_text("checkpoint-314\n", encoding="utf-8")
+
+    checkpoint = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    assert checkpoint.step == 314
+    assert checkpoint.path == method_directory / "checkpoint-314"
+
+
+def test_invalid_local_checkpoint_pointer_does_not_fall_back_to_stale_checkpoint(tmp_path: Path) -> None:
+    method_directory = tmp_path / "qwen3/sft"
+    (method_directory / "checkpoint-1570").mkdir(parents=True)
+    (method_directory / "latest_checkpoint").write_text("training-in-progress\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="latest fresh run stopped or is still running"):
+        resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+
+def test_training_output_dirs_match_local_inference_layout() -> None:
+    teacher_configs = {
+        "qwen3": Path("configs/distillation/teacher_lora_qwen3.yaml"),
+        "llama3": Path("configs/distillation/teacher_lora_llama3.yaml"),
+        "qwen2.5_coder": Path("configs/distillation/teacher_lora_qwen2.5_coder.yaml"),
+    }
+    for family, teacher_config in teacher_configs.items():
+        output_dirs = {
+            path.stem: yaml.safe_load(path.read_text(encoding="utf-8"))["output_dir"]
+            for path in (Path("configs") / family).glob("*.yaml")
+        }
+        output_dirs["teacher_lora"] = yaml.safe_load(teacher_config.read_text(encoding="utf-8"))["output_dir"]
+
+        assert set(output_dirs) == set(DEFAULT_METHODS)
+        for method, output_dir in output_dirs.items():
+            assert output_dir == f"results/{family}/{method}"
 
 
 def test_cli_rejects_empty_method_or_dataset_lists() -> None:
@@ -180,39 +213,26 @@ def test_inference_plan_completes_each_seed_before_the_next(tmp_path: Path) -> N
     ]
 
 
-def test_checkpoint_download_excludes_training_state(monkeypatch, tmp_path: Path) -> None:
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 1570, "qwen3/sft/checkpoint-1570")
-    adapter = tmp_path / checkpoint.subfolder
+def test_local_checkpoint_accepts_adapter_weights(tmp_path: Path) -> None:
+    checkpoint = LastCheckpoint(str(tmp_path), "qwen3", "sft", 1570, "qwen3/sft/checkpoint-1570")
+    adapter = checkpoint.path
     adapter.mkdir(parents=True)
     (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
     (adapter / "adapter_model.safetensors").write_bytes(b"weights")
 
-    def fake_snapshot_download(**kwargs) -> str:
-        patterns = kwargs["allow_patterns"]
-        assert f"{checkpoint.subfolder}/adapter_model.safetensors" in patterns
-        assert f"{checkpoint.subfolder}/tokenizer.model" in patterns
-        assert f"{checkpoint.subfolder}/merges.txt" in patterns
-        assert not any("global_step" in pattern or "optim" in pattern for pattern in patterns)
-        return str(tmp_path)
-
-    monkeypatch.setattr(checkpoints, "snapshot_download", fake_snapshot_download)
-    assert download_inference_checkpoint(checkpoint, token="test") == adapter
+    assert resolve_checkpoint_directory(checkpoint) == adapter
 
 
-def test_checkpoint_download_accepts_full_model_weights(monkeypatch, tmp_path: Path) -> None:
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 10, "qwen2.5_coder/sft/checkpoint-10")
-    model_dir = tmp_path / checkpoint.subfolder
+def test_local_checkpoint_accepts_full_model_weights(tmp_path: Path) -> None:
+    checkpoint = LastCheckpoint(
+        str(tmp_path), "qwen2.5_coder", "sft", 10, "qwen2.5_coder/sft/checkpoint-10"
+    )
+    model_dir = checkpoint.path
     model_dir.mkdir(parents=True)
     (model_dir / "config.json").write_text("{}", encoding="utf-8")
     (model_dir / "model.safetensors").write_bytes(b"weights")
 
-    def fake_snapshot_download(**kwargs) -> str:
-        assert f"{checkpoint.subfolder}/model.safetensors" in kwargs["allow_patterns"]
-        assert not any("optimizer" in pattern for pattern in kwargs["allow_patterns"])
-        return str(tmp_path)
-
-    monkeypatch.setattr(checkpoints, "snapshot_download", fake_snapshot_download)
-    assert download_inference_checkpoint(checkpoint, token="test") == model_dir
+    assert resolve_checkpoint_directory(checkpoint) == model_dir
 
 
 def test_prompt_messages_match_training_format() -> None:
@@ -486,7 +506,7 @@ def test_end_to_end_pipeline_with_fake_model(tmp_path: Path) -> None:
     write_jsonl(data / "generation_test.jsonl", [generation])
     write_jsonl(data / "selection_test.jsonl", selection)
     output = tmp_path / "output"
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 7, "qwen3/sft/checkpoint-7")
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
     manifest = run_dataset_pipeline(
         method="sft",
         checkpoint=checkpoint,
@@ -519,7 +539,7 @@ def test_end_to_end_pipeline_with_fake_model(tmp_path: Path) -> None:
 def test_pipeline_reuses_completed_stages(tmp_path: Path) -> None:
     test_end_to_end_pipeline_with_fake_model(tmp_path)
     output = tmp_path / "output"
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 7, "qwen3/sft/checkpoint-7")
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
     manifest = run_dataset_pipeline(
         method="sft",
         checkpoint=checkpoint,
@@ -545,7 +565,7 @@ def test_preflight_rejects_downstream_output_without_its_dependency(tmp_path: Pa
     with pytest.raises(ValueError, match="sub-schema output exists without completed selector_predictions"):
         prepare_run_directory(
             method="sft",
-            checkpoint=LastCheckpoint("owner/repo", "a" * 40, "sft", 7, "qwen3/sft/checkpoint-7"),
+            checkpoint=LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7"),
             spec=DatasetSpec("fixture", data),
             templates=PromptTemplates.from_repository(REPOSITORY_ROOT),
             output_directory=output,
@@ -563,7 +583,7 @@ def test_preflight_rejects_orphaned_outputs_without_run_config(tmp_path: Path) -
     with pytest.raises(ValueError, match="without run_config.json"):
         prepare_run_directory(
             method="sft",
-            checkpoint=LastCheckpoint("owner/repo", "a" * 40, "sft", 7, "qwen3/sft/checkpoint-7"),
+            checkpoint=LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7"),
             spec=DatasetSpec("fixture", data),
             templates=PromptTemplates.from_repository(REPOSITORY_ROOT),
             output_directory=output,
@@ -573,7 +593,7 @@ def test_preflight_rejects_orphaned_outputs_without_run_config(tmp_path: Path) -
 
 def test_pipeline_rejects_stale_outputs_from_another_checkpoint(tmp_path: Path) -> None:
     test_end_to_end_pipeline_with_fake_model(tmp_path)
-    changed_checkpoint = LastCheckpoint("owner/repo", "main", "sft", 8, "qwen3/sft/checkpoint-8")
+    changed_checkpoint = LastCheckpoint("results", "qwen3", "sft", 8, "qwen3/sft/checkpoint-8")
     with pytest.raises(ValueError, match="different configuration"):
         run_dataset_pipeline(
             method="sft",
@@ -593,7 +613,7 @@ def test_pipeline_rejects_stale_outputs_after_input_content_changes(tmp_path: Pa
     generation["question"] = "Changed question"
     write_jsonl(generation_path, [generation])
 
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 7, "qwen3/sft/checkpoint-7")
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
     with pytest.raises(ValueError, match="different configuration"):
         run_dataset_pipeline(
             method="sft",
@@ -615,7 +635,7 @@ def test_pipeline_rejects_stale_outputs_after_prompt_changes(tmp_path: Path) -> 
         selector_system=templates.selector_system,
         selector_user=templates.selector_user,
     )
-    checkpoint = LastCheckpoint("owner/repo", "main", "sft", 7, "qwen3/sft/checkpoint-7")
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
 
     with pytest.raises(ValueError, match="different configuration"):
         run_dataset_pipeline(

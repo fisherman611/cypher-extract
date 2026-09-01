@@ -1,4 +1,5 @@
-from accelerate.data_loader import BatchSamplerShard
+from accelerate.data_loader import BatchSamplerShard, prepare_data_loader
+from torch.utils.data import DataLoader
 
 from distillation.sampling import TemplateDistributedBatchSampler
 
@@ -66,3 +67,30 @@ def test_sampler_shuffles_complete_two_batch_contrast_blocks() -> None:
             first, second = batches[offset : offset + 2]
             assert second[0] == first[0] + 2
             assert second[1] == first[1] + 2
+
+
+def test_accelerate_propagates_epoch_to_wrapped_batch_sampler() -> None:
+    epoch_batches = []
+    for rank in range(2):
+        sampler = TemplateDistributedBatchSampler(range(32), batch_size=2, num_replicas=2, seed=17)
+        dataloader = DataLoader(range(32), batch_sampler=sampler)
+        prepared = prepare_data_loader(
+            dataloader,
+            num_processes=2,
+            process_index=rank,
+            split_batches=False,
+            even_batches=False,
+        )
+
+        epoch_zero = [batch.tolist() for batch in prepared]
+        prepared.set_epoch(1)
+        epoch_one = [batch.tolist() for batch in prepared]
+
+        assert sampler.epoch == 1
+        assert epoch_one != epoch_zero
+        assert all(batch[1] == batch[0] + 1 for batch in epoch_one)
+        epoch_batches.append(epoch_one)
+
+    for rank_zero_batch, rank_one_batch in zip(*epoch_batches, strict=True):
+        assert rank_one_batch[0] == rank_zero_batch[0] + 2
+        assert rank_one_batch[1] == rank_zero_batch[1] + 2

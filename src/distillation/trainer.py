@@ -11,9 +11,14 @@ from datasets import Dataset as HFDataset
 from llamafactory.train.sft.trainer import CustomSeq2SeqTrainer
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import TrainerCallback
-from transformers.trainer_utils import get_last_checkpoint, seed_worker
+from transformers.trainer_utils import seed_worker
 
 from .arguments import DistillationArguments
+from .checkpointing import (
+    TRAINING_IN_PROGRESS,
+    resolve_automatic_resume_checkpoint,
+    write_latest_checkpoint_pointer,
+)
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
@@ -49,6 +54,13 @@ class _DistillMStateCallback(TrainerCallback):
         self.trainer.save_distillm_state(checkpoint)
 
 
+class _LatestCheckpointCallback(TrainerCallback):
+    def on_save(self, args, state, control, **kwargs):
+        del control, kwargs
+        if args.should_save:
+            write_latest_checkpoint_pointer(args.output_dir, f"checkpoint-{state.global_step}")
+
+
 class KDTrainer(CustomSeq2SeqTrainer):
     """Shared LlamaFactory trainer for SFT and teacher-based KD baselines."""
 
@@ -78,6 +90,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self.rollout_generator: StudentRolloutGenerator | None = None
         self._stored_hpd_metrics: defaultdict[str, list[float]] = defaultdict(list)
         self._rollout_counts = {source.value: 0 for source in RolloutSource}
+        self.add_callback(_LatestCheckpointCallback())
 
         if self.distillation_args.is_adaptive:
             rank_seed = int(self.args.seed) + int(self.args.process_index)
@@ -186,8 +199,11 @@ class KDTrainer(CustomSeq2SeqTrainer):
         if isinstance(resume_from_checkpoint, str | os.PathLike):
             checkpoint_path = resume_from_checkpoint
         elif resume_from_checkpoint is True:
-            checkpoint_path = get_last_checkpoint(self.args.output_dir)
+            checkpoint_path = resolve_automatic_resume_checkpoint(self.args.output_dir)
 
+        if self.args.should_save:
+            pointer_value = Path(checkpoint_path).name if checkpoint_path is not None else TRAINING_IN_PROGRESS
+            write_latest_checkpoint_pointer(self.args.output_dir, pointer_value)
         if checkpoint_path is not None:
             self.load_distillm_state(checkpoint_path)
         return super().train(resume_from_checkpoint=resume_from_checkpoint, *args, **kwargs)

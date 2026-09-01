@@ -11,15 +11,22 @@ Cypher. Các trường gold chỉ được nối vào output sau generation đ�
 
 ## Checkpoint
 
-Mặc định script đọc model repository:
+Mặc định script đọc checkpoint local dưới repository root:
 
 ```text
-distillation-sql/nothing-extract
+results
 ```
 
-Với mỗi method, script liệt kê `qwen3/<method>/checkpoint-N` và tự chọn `N` lớn
-nhất. Nó chỉ tải adapter/tokenizer files cần cho inference; DeepSpeed optimizer
-state trong `global_step*` không được tải.
+Với mỗi method, script đọc
+`results/<model-family>/<method>/checkpoint-N`. Tên family/method khớp với
+`output_dir` của config training. Inference không tải checkpoint từ Hugging
+Face result repository.
+
+Mỗi lần save, trainer cập nhật file
+`results/<model-family>/<method>/latest_checkpoint` với tên checkpoint vừa ghi.
+Inference ưu tiên file này thay vì suy đoán theo step lớn nhất, vì vậy checkpoint
+còn sót từ lần train trước không bị chọn nhầm. Chỉ các output cũ chưa có file con
+trỏ mới fallback sang `N` lớn nhất để giữ tương thích.
 
 `--methods all` gồm 13 model:
 
@@ -54,6 +61,7 @@ Hoặc chạy trực tiếp trên Linux:
 
 ```bash
 python scripts/infer_two_stage.py \
+  --checkpoint-root results \
   --methods all \
   --datasets cypherbench,mind_the_query,neo4j_text2cypher \
   --seeds 10,42,50,100,1234 \
@@ -78,7 +86,7 @@ Trên nhiều GPU, chạy nhiều process với danh sách method không giao nh
 process batch song song các schema unit trên GPU của nó; không nên load nhiều
 adapter vào cùng một GPU.
 
-Nếu repository cần authentication, đặt một trong hai biến:
+Nếu base model trên Hugging Face cần authentication, đặt một trong hai biến:
 
 ```bash
 export HF_READ_TOKEN=...
@@ -121,7 +129,7 @@ Selector và generator ghi vào `.partial` rồi mới publish file hoàn chỉn
 process bị dừng giữa stage, lần chạy sau tiếp tục từ row cuối đã ghi. Stage đã
 hoàn chỉnh được reuse.
 
-`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256 của input/prompt, ChatML template và generation options. Pipeline
+`run_config.json` khóa đường dẫn checkpoint local, input paths, SHA-256 của input/prompt, ChatML template và generation options. Pipeline
 sẽ từ chối reuse output nếu một trong các giá trị này thay đổi; khi đó dùng một
 `--output-dir` khác hoặc chủ động xóa riêng directory method/dataset cũ.
 

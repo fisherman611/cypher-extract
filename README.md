@@ -380,7 +380,7 @@ Chạy inference cho model family Llama 3:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_llama3.sh \
-  --repo-id distillation-sql/nothing-extract
+  --checkpoint-root results
 ```
 
 Không dùng adapter Qwen cho config Llama hoặc ngược lại.
@@ -404,7 +404,7 @@ Chạy inference cho các checkpoint đã upload dưới model family
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen2_5_coder.sh \
-  --repo-id distillation-sql/nothing-extract
+  --checkpoint-root results
 ```
 
 ### 7. GPU, resume và kiểm tra
@@ -447,7 +447,7 @@ Cypher. Các trường gold chỉ được đọc sau generation để tính met
 - Linux x86-64.
 - Python 3.11, khuyến nghị dùng virtual environment.
 - GPU NVIDIA hỗ trợ BF16 và driver tương thích với CUDA 12.8.
-- Đủ dung lượng Hugging Face cache cho base models và 13 LoRA adapters.
+- Đủ dung lượng local cho checkpoint trong `results` và Hugging Face cache cho base models.
 - Ba test dataset đã tồn tại:
 
   ```text
@@ -468,7 +468,7 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-distillation.txt
 ```
 
-Đặt Hugging Face token nếu model repository yêu cầu authentication:
+Đặt Hugging Face token nếu base model yêu cầu authentication:
 
 ```bash
 export HF_READ_TOKEN="hf_..."
@@ -507,10 +507,15 @@ distillm_adaptive_sfkl
 distillm_adaptive_srkl
 ```
 
-Với mỗi model, script truy vấn
-`distillation-sql/nothing-extract/qwen3/<method>/checkpoint-N` và tự dùng
-checkpoint có `N` lớn nhất. Script chỉ tải adapter/tokenizer files phục vụ
-inference, không tải DeepSpeed optimizer states trong `global_step*`.
+Với mỗi model, script đọc checkpoint local tại
+`results/<model-family>/<method>/checkpoint-N`. Tên `<model-family>/<method>`
+khớp trực tiếp với `output_dir` trong config training; inference không tải
+checkpoint từ một Hugging Face result repository.
+
+Trainer ghi `results/<model-family>/<method>/latest_checkpoint` sau mỗi lần save.
+Inference và `resume_from_checkpoint=true` ưu tiên con trỏ này, nên một checkpoint
+cũ có step lớn hơn không thể bị chọn nhầm khi train lại cùng `output_dir`. Với
+output cũ chưa có file con trỏ, code mới fallback sang checkpoint có `N` lớn nhất.
 
 Base model được lấy từ `adapter_config.json`:
 
@@ -535,11 +540,11 @@ model, selector units và generator samples được infer theo batch. Nếu m�
 gây CUDA OOM, runner tự chia đôi batch cho đến khi chạy được hoặc chỉ còn một
 sample, sau đó ghi nhớ batch size an toàn cho các batch có cùng token budget.
 
-Để chỉ định Hugging Face cache qua CLI:
+Để dùng checkpoint root local khác:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3.sh \
-  --cache-dir /mnt/models/huggingface \
+  --checkpoint-root /mnt/checkpoints/cypher-extract/results \
   --selector-batch-size 128 \
   --generator-batch-size 16
 ```
@@ -634,9 +639,9 @@ Pipeline sẽ:
 - reuse stage đã hoàn thành;
 - tính lại metrics và manifest sau khi đủ output.
 
-`run_config.json` khóa immutable Hugging Face commit SHA, input paths, SHA-256
-của input/prompt, ChatML template và inference options. Nếu `last_ckpt` trên Hugging Face thay đổi, command dùng
-option khác, dataset được build lại hoặc prompt thay đổi, pipeline sẽ không
+`run_config.json` khóa đường dẫn checkpoint local, input paths, SHA-256 của
+input/prompt, ChatML template và inference options. Nếu checkpoint local được
+chọn thay đổi, command dùng option khác, dataset được build lại hoặc prompt thay đổi, pipeline sẽ không
 reuse output cũ. Khi đó chọn output directory mới:
 
 ```bash

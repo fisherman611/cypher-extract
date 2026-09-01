@@ -3,7 +3,24 @@ from __future__ import annotations
 from collections.abc import Iterator, Sized
 
 import torch
-from torch.utils.data import BatchSampler
+from torch.utils.data import BatchSampler, Sampler
+
+
+class _EpochAwareSequentialSampler(Sampler[int]):
+    """Expose epoch state where Accelerate expects to propagate it."""
+
+    def __init__(self, dataset: Sized) -> None:
+        self.dataset = dataset
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(range(len(self.dataset)))
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 def _distributed_batch_count(size: int, batch_size: int, num_replicas: int) -> int:
@@ -65,11 +82,15 @@ class TemplateDistributedBatchSampler(BatchSampler):
             raise ValueError("batch_size must be positive.")
         if num_replicas <= 0:
             raise ValueError("num_replicas must be positive.")
-        super().__init__(range(len(dataset)), batch_size=batch_size, drop_last=False)
+        self._index_sampler = _EpochAwareSequentialSampler(dataset)
+        super().__init__(self._index_sampler, batch_size=batch_size, drop_last=False)
         self.dataset = dataset
         self.num_replicas = num_replicas
         self.seed = seed
-        self.epoch = 0
+
+    @property
+    def epoch(self) -> int:
+        return self._index_sampler.epoch
 
     def __iter__(self) -> Iterator[list[int]]:
         yield from _preserved_distributed_batches(
@@ -84,4 +105,4 @@ class TemplateDistributedBatchSampler(BatchSampler):
         return _distributed_batch_count(len(self.dataset), self.batch_size, self.num_replicas)
 
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
+        self._index_sampler.set_epoch(epoch)

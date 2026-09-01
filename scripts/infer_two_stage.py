@@ -17,10 +17,10 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from distillation.utils import seed_everything  # noqa: E402
 from schema_grounding.inference.checkpoints import (  # noqa: E402
+    DEFAULT_CHECKPOINT_ROOT,
     DEFAULT_METHODS,
     DEFAULT_MODEL_FAMILY,
-    DEFAULT_REPO_ID,
-    download_inference_checkpoint,
+    resolve_checkpoint_directory,
     resolve_last_checkpoint,
 )
 from schema_grounding.inference.data import default_dataset_specs  # noqa: E402
@@ -58,8 +58,12 @@ def parse_seeds(value: str) -> list[int]:
 def parse_args() -> argparse.Namespace:
     datasets = default_dataset_specs(REPOSITORY_ROOT)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-id", default=DEFAULT_REPO_ID)
-    parser.add_argument("--revision", default="main")
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        default=DEFAULT_CHECKPOINT_ROOT,
+        help="Local root containing <model-family>/<method>/checkpoint-N directories.",
+    )
     parser.add_argument("--model-family", default=DEFAULT_MODEL_FAMILY)
     parser.add_argument(
         "--methods",
@@ -71,8 +75,12 @@ def parse_args() -> argparse.Namespace:
         default=",".join(datasets),
         help=f"Comma-separated datasets. Choices: {', '.join(datasets)}.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("results/inference/qwen3"))
-    parser.add_argument("--cache-dir", type=Path, default=None)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Inference output root. Defaults to results/inference/<model-family>.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="bfloat16")
     parser.add_argument("--selector-batch-size", type=int, default=128)
@@ -97,7 +105,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not add endpoint nodes for selected relationships.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.output_dir is None:
+        args.output_dir = Path("results/inference") / args.model_family
+    return args
 
 
 def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
@@ -170,8 +181,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "repo_id": args.repo_id,
-                "revision": args.revision,
+                "checkpoint_root": str(args.checkpoint_root.resolve()),
                 "methods": methods,
                 "datasets": dataset_names,
                 "seeds": seeds,
@@ -199,12 +209,11 @@ def main() -> None:
     for method in methods:
         checkpoints[method] = resolve_last_checkpoint(
             method,
-            repo_id=args.repo_id,
+            checkpoint_root=args.checkpoint_root,
             model_family=args.model_family,
-            revision=args.revision,
         )
         checkpoint = checkpoints[method]
-        print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step}, revision {checkpoint.revision})")
+        print(f"[{method}] resolved {checkpoint.uri} (step {checkpoint.step})")
 
     run_groups = build_seed_first_run_groups(
         methods=methods,
@@ -233,7 +242,7 @@ def main() -> None:
             checkpoint = checkpoints[method]
             runner = None
             if any(model_runner_required(output_directory) for _, output_directory, _ in planned_runs):
-                checkpoint_path = download_inference_checkpoint(checkpoint, cache_dir=args.cache_dir)
+                checkpoint_path = resolve_checkpoint_directory(checkpoint)
                 runner = ModelRunner.from_checkpoint(
                     checkpoint_path,
                     dtype=args.dtype,

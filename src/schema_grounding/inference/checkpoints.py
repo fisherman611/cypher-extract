@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from huggingface_hub import HfApi, snapshot_download
+from distillation.checkpointing import resolve_latest_checkpoint_pointer
 
-DEFAULT_REPO_ID = "distillation-sql/nothing-extract"
+DEFAULT_CHECKPOINT_ROOT = Path("results")
 DEFAULT_MODEL_FAMILY = "qwen3"
+SUPPORTED_MODEL_FAMILIES = ("qwen3", "llama3", "qwen2.5_coder")
 DEFAULT_METHODS = (
     "teacher_lora",
     "sft",
@@ -27,61 +26,33 @@ DEFAULT_METHODS = (
     "distillm_adaptive_srkl",
 )
 _CHECKPOINT_RE = re.compile(r"(?:^|/)checkpoint-(?P<step>\d+)$")
-_INFERENCE_FILES = (
-    "adapter_config.json",
-    "adapter_model.safetensors",
-    "adapter_model.bin",
-    "tokenizer.json",
-    "tokenizer.model",
-    "sentencepiece.bpe.model",
-    "spiece.model",
-    "tokenizer_config.json",
-    "vocab.json",
-    "merges.txt",
-    "special_tokens_map.json",
-    "added_tokens.json",
-    "chat_template.jinja",
-    "generation_config.json",
-    "config.json",
-    "model.safetensors",
-    "model.safetensors.index.json",
-    "model-*.safetensors",
-    "pytorch_model.bin",
-    "pytorch_model.bin.index.json",
-    "pytorch_model-*.bin",
-)
 
 
 @dataclass(frozen=True)
 class LastCheckpoint:
-    repo_id: str
-    revision: str
+    checkpoint_root: str
+    model_family: str
     method: str
     step: int
     subfolder: str
 
     @property
+    def path(self) -> Path:
+        return Path(self.checkpoint_root, *self.subfolder.split("/"))
+
+    @property
     def uri(self) -> str:
-        return f"hf://{self.repo_id}/{self.subfolder}"
-
-
-def _path(item: Any) -> str:
-    if isinstance(item, dict):
-        value = item.get("path")
-    else:
-        value = getattr(item, "path", None)
-    if not isinstance(value, str):
-        raise TypeError(f"Hugging Face tree item has no path: {item!r}")
-    return value
+        return str(self.path)
 
 
 def select_last_checkpoint(paths: Iterable[str], method_prefix: str) -> tuple[int, str]:
     candidates: list[tuple[int, str]] = []
     normalized_prefix = method_prefix.strip("/")
     for path in paths:
-        match = _CHECKPOINT_RE.search(path.rstrip("/"))
-        if match and path.rstrip("/").startswith(f"{normalized_prefix}/"):
-            candidates.append((int(match.group("step")), path.rstrip("/")))
+        normalized_path = path.replace("\\", "/").rstrip("/")
+        match = _CHECKPOINT_RE.search(normalized_path)
+        if match and normalized_path.startswith(f"{normalized_prefix}/"):
+            candidates.append((int(match.group("step")), normalized_path))
     if not candidates:
         raise FileNotFoundError(f"No checkpoint-N directory found under {normalized_prefix}")
     return max(candidates, key=lambda item: item[0])
@@ -90,61 +61,51 @@ def select_last_checkpoint(paths: Iterable[str], method_prefix: str) -> tuple[in
 def resolve_last_checkpoint(
     method: str,
     *,
-    repo_id: str = DEFAULT_REPO_ID,
+    checkpoint_root: str | Path = DEFAULT_CHECKPOINT_ROOT,
     model_family: str = DEFAULT_MODEL_FAMILY,
-    revision: str = "main",
-    api: HfApi | None = None,
-    token: str | None = None,
 ) -> LastCheckpoint:
     if method not in DEFAULT_METHODS:
         raise ValueError(f"Unsupported method {method!r}; expected one of {', '.join(DEFAULT_METHODS)}")
-    token = token or os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
+    if model_family not in SUPPORTED_MODEL_FAMILIES:
+        raise ValueError(
+            f"Unsupported model family {model_family!r}; expected one of {', '.join(SUPPORTED_MODEL_FAMILIES)}"
+        )
+
+    root = Path(checkpoint_root).expanduser().resolve()
     method_prefix = f"{model_family}/{method}"
-    client = api or HfApi()
-    repo_info = client.repo_info(repo_id=repo_id, revision=revision, token=token)
-    resolved_revision = getattr(repo_info, "sha", None)
-    if not isinstance(resolved_revision, str) or not resolved_revision:
-        raise ValueError(f"Could not resolve {repo_id}@{revision} to an immutable commit SHA")
-    tree = client.list_repo_tree(
-        repo_id=repo_id,
-        path_in_repo=method_prefix,
-        recursive=False,
-        revision=resolved_revision,
-        token=token,
-    )
-    step, subfolder = select_last_checkpoint((_path(item) for item in tree), method_prefix)
-    return LastCheckpoint(repo_id, resolved_revision, method, step, subfolder)
+    method_directory = root / model_family / method
+    if not method_directory.is_dir():
+        raise FileNotFoundError(f"Local checkpoint directory does not exist: {method_directory}")
+
+    checkpoint_directory = resolve_latest_checkpoint_pointer(method_directory)
+    if checkpoint_directory is not None:
+        match = _CHECKPOINT_RE.search(checkpoint_directory.as_posix())
+        assert match is not None
+        subfolder = checkpoint_directory.relative_to(root).as_posix()
+        return LastCheckpoint(str(root), model_family, method, int(match.group("step")), subfolder)
+
+    paths = (path.relative_to(root).as_posix() for path in method_directory.iterdir() if path.is_dir())
+    step, subfolder = select_last_checkpoint(paths, method_prefix)
+    return LastCheckpoint(str(root), model_family, method, step, subfolder)
 
 
-def download_inference_checkpoint(
-    checkpoint: LastCheckpoint,
-    *,
-    cache_dir: str | Path | None = None,
-    token: str | None = None,
-) -> Path:
-    """Download adapter or full-model inference files without optimizer state."""
+def resolve_checkpoint_directory(checkpoint: LastCheckpoint) -> Path:
+    """Validate and return a local adapter or full-model checkpoint directory."""
 
-    token = token or os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
-    allow_patterns = [f"{checkpoint.subfolder}/{filename}" for filename in _INFERENCE_FILES]
-    snapshot = snapshot_download(
-        repo_id=checkpoint.repo_id,
-        revision=checkpoint.revision,
-        allow_patterns=allow_patterns,
-        cache_dir=str(cache_dir) if cache_dir is not None else None,
-        token=token,
-    )
-    directory = Path(snapshot, checkpoint.subfolder)
+    directory = checkpoint.path
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Local checkpoint directory does not exist: {directory}")
+
     adapter_config = directory / "adapter_config.json"
     if adapter_config.is_file():
         if not (directory / "adapter_model.safetensors").is_file() and not (
             directory / "adapter_model.bin"
         ).is_file():
-            raise FileNotFoundError(f"Missing adapter weights in {checkpoint.uri}")
+            raise FileNotFoundError(f"Missing adapter weights in {directory}")
     else:
-        full_model_files = (
-            list(directory.glob("model*.safetensors"))
-            + list(directory.glob("pytorch_model*.bin"))
+        full_model_files = list(directory.glob("model*.safetensors")) + list(
+            directory.glob("pytorch_model*.bin")
         )
         if not (directory / "config.json").is_file() or not full_model_files:
-            raise FileNotFoundError(f"Missing adapter or full-model weights in {checkpoint.uri}")
+            raise FileNotFoundError(f"Missing adapter or full-model weights in {directory}")
     return directory
