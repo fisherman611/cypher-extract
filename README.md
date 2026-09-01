@@ -510,12 +510,8 @@ distillm_adaptive_srkl
 Với mỗi model, script đọc checkpoint local tại
 `results/<model-family>/<method>/checkpoint-N`. Tên `<model-family>/<method>`
 khớp trực tiếp với `output_dir` trong config training; inference không tải
-checkpoint từ một Hugging Face result repository.
-
-Trainer ghi `results/<model-family>/<method>/latest_checkpoint` sau mỗi lần save.
-Inference và `resume_from_checkpoint=true` ưu tiên con trỏ này, nên một checkpoint
-cũ có step lớn hơn không thể bị chọn nhầm khi train lại cùng `output_dir`. Với
-output cũ chưa có file con trỏ, code mới fallback sang checkpoint có `N` lớn nhất.
+checkpoint từ một Hugging Face result repository. Trong một method directory,
+inference chọn checkpoint có `N` lớn nhất.
 
 Base model được lấy từ `adapter_config.json`:
 

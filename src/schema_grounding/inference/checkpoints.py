@@ -5,8 +5,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from distillation.checkpointing import resolve_latest_checkpoint_pointer
-
 DEFAULT_CHECKPOINT_ROOT = Path("results")
 DEFAULT_MODEL_FAMILY = "qwen3"
 SUPPORTED_MODEL_FAMILIES = ("qwen3", "llama3", "qwen2.5_coder")
@@ -76,13 +74,6 @@ def resolve_last_checkpoint(
     method_directory = root / model_family / method
     if not method_directory.is_dir():
         raise FileNotFoundError(f"Local checkpoint directory does not exist: {method_directory}")
-
-    checkpoint_directory = resolve_latest_checkpoint_pointer(method_directory)
-    if checkpoint_directory is not None:
-        match = _CHECKPOINT_RE.search(checkpoint_directory.as_posix())
-        assert match is not None
-        subfolder = checkpoint_directory.relative_to(root).as_posix()
-        return LastCheckpoint(str(root), model_family, method, int(match.group("step")), subfolder)
 
     paths = (path.relative_to(root).as_posix() for path in method_directory.iterdir() if path.is_dir())
     step, subfolder = select_last_checkpoint(paths, method_prefix)

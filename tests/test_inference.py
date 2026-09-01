@@ -123,27 +123,6 @@ def test_select_and_resolve_last_local_checkpoint(tmp_path: Path) -> None:
     assert checkpoint.path == tmp_path.resolve() / "qwen3/sft/checkpoint-1570"
 
 
-def test_local_checkpoint_pointer_prevents_selecting_stale_higher_step(tmp_path: Path) -> None:
-    method_directory = tmp_path / "qwen3/sft"
-    (method_directory / "checkpoint-1570").mkdir(parents=True)
-    (method_directory / "checkpoint-314").mkdir()
-    (method_directory / "latest_checkpoint").write_text("checkpoint-314\n", encoding="utf-8")
-
-    checkpoint = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
-
-    assert checkpoint.step == 314
-    assert checkpoint.path == method_directory / "checkpoint-314"
-
-
-def test_invalid_local_checkpoint_pointer_does_not_fall_back_to_stale_checkpoint(tmp_path: Path) -> None:
-    method_directory = tmp_path / "qwen3/sft"
-    (method_directory / "checkpoint-1570").mkdir(parents=True)
-    (method_directory / "latest_checkpoint").write_text("training-in-progress\n", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="latest fresh run stopped or is still running"):
-        resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
-
-
 def test_training_output_dirs_match_local_inference_layout() -> None:
     teacher_configs = {
         "qwen3": Path("configs/distillation/teacher_lora_qwen3.yaml"),

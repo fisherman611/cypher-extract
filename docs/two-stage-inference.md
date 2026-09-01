@@ -20,13 +20,7 @@ results
 Với mỗi method, script đọc
 `results/<model-family>/<method>/checkpoint-N`. Tên family/method khớp với
 `output_dir` của config training. Inference không tải checkpoint từ Hugging
-Face result repository.
-
-Mỗi lần save, trainer cập nhật file
-`results/<model-family>/<method>/latest_checkpoint` với tên checkpoint vừa ghi.
-Inference ưu tiên file này thay vì suy đoán theo step lớn nhất, vì vậy checkpoint
-còn sót từ lần train trước không bị chọn nhầm. Chỉ các output cũ chưa có file con
-trỏ mới fallback sang `N` lớn nhất để giữ tương thích.
+Face result repository và chọn checkpoint có `N` lớn nhất trong method directory.
 
 `--methods all` gồm 13 model:
 
