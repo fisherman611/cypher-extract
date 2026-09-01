@@ -3,14 +3,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-from distillation.da_kd import (
-    per_sample_causal_cross_entropy,
-    selection_ratio,
-    selection_size,
-    stratified_select_grouped_indices,
-    stratified_select_indices,
-    summarize_da_kd_selection,
-)
 from distillation.losses import compute_distillation_loss, compute_hpd_loss, forward_kl, reverse_kl
 
 
@@ -172,104 +164,6 @@ def test_bdl_rejects_lambda_that_makes_the_loss_identically_zero() -> None:
     labels = torch.tensor([[-100, 1]])
     with pytest.raises(ValueError, match="identical"):
         compute_distillation_loss("bdl", logits, logits, labels, bdl_lambda=0.5)
-
-
-def test_da_kd_selection_ratio_and_stratified_sampling() -> None:
-    assert selection_ratio(0, 10, "cosine") == 1.0
-    assert selection_ratio(5, 10, "linear") == 0.5
-    assert selection_ratio(5, 10, "cosine") == pytest.approx(0.5)
-    assert selection_size(100, ratio=0.31, min_size=8, multiple=8) == 32
-
-    scores = [0.1, 0.9, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 0.5, 0.0]
-    selected = stratified_select_indices(scores, ratio=0.5, tau=0.1, seed=7, min_size=1)
-    assert len(selected) == 5
-    assert set(selected).issubset(range(len(scores)))
-    assert len(set(selected)) == len(selected)
-    assert any(index in {1, 2, 4, 6} for index in selected)
-
-    selected_multiple = stratified_select_indices(
-        scores,
-        ratio=0.7,
-        tau=0.1,
-        seed=7,
-        min_size=1,
-        multiple=4,
-    )
-    assert len(selected_multiple) == 8
-
-
-def test_da_kd_cosine_schedule_matches_the_paper_iteration_fraction() -> None:
-    ratios = [selection_ratio(epoch, 10, "cosine") for epoch in range(10)]
-    assert ratios[0] == 1.0
-    assert sum(ratios) / len(ratios) == pytest.approx(0.55)
-
-
-def test_da_kd_uses_all_low_samples_when_the_low_partition_is_too_small() -> None:
-    scores = list(range(100))
-    ratio = selection_ratio(1, 10, "cosine")
-    selected = stratified_select_indices(scores, ratio=ratio, tau=0.1, seed=7, min_size=1)
-
-    assert len(selected) == 98
-    assert {0, 1}.issubset(selected)
-    assert len(set(selected)) == len(selected)
-
-
-def test_da_kd_grouped_selection_never_splits_contrast_blocks() -> None:
-    scores = [float(index) for index in range(19)]
-    selected = stratified_select_grouped_indices(
-        scores,
-        group_size=4,
-        ratio=0.5,
-        tau=0.1,
-        seed=7,
-        min_size=4,
-        multiple=2,
-    )
-
-    assert len(selected) == 8
-    assert all(
-        set(range(block_start, block_start + 4)).issubset(selected)
-        or set(range(block_start, block_start + 4)).isdisjoint(selected)
-        for block_start in range(0, 16, 4)
-    )
-    assert all(index < 16 for index in selected)
-
-
-def test_da_kd_selection_summary_reports_realized_mixture_and_ce() -> None:
-    summary = summarize_da_kd_selection(
-        scores=[4.0, 3.0, 2.0, 1.0],
-        student_losses=[4.0, 6.0, 2.0, 1.0],
-        teacher_losses=[2.0, 3.0, 4.0, 1.0],
-        active_indices=[0, 2],
-    )
-
-    assert summary["selected_high_count"] == 1
-    assert summary["selected_low_count"] == 1
-    assert summary["selected_low_fraction"] == 0.5
-    assert summary["dds_median"] == pytest.approx(2.5)
-    assert summary["student_ce_mean"] == pytest.approx(3.25)
-    assert summary["teacher_ce_mean"] == pytest.approx(2.5)
-    assert summary["teacher_better_fraction"] == 0.5
-
-
-def test_da_kd_rejects_invalid_scores_and_empty_responses() -> None:
-    with pytest.raises(ValueError, match="finite"):
-        stratified_select_indices([0.1, float("nan")], ratio=0.5, tau=0.1, seed=0, min_size=1)
-
-    with pytest.raises(ValueError, match="response token"):
-        per_sample_causal_cross_entropy(torch.zeros(1, 3, 4), torch.full((1, 3), -100))
-
-    with pytest.raises(ValueError, match="schedule"):
-        selection_ratio(0, 10, "invalid")
-
-
-def test_per_sample_causal_cross_entropy_respects_ignore_index() -> None:
-    logits = torch.zeros(2, 4, 3)
-    labels = torch.tensor([[-100, -100, 1, 2], [-100, 0, 0, -100]])
-    losses = per_sample_causal_cross_entropy(logits, labels)
-    assert losses.shape == (2,)
-    assert torch.isfinite(losses).all()
-    torch.testing.assert_close(losses[0], torch.tensor(3.0).log())
 
 
 @pytest.mark.parametrize(

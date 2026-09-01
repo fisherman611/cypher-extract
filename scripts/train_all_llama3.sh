@@ -19,7 +19,6 @@ CONFIG_NAMES=(
   csd.yaml
   hpd.yaml
   amid.yaml
-  da_kd.yaml
   fdd_sfkl.yaml
   fdd_srkl.yaml
   distillm_adaptive_sfkl.yaml

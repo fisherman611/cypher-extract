@@ -39,8 +39,6 @@ distillm_adaptive_sfkl
 distillm_adaptive_srkl
 ```
 
-`da_kd` bị loại khỏi inference suite này.
-
 Base model được đọc từ `adapter_config.json`, vì vậy student adapter dùng
 `Qwen/Qwen3-0.6B` còn `teacher_lora` dùng `Qwen/Qwen3-4B-Instruct-2507`.
 

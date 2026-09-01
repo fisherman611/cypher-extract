@@ -79,9 +79,8 @@ def relation(source: str, relation_type: str, target: str) -> dict:
     }
 
 
-def test_all_methods_include_teacher_and_exclude_da_kd() -> None:
+def test_all_methods_include_teacher() -> None:
     assert "teacher_lora" in DEFAULT_METHODS
-    assert "da_kd" not in DEFAULT_METHODS
     assert len(DEFAULT_METHODS) == 13
 
 

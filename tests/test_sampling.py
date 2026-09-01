@@ -1,6 +1,6 @@
 from accelerate.data_loader import BatchSamplerShard
 
-from distillation.sampling import DifficultyAwareDistributedBatchSampler, TemplateDistributedBatchSampler
+from distillation.sampling import TemplateDistributedBatchSampler
 
 
 def test_distributed_batches_preserve_contiguous_groups_without_duplicates() -> None:
@@ -66,12 +66,3 @@ def test_sampler_shuffles_complete_two_batch_contrast_blocks() -> None:
             first, second = batches[offset : offset + 2]
             assert second[0] == first[0] + 2
             assert second[1] == first[1] + 2
-
-
-def test_difficulty_aware_sampler_uses_active_indices() -> None:
-    sampler = DifficultyAwareDistributedBatchSampler(range(10), batch_size=2, num_replicas=1, seed=0)
-    sampler.set_active_indices([1, 3, 5, 7])
-    batches = [list(batch) for batch in sampler]
-    assert len(batches) == 2
-    assert sorted(index for batch in batches for index in batch) == [1, 3, 5, 7]
-    assert all(batch == sorted(batch) for batch in batches)

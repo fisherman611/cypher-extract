@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import math
 import os
 from collections import defaultdict
 from functools import partial
@@ -11,27 +9,19 @@ from typing import Any
 import torch
 from datasets import Dataset as HFDataset
 from llamafactory.train.sft.trainer import CustomSeq2SeqTrainer
-from torch.utils.data import DataLoader, IterableDataset, Subset
+from torch.utils.data import DataLoader, IterableDataset
 from transformers import TrainerCallback
 from transformers.trainer_utils import get_last_checkpoint, seed_worker
 
 from .arguments import DistillationArguments
-from .da_kd import (
-    per_sample_causal_cross_entropy,
-    selection_ratio,
-    selection_size,
-    stratified_select_grouped_indices,
-    summarize_da_kd_selection,
-)
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
 from .losses import compute_distillation_loss, compute_hpd_loss
-from .sampling import DifficultyAwareDistributedBatchSampler, TemplateDistributedBatchSampler
-from .utils import all_gather_tensor, distributed_is_initialized, get_rank, get_world_size, print_rank
+from .sampling import TemplateDistributedBatchSampler
+from .utils import print_rank
 
 DISTILLM_STATE_NAME = "distillm_state"
-DA_KD_STATE_NAME = "da_kd_state"
 
 
 def _unwrap_model(model: torch.nn.Module, accelerator: Any) -> torch.nn.Module:
@@ -68,48 +58,6 @@ class _DistillMInitialEvalCallback(TrainerCallback):
         self.trainer.initialize_distillm_baseline()
 
 
-class _DAKDStateCallback(TrainerCallback):
-    def __init__(self, trainer: KDTrainer) -> None:
-        self.trainer = trainer
-
-    def on_save(self, args, state, control, **kwargs):
-        del control, kwargs
-        checkpoint = Path(args.output_dir, f"checkpoint-{state.global_step}")
-        self.trainer.save_da_kd_state(checkpoint)
-
-
-class _DAKDDataUpdateCallback(TrainerCallback):
-    def __init__(self, trainer: KDTrainer) -> None:
-        self.trainer = trainer
-
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        del args, control
-
-        # When resuming in the middle of an epoch, keep the exact subset that
-        # was active when the checkpoint was written.  Re-scoring here would
-        # use the partially-trained model and silently change the remainder of
-        # the resumed epoch.
-        resume_epoch = self.trainer._da_kd_resume_active_epoch
-        if resume_epoch is not None:
-            current_epoch = float(state.epoch or 0.0)
-            self.trainer._da_kd_resume_active_epoch = None
-            if int(current_epoch) == resume_epoch and current_epoch > resume_epoch:
-                return
-
-        if state.epoch is None:
-            return
-        epoch = int(state.epoch)
-        if epoch <= 0:
-            return
-        # CallbackHandler exposes ``trainer.model`` (the unwrapped model),
-        # while the training loop forwards ``model_wrapped`` to the actual
-        # DDP/DeepSpeed/FSDP step.  DDS must use the latter as well.
-        model = getattr(self.trainer, "model_wrapped", None)
-        if model is None:
-            model = kwargs.get("model", self.trainer.model)
-        self.trainer.update_da_kd_dataset(model, epoch)
-
-
 class KDTrainer(CustomSeq2SeqTrainer):
     """Shared LlamaFactory trainer for SFT and teacher-based KD baselines."""
 
@@ -124,8 +72,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self.distillation_args = distillation_args
         self.data_args = data_args
         self.generating_args = generating_args
-        if self.distillation_args.uses_da_kd and not hasattr(CustomSeq2SeqTrainer, "_run_epoch"):
-            raise RuntimeError("DA-KD requires Transformers >= 5.5.0 for dynamic epoch lengths.")
         super().__init__(*args, **kwargs)
         # This trainer consumes and reduces every custom loss itself and does
         # not use Transformers' num_items_in_batch normalization contract.
@@ -140,12 +86,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self.rollout_scheduler: AdaptiveRolloutScheduler | None = None
         self.rollout_generator: StudentRolloutGenerator | None = None
         self._stored_hpd_metrics: defaultdict[str, list[float]] = defaultdict(list)
-        self._da_kd_batch_sampler: DifficultyAwareDistributedBatchSampler | None = None
-        self._da_kd_scoring_dataset = None
-        self._da_kd_scoring_collator = None
-        self._da_kd_active_indices: list[int] | None = None
-        self._da_kd_active_epoch = 0
-        self._da_kd_resume_active_epoch: int | None = None
         self._rollout_counts = {source.value: 0 for source in RolloutSource}
 
         if self.distillation_args.is_adaptive:
@@ -173,10 +113,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
             )
             self.add_callback(_DistillMInitialEvalCallback(self))
             self.add_callback(_DistillMStateCallback(self))
-        if self.distillation_args.uses_da_kd:
-            self.add_callback(_DAKDStateCallback(self))
-            self.add_callback(_DAKDDataUpdateCallback(self))
-
     def get_train_dataloader(self) -> DataLoader:
         """Build distributed batches while preserving prepared task mixtures."""
 
@@ -194,26 +130,13 @@ class KDTrainer(CustomSeq2SeqTrainer):
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="Training")
 
-        if self.distillation_args.uses_da_kd:
-            batch_sampler = DifficultyAwareDistributedBatchSampler(
-                train_dataset,
-                batch_size=self._train_batch_size,
-                num_replicas=self.accelerator.num_processes,
-                seed=0,
-            )
-            if self._da_kd_active_indices is not None:
-                batch_sampler.set_active_indices(self._da_kd_active_indices)
-            self._da_kd_batch_sampler = batch_sampler
-            self._da_kd_scoring_dataset = train_dataset
-            self._da_kd_scoring_collator = data_collator
-        else:
-            batch_sampler = TemplateDistributedBatchSampler(
-                train_dataset,
-                batch_size=self._train_batch_size,
-                num_replicas=self.accelerator.num_processes,
-                # Match the template's fixed sampler seed while shuffling whole batches.
-                seed=0,
-            )
+        batch_sampler = TemplateDistributedBatchSampler(
+            train_dataset,
+            batch_size=self._train_batch_size,
+            num_replicas=self.accelerator.num_processes,
+            # Match the template's fixed sampler seed while shuffling whole batches.
+            seed=0,
+        )
         should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1
         dataloader = DataLoader(
             train_dataset,
@@ -241,9 +164,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
     def _state_file(self, directory: str | os.PathLike[str]) -> Path:
         return Path(directory, f"{DISTILLM_STATE_NAME}_rank{self.args.process_index}.pt")
 
-    def _da_kd_state_file(self, directory: str | os.PathLike[str]) -> Path:
-        return Path(directory, f"{DA_KD_STATE_NAME}_rank{self.args.process_index}.pt")
-
     def save_distillm_state(self, directory: str | os.PathLike[str]) -> None:
         if self.rollout_scheduler is None or self.replay_buffer is None:
             return
@@ -270,32 +190,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self._rollout_counts.update(state.get("rollout_counts", {}))
         return True
 
-    def save_da_kd_state(self, directory: str | os.PathLike[str]) -> None:
-        if not self.distillation_args.uses_da_kd:
-            return
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "active_indices": self._da_kd_active_indices,
-                "active_epoch": self._da_kd_active_epoch,
-            },
-            self._da_kd_state_file(directory),
-        )
-
-    def load_da_kd_state(self, directory: str | os.PathLike[str]) -> bool:
-        if not self.distillation_args.uses_da_kd:
-            return False
-        state_file = self._da_kd_state_file(directory)
-        if not state_file.exists():
-            return False
-        state = torch.load(state_file, map_location="cpu", weights_only=False)
-        active_indices = state.get("active_indices")
-        self._da_kd_active_indices = None if active_indices is None else [int(index) for index in active_indices]
-        self._da_kd_active_epoch = int(state.get("active_epoch", 0))
-        self._da_kd_resume_active_epoch = self._da_kd_active_epoch
-        return True
-
     def train(self, resume_from_checkpoint=None, *args, **kwargs):
         checkpoint_path: str | os.PathLike[str] | None = None
         if isinstance(resume_from_checkpoint, str | os.PathLike):
@@ -305,7 +199,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
 
         if checkpoint_path is not None:
             self.load_distillm_state(checkpoint_path)
-            self.load_da_kd_state(checkpoint_path)
         return super().train(resume_from_checkpoint=resume_from_checkpoint, *args, **kwargs)
 
     def initialize_distillm_baseline(self) -> None:
@@ -324,7 +217,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
     def save_state(self) -> None:
         super().save_state()
         self.save_distillm_state(self.args.output_dir)
-        self.save_da_kd_state(self.args.output_dir)
 
     def _training_progress(self) -> float:
         max_steps = max(int(getattr(self.state, "max_steps", 0)), 1)
@@ -334,389 +226,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
     def _collate_rollouts(self, features: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         batch = self.data_collator(features)
         return self._prepare_inputs(batch)
-
-    def _da_kd_minimum_size(self) -> int:
-        return self._train_batch_size * max(int(self.accelerator.num_processes), 1)
-
-    def _da_kd_active_size_for_epoch(self, epoch: int) -> int:
-        if self._da_kd_scoring_dataset is None:
-            raise RuntimeError("DA-KD dataset is not initialized.")
-        total = len(self._da_kd_scoring_dataset)
-        if epoch <= 0:
-            return total
-        ratio = selection_ratio(float(epoch), float(self.args.num_train_epochs), self.distillation_args.da_kd_schedule)
-        return selection_size(
-            total,
-            ratio=ratio,
-            min_size=self._da_kd_minimum_size(),
-            multiple=max(int(self.accelerator.num_processes), 1),
-        )
-
-    def _da_kd_micro_batches_for_size(self, active_size: int) -> int:
-        world_size = max(int(self.accelerator.num_processes), 1)
-        samples_per_rank = (active_size // world_size)
-        if samples_per_rank <= 0:
-            return 0
-        return math.ceil(samples_per_rank / self._train_batch_size)
-
-    def _da_kd_update_steps_for_epoch(self, epoch: int) -> int:
-        micro_batches = self._da_kd_micro_batches_for_size(self._da_kd_active_size_for_epoch(epoch))
-        if micro_batches <= 0:
-            raise ValueError("DA-KD needs at least one batch per rank in every epoch.")
-        return max(math.ceil(micro_batches / self.args.gradient_accumulation_steps), 1)
-
-    def set_initial_training_values(self, args, dataloader):
-        """Make the scheduler and stopping condition account for DA-KD's shrinking epochs."""
-
-        values = super().set_initial_training_values(args, dataloader)
-        if not self.distillation_args.uses_da_kd or self._da_kd_scoring_dataset is None:
-            return values
-
-        (
-            num_train_epochs,
-            num_update_steps_per_epoch,
-            num_examples,
-            num_train_samples,
-            total_train_batch_size,
-            steps_in_epoch,
-            max_steps,
-        ) = values
-
-        if args.max_steps < 0:
-            total_epochs = float(args.num_train_epochs)
-            full_epochs = int(math.floor(total_epochs))
-            fractional_epoch = total_epochs - full_epochs
-            dynamic_max_steps = sum(self._da_kd_update_steps_for_epoch(epoch) for epoch in range(full_epochs))
-            if fractional_epoch > 0.0:
-                partial_steps = self._da_kd_update_steps_for_epoch(full_epochs)
-                dynamic_max_steps += max(math.ceil(fractional_epoch * partial_steps), 1)
-            max_steps = max(dynamic_max_steps, 1)
-            num_train_samples = max_steps * total_train_batch_size
-        else:
-            # Explicit max_steps must remain authoritative.  A shrinking
-            # dataset may require more outer epochs to reach that step count.
-            candidate_epochs = max(int(num_train_epochs), 1)
-            smallest_steps = min(self._da_kd_update_steps_for_epoch(epoch) for epoch in range(candidate_epochs))
-            num_train_epochs = max(num_train_epochs, math.ceil(args.max_steps / smallest_steps))
-
-        return (
-            num_train_epochs,
-            num_update_steps_per_epoch,
-            num_examples,
-            num_train_samples,
-            total_train_batch_size,
-            steps_in_epoch,
-            max_steps,
-        )
-
-    def _init_training_state(
-        self,
-        max_steps,
-        num_update_steps_per_epoch,
-        num_train_epochs,
-        resume_from_checkpoint,
-        trial,
-    ):
-        result = super()._init_training_state(
-            max_steps,
-            num_update_steps_per_epoch,
-            num_train_epochs,
-            resume_from_checkpoint,
-            trial,
-        )
-        if (
-            not self.distillation_args.uses_da_kd
-            or resume_from_checkpoint is None
-            or self._da_kd_scoring_dataset is None
-            or int(self.state.global_step) <= 0
-        ):
-            return result
-
-        # Trainer's default resume arithmetic assumes a constant number of
-        # steps per epoch.  Reconstruct the epoch boundary from DA-KD's
-        # deterministic schedule instead.
-        global_step = int(self.state.global_step)
-        completed_steps = 0
-        for epoch in range(max(int(num_train_epochs), 1)):
-            epoch_steps = self._da_kd_update_steps_for_epoch(epoch)
-            if global_step < completed_steps + epoch_steps:
-                micro_batches = (global_step - completed_steps) * self.args.gradient_accumulation_steps
-                return epoch, micro_batches
-            completed_steps += epoch_steps
-        return result
-
-    def _run_epoch(
-        self,
-        model,
-        epoch,
-        train_dataloader,
-        steps_in_epoch,
-        num_update_steps_per_epoch,
-        trial,
-        ignore_keys_for_eval,
-        start_time,
-        resume_from_checkpoint,
-        epochs_trained,
-        steps_trained_in_current_epoch,
-    ):
-        if not self.distillation_args.uses_da_kd:
-            return super()._run_epoch(
-                model,
-                epoch,
-                train_dataloader,
-                steps_in_epoch,
-                num_update_steps_per_epoch,
-                trial,
-                ignore_keys_for_eval,
-                start_time,
-                resume_from_checkpoint,
-                epochs_trained,
-                steps_trained_in_current_epoch,
-            )
-
-        full_steps_in_epoch = len(train_dataloader)
-        if full_steps_in_epoch <= 0:
-            raise ValueError("DA-KD produced no training batches; increase the dataset or batch size.")
-
-        gradient_accumulation_steps = self.args.gradient_accumulation_steps
-        full_update_steps = max(math.ceil(full_steps_in_epoch / gradient_accumulation_steps), 1)
-        skipped_steps = 0
-        if epoch == epochs_trained and resume_from_checkpoint is not None:
-            skipped_steps = steps_trained_in_current_epoch // gradient_accumulation_steps
-
-        remaining_steps = max(int(self.state.max_steps) - int(self.state.global_step), 0)
-        if remaining_steps == 0:
-            self.control.should_training_stop = True
-            return None
-
-        dynamic_update_steps = min(full_update_steps, skipped_steps + remaining_steps)
-        dynamic_steps_in_epoch = min(full_steps_in_epoch, dynamic_update_steps * gradient_accumulation_steps)
-        if dynamic_update_steps <= skipped_steps or dynamic_steps_in_epoch <= steps_trained_in_current_epoch:
-            self.control.should_training_stop = True
-            return None
-
-        result = super()._run_epoch(
-            model,
-            epoch,
-            train_dataloader,
-            dynamic_steps_in_epoch,
-            dynamic_update_steps,
-            trial,
-            ignore_keys_for_eval,
-            start_time,
-            resume_from_checkpoint,
-            epochs_trained,
-            steps_trained_in_current_epoch,
-        )
-        if self.state.global_step >= self.state.max_steps:
-            self.control.should_training_stop = True
-        return result
-
-    def _gather_da_kd_scores(
-        self,
-        local_indices: list[int],
-        local_scores: list[float],
-        total_size: int,
-    ) -> list[float]:
-        if len(local_indices) != len(local_scores):
-            raise RuntimeError("DA-KD score/index lengths do not match.")
-        if not distributed_is_initialized():
-            scores = [0.0] * total_size
-            for index, score in zip(local_indices, local_scores, strict=True):
-                scores[index] = float(score)
-            return scores
-
-        device = self.accelerator.device
-        world_size = get_world_size()
-        local = torch.tensor(local_scores, dtype=torch.float32, device=device)
-        lengths = all_gather_tensor(
-            torch.tensor([local.numel()], dtype=torch.long, device=device),
-            operation="stack",
-        ).reshape(-1)
-        max_length = max(int(lengths.max().item()), 1)
-        padded = torch.zeros(max_length, dtype=torch.float32, device=device)
-        padded[: local.numel()] = local
-        gathered = all_gather_tensor(padded, operation="stack")
-
-        scores = [0.0] * total_size
-        for rank in range(world_size):
-            rank_length = int(lengths[rank].item())
-            for offset in range(rank_length):
-                index = rank + offset * world_size
-                if index < total_size:
-                    scores[index] = float(gathered[rank, offset].item())
-        return scores
-
-    def _decode_da_kd_sample(self, index: int) -> tuple[str, str]:
-        if self._da_kd_scoring_dataset is None:
-            return "", ""
-        sample = self._da_kd_scoring_dataset[index]
-        input_ids = [int(token) for token in sample.get("input_ids", [])]
-        labels = [int(token) for token in sample.get("labels", [])]
-        response_positions = [position for position, label in enumerate(labels) if label != -100]
-        first_response = response_positions[0] if response_positions else len(input_ids)
-        response_ids = [labels[position] for position in response_positions]
-        decode = getattr(self.processing_class, "decode", None)
-        if not callable(decode):
-            return "", ""
-        prompt = decode(input_ids[:first_response], skip_special_tokens=True).strip()
-        response = decode(response_ids, skip_special_tokens=True).strip()
-        return prompt, response
-
-    def _write_da_kd_audit(
-        self,
-        *,
-        epoch: int,
-        ratio: float,
-        scores: list[float],
-        student_losses: list[float],
-        teacher_losses: list[float],
-        active_indices: list[int],
-        diagnostics: dict[str, float | int],
-    ) -> None:
-        audit_count = min(int(self.distillation_args.da_kd_audit_samples), len(scores))
-        if audit_count <= 0 or get_rank() != 0:
-            return
-
-        ordered = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
-        audit_indices = ordered[:audit_count]
-        audit_indices.extend(index for index in reversed(ordered[-audit_count:]) if index not in audit_indices)
-        active_set = set(active_indices)
-        high_partition = set(ordered[: len(active_indices)])
-        samples = []
-        for index in audit_indices:
-            prompt, response = self._decode_da_kd_sample(index)
-            samples.append(
-                {
-                    "dataset_index": index,
-                    "dds_rank": ordered.index(index) + 1,
-                    "partition": "high" if index in high_partition else "low",
-                    "selected": index in active_set,
-                    "dds": scores[index],
-                    "student_ce": student_losses[index],
-                    "teacher_ce": teacher_losses[index],
-                    "prompt": prompt,
-                    "gold_response": response,
-                }
-            )
-
-        audit_dir = Path(self.args.output_dir, "da_kd_audit")
-        audit_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "epoch": epoch + 1,
-            "selection_ratio": ratio,
-            "dataset_size": len(scores),
-            "active_size": len(active_indices),
-            "statistics": diagnostics,
-            "samples": samples,
-        }
-        audit_path = audit_dir / f"epoch_{epoch + 1:03d}.json"
-        audit_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    def update_da_kd_dataset(self, model: torch.nn.Module, epoch: int) -> None:
-        """Score the full dataset and activate the next DiffUp/SDU subset."""
-
-        if (
-            self._da_kd_batch_sampler is None
-            or self._da_kd_scoring_dataset is None
-            or self._da_kd_scoring_collator is None
-        ):
-            return
-
-        total_size = len(self._da_kd_scoring_dataset)
-        world_size = get_world_size() if distributed_is_initialized() else max(int(self.accelerator.num_processes), 1)
-        rank = get_rank() if distributed_is_initialized() else int(self.args.process_index)
-        # Keep the number of scoring batches identical on every rank.  This
-        # matters for DDP/ZeRO models whose forward pass may synchronize
-        # buffers/partitions.  Padded indices are only used for scoring and
-        # are ignored when scores are reconstructed below.
-        samples_per_rank = math.ceil(total_size / world_size) if total_size else 0
-        local_indices = [
-            (rank + offset * world_size) % total_size
-            for offset in range(samples_per_rank)
-        ]
-        scoring_dataset = (
-            self._da_kd_scoring_dataset
-            if world_size == 1
-            else Subset(self._da_kd_scoring_dataset, local_indices)
-        )
-        scoring_loader = DataLoader(
-            scoring_dataset,
-            batch_size=self._train_batch_size,
-            shuffle=False,
-            collate_fn=self._da_kd_scoring_collator,
-            num_workers=0,
-            pin_memory=self.args.dataloader_pin_memory,
-        )
-        was_training = model.training
-        ref_was_training = self.ref_model.training
-        model.eval()
-        self.ref_model.eval()
-        local_scores: list[float] = []
-        local_student_losses: list[float] = []
-        local_teacher_losses: list[float] = []
-        try:
-            with torch.no_grad():
-                for features in scoring_loader:
-                    inputs = self._prepare_inputs(features)
-                    labels = inputs.pop("labels")
-                    student_outputs = model(**inputs, use_cache=False)
-                    teacher_outputs = self.ref_model(**inputs, use_cache=False)
-                    if student_outputs.logits.shape[-1] != teacher_outputs.logits.shape[-1]:
-                        raise ValueError("DA-KD requires student and teacher models with the same vocabulary size.")
-                    score_labels = labels
-                    student_loss = per_sample_causal_cross_entropy(student_outputs.logits, score_labels)
-                    teacher_loss = per_sample_causal_cross_entropy(teacher_outputs.logits, score_labels)
-                    dds = student_loss / teacher_loss.clamp_min(torch.finfo(student_loss.dtype).eps)
-                    if not torch.isfinite(dds).all():
-                        raise ValueError("DA-KD produced a non-finite DDS score.")
-                    local_scores.extend(dds.detach().float().cpu().tolist())
-                    local_student_losses.extend(student_loss.detach().float().cpu().tolist())
-                    local_teacher_losses.extend(teacher_loss.detach().float().cpu().tolist())
-        finally:
-            if was_training:
-                model.train()
-            if ref_was_training:
-                self.ref_model.train()
-
-        scores = self._gather_da_kd_scores(local_indices, local_scores, total_size)
-        student_losses = self._gather_da_kd_scores(local_indices, local_student_losses, total_size)
-        teacher_losses = self._gather_da_kd_scores(local_indices, local_teacher_losses, total_size)
-        total_epochs = float(self.args.num_train_epochs)
-        ratio = selection_ratio(epoch, total_epochs, self.distillation_args.da_kd_schedule)
-        minimum_size = self._train_batch_size * self.accelerator.num_processes
-        active_indices = stratified_select_grouped_indices(
-            scores,
-            group_size=2 * self._train_batch_size,
-            ratio=ratio,
-            tau=self.distillation_args.da_kd_tau,
-            seed=int(self.args.seed) + epoch,
-            min_size=minimum_size,
-            multiple=max(int(self.accelerator.num_processes), 1),
-        )
-        self._da_kd_batch_sampler.set_active_indices(active_indices)
-        self._da_kd_active_indices = list(active_indices)
-        self._da_kd_active_epoch = epoch
-        diagnostics = summarize_da_kd_selection(scores, student_losses, teacher_losses, active_indices)
-        self._write_da_kd_audit(
-            epoch=epoch,
-            ratio=ratio,
-            scores=scores,
-            student_losses=student_losses,
-            teacher_losses=teacher_losses,
-            active_indices=active_indices,
-            diagnostics=diagnostics,
-        )
-        print_rank(
-            f"DA-KD epoch={epoch + 1} ratio={ratio:.4f} "
-            f"active={len(active_indices)}/{len(scores)} "
-            f"high={diagnostics['selected_high_count']} low={diagnostics['selected_low_count']} "
-            f"dds_mean={diagnostics['dds_mean']:.4f} "
-            f"dds_p10/p50/p90={diagnostics['dds_p10']:.4f}/"
-            f"{diagnostics['dds_median']:.4f}/{diagnostics['dds_p90']:.4f} "
-            f"student_ce={diagnostics['student_ce_mean']:.4f} "
-            f"teacher_ce={diagnostics['teacher_ce_mean']:.4f}"
-        )
 
     def _store_hpd_metrics(self, metrics: dict[str, float]) -> None:
         for key, value in metrics.items():

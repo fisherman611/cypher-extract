@@ -15,7 +15,6 @@ SUPPORTED_METHODS = frozenset(
         "csd",
         "amid",
         "hpd",
-        "da_kd",
         "adaptive_sfkl",
         "adaptive_srkl",
         "fdd_sfkl",
@@ -42,9 +41,6 @@ class DistillationArguments:
     amid_lam: float = 0.5
     hpd_sample_in_fp32: bool = True
     bdl_lambda: float = 0.9
-    da_kd_tau: float = 0.1
-    da_kd_schedule: str = "cosine"
-    da_kd_audit_samples: int = 10
 
     # DistiLLM student rollout controls.
     student_gen: bool = False
@@ -66,7 +62,6 @@ class DistillationArguments:
         "adaptive-srkl": "adaptive_srkl",
         "fdd-sfkl": "fdd_sfkl",
         "fdd-srkl": "fdd_srkl",
-        "da-kd": "da_kd",
     }
 
     def __post_init__(self) -> None:
@@ -86,8 +81,8 @@ class DistillationArguments:
         """Whether training should use the student LM loss only.
 
         ``kd_ratio=0`` is intentionally a first-class SFT mode.  Keeping this
-        semantic in the arguments object lets the CLI, workflow, trainer, and
-        DA-KD sampler agree that no teacher is needed.
+        semantic in the arguments object lets the CLI, workflow, and trainer
+        agree that no teacher is needed.
         """
 
         return self.distill_method == "sft" or self.kd_ratio == 0.0
@@ -101,10 +96,6 @@ class DistillationArguments:
         return self.uses_kd and self.distill_method.startswith("fdd_")
 
     @property
-    def uses_da_kd(self) -> bool:
-        return self.uses_kd and self.distill_method == "da_kd"
-
-    @property
     def base_method(self) -> str:
         if self.is_sft:
             return "sft"
@@ -112,8 +103,6 @@ class DistillationArguments:
             return self.distill_method.removeprefix("adaptive_")
         if self.distill_method.startswith("fdd_"):
             return self.distill_method.removeprefix("fdd_")
-        if self.distill_method == "da_kd":
-            return "bdl"
         return self.distill_method
 
     def validate(self) -> None:
@@ -136,12 +125,6 @@ class DistillationArguments:
             raise ValueError("bdl_lambda must be in (0, 1).")
         if math.isclose(self.bdl_lambda, 0.5, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("bdl_lambda=0.5 makes BDL identically zero.")
-        if not 0.0 <= self.da_kd_tau <= 1.0:
-            raise ValueError("da_kd_tau must be in [0, 1].")
-        if self.da_kd_schedule not in {"linear", "cosine"}:
-            raise ValueError("da_kd_schedule must be linear or cosine.")
-        if self.da_kd_audit_samples < 0:
-            raise ValueError("da_kd_audit_samples must be non-negative.")
         if not 0.0 < self.gen_top_p <= 1.0:
             raise ValueError("gen_top_p must be in (0, 1].")
         if not 0.0 <= self.init_threshold <= 1.0:

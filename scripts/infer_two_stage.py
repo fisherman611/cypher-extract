@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         default="all",
-        help="Comma-separated methods or 'all'. 'all' includes teacher_lora and excludes da_kd.",
+        help="Comma-separated methods or 'all'. 'all' includes teacher_lora.",
     )
     parser.add_argument(
         "--datasets",

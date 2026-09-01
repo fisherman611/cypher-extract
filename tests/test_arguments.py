@@ -28,7 +28,6 @@ REDUNDANT_RUNTIME_DEFAULTS = {
 BASELINE_CONFIG_NAMES = {
     "csd.yaml",
     "amid.yaml",
-    "da_kd.yaml",
     "distillm_adaptive_sfkl.yaml",
     "distillm_adaptive_srkl.yaml",
     "fdd_sfkl.yaml",
@@ -190,15 +189,7 @@ def test_explicit_sft_mode_is_teacher_free() -> None:
     args = DistillationArguments(distill_method="sft", kd_ratio=0.0)
     assert args.is_sft is True
     assert args.uses_kd is False
-    assert args.uses_da_kd is False
     assert args.base_method == "sft"
-
-
-def test_zero_kd_ratio_is_sft_for_existing_methods() -> None:
-    args = DistillationArguments(distill_method="da_kd", kd_ratio=0.0)
-    assert args.is_sft is True
-    assert args.uses_kd is False
-    assert args.uses_da_kd is False
 
 
 def test_zero_kd_ratio_ignores_stale_adaptive_options() -> None:
@@ -218,27 +209,6 @@ def test_zero_kd_ratio_ignores_stale_adaptive_options() -> None:
 def test_explicit_sft_rejects_nonzero_kd_ratio() -> None:
     with pytest.raises(ValueError, match="distill_method=sft requires kd_ratio=0"):
         DistillationArguments(distill_method="sft", kd_ratio=0.5)
-
-
-def test_da_kd_uses_bdl_and_dynamic_data_updates() -> None:
-    args = DistillationArguments(distill_method="da-kd", da_kd_schedule="linear")
-    assert args.distill_method == "da_kd"
-    assert args.base_method == "bdl"
-    assert args.uses_da_kd is True
-
-
-def test_da_kd_rejects_zero_bdl_and_invalid_audit_size() -> None:
-    with pytest.raises(ValueError, match="identically zero"):
-        DistillationArguments(distill_method="da_kd", bdl_lambda=0.5)
-    with pytest.raises(ValueError, match="non-negative"):
-        DistillationArguments(distill_method="da_kd", da_kd_audit_samples=-1)
-
-
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_da_kd_configs_keep_five_epochs_and_enable_cypher_audit(family: str) -> None:
-    config = yaml.safe_load((Path("configs") / family / "da_kd.yaml").read_text(encoding="utf-8"))
-    assert config["num_train_epochs"] == 5
-    assert config["da_kd_audit_samples"] == 10
 
 
 @pytest.mark.parametrize("field, value", [("amid_div_name", "js"), ("amid_div_order", "pp")])
@@ -278,8 +248,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     assert config["dataloader_drop_last"] is False
     assert config["optim"] == "adamw_torch"
     assert config["lr_scheduler_type"] == "cosine_with_min_lr"
-    expected_min_lr_rate = 0.01 if distillation_args.uses_da_kd else 0.001
-    assert config["lr_scheduler_kwargs"] == {"min_lr_rate": expected_min_lr_rate}
+    assert config["lr_scheduler_kwargs"] == {"min_lr_rate": 0.001}
     if distillation_args.is_adaptive:
         assert config["student_gen"] is True
         expected_context_length = {"qwen3": 797, "llama3": 810, "qwen2.5_coder": 797}[config_path.parent.name]

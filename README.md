@@ -149,9 +149,6 @@ bật shuffle từng row ở data loader vì sẽ phá task mix và contrast pai
 Trainer chỉ shuffle theo block hai batch hoàn chỉnh. Khi train 2 GPU với
 `batch-size=2`, hai selector row `YES/NO` của cùng question đi vào cùng một
 global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + selector`.
-DA-KD cũng chọn active data theo nguyên block hai batch, không chọn rời từng row
-nên không thể giữ `YES` mà làm rơi `NO` (hoặc ngược lại) của một contrast pair.
-
 Với CypherBench final hiện tại (`6,827` generator, `3,200` selector) và
 `batch-size=2`, train có `3,200` mixed batch (`1 generator + 1 selector`) và
 `1,814` batch chỉ generator; mọi mẫu nguồn chỉ xuất hiện một lần.
@@ -238,7 +235,7 @@ Xem thêm về thiết kế và format tại [docs/data-preparation.md](docs/dat
 ## Distillation
 
 Phần `src/distillation` tích hợp đầy đủ các baseline từ template: SFT,
-FKL/RKL, SFKL/SRKL, CSD, AMID, HPD, BDL/DA-KD, FDD và adaptive DistiLLM.
+FKL/RKL, SFKL/SRKL, CSD, AMID, HPD, BDL, FDD và adaptive DistiLLM.
 Môi trường train yêu cầu Python 3.11+, Linux/WSL2, GPU NVIDIA hỗ trợ BF16 và
 driver tương thích với PyTorch CUDA 12.8. Các lệnh train bên dưới chạy từ thư
 mục gốc của repository.
@@ -329,7 +326,7 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/amid.yaml
 ```
 
 Tương tự có thể thay `amid.yaml` bằng `fkl.yaml`, `rkl.yaml`, `sfkl.yaml`,
-`srkl.yaml`, `csd.yaml`, `hpd.yaml`, `da_kd.yaml`, các config `fdd_*` hoặc
+`srkl.yaml`, `csd.yaml`, `hpd.yaml`, các config `fdd_*` hoặc
 `distillm_adaptive_*`.
 
 Train teacher trước, sau đó chạy tuần tự toàn bộ preset Qwen (SFT student và
@@ -510,7 +507,7 @@ distillm_adaptive_sfkl
 distillm_adaptive_srkl
 ```
 
-`da_kd` không nằm trong inference suite. Với mỗi model, script truy vấn
+Với mỗi model, script truy vấn
 `distillation-sql/nothing-extract/qwen3/<method>/checkpoint-N` và tự dùng
 checkpoint có `N` lớn nhất. Script chỉ tải adapter/tokenizer files phục vụ
 inference, không tải DeepSpeed optimizer states trong `global_step*`.

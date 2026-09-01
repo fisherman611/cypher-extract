@@ -116,7 +116,7 @@ def bdl(
     *,
     lam: float = 0.9,
 ) -> torch.Tensor:
-    """Bidirectional Discrepancy Loss from DA-KD.
+    """Bidirectional Discrepancy Loss between asymmetric probability mixtures.
 
     The teacher and student distributions are mixed in opposite directions:
     ``Pm=(1-lam)p+lam*q`` and ``Qm=lam*p+(1-lam)*q``.  BDL is then
