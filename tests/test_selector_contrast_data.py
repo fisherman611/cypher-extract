@@ -1,5 +1,5 @@
 from scripts.filter_selector_stage1 import select_stage_one_rows
-from scripts.prepare_multitask_prompts import interleave_without_replacement
+from scripts.prepare_multitask_prompts import interleave_without_replacement, parse_args
 
 
 def _source_row(graph: str, question: int, unit: str, label: int) -> dict[str, object]:
@@ -10,6 +10,11 @@ def _source_row(graph: str, question: int, unit: str, label: int) -> dict[str, o
         "unit_id": unit,
         "label": label,
     }
+
+
+def test_prepare_default_batch_size_matches_training(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["prepare_multitask_prompts.py"])
+    assert parse_args().batch_size == 2
 
 
 def test_stage_one_builds_adjacent_same_question_contrasts_with_coverage() -> None:

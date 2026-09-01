@@ -39,8 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-        help="Even batch size used for pre-interleaving. Default: 8.",
+        default=2,
+        help="Even batch size used for pre-interleaving. Default: 2 (matches training configs).",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
