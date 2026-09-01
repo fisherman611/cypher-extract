@@ -11,13 +11,14 @@ from datasets import Dataset as HFDataset
 from llamafactory.train.sft.trainer import CustomSeq2SeqTrainer
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import TrainerCallback
-from transformers.trainer_utils import get_last_checkpoint, seed_worker
+from transformers.trainer_utils import seed_worker
 
 from .arguments import DistillationArguments
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
 from .losses import compute_distillation_loss, compute_hpd_loss
+from .resume import validate_resume_checkpoint, write_resume_manifest
 from .sampling import TemplateDistributedBatchSampler
 from .utils import print_rank
 
@@ -39,13 +40,14 @@ def _lm_head(model: torch.nn.Module, accelerator: Any) -> torch.nn.Module:
     return output_embeddings
 
 
-class _DistillMStateCallback(TrainerCallback):
+class _CheckpointStateCallback(TrainerCallback):
     def __init__(self, trainer: KDTrainer) -> None:
         self.trainer = trainer
 
     def on_save(self, args, state, control, **kwargs):
         del control, kwargs
         checkpoint = Path(args.output_dir, f"checkpoint-{state.global_step}")
+        self.trainer.save_resume_manifest(checkpoint, state.global_step)
         self.trainer.save_distillm_state(checkpoint)
 
 
@@ -101,7 +103,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     getattr(self.model, "generation_config", None),
                 ),
             )
-            self.add_callback(_DistillMStateCallback(self))
+        self.add_callback(_CheckpointStateCallback(self))
 
     def get_train_dataloader(self) -> DataLoader:
         """Build distributed batches while preserving prepared task mixtures."""
@@ -154,6 +156,17 @@ class KDTrainer(CustomSeq2SeqTrainer):
     def _state_file(self, directory: str | os.PathLike[str]) -> Path:
         return Path(directory, f"{DISTILLM_STATE_NAME}_rank{self.args.process_index}.pt")
 
+    def save_resume_manifest(self, directory: str | os.PathLike[str], global_step: int) -> None:
+        resume_config = getattr(self.args, "_cypher_resume_config", None)
+        if not self.args.should_save or resume_config is None:
+            return
+        write_resume_manifest(
+            directory,
+            config=resume_config,
+            world_size=int(self.args.world_size),
+            global_step=global_step,
+        )
+
     def save_distillm_state(self, directory: str | os.PathLike[str]) -> None:
         if self.rollout_scheduler is None or self.replay_buffer is None:
             return
@@ -181,14 +194,19 @@ class KDTrainer(CustomSeq2SeqTrainer):
         return True
 
     def train(self, resume_from_checkpoint=None, *args, **kwargs):
-        checkpoint_path: str | os.PathLike[str] | None = None
-        if isinstance(resume_from_checkpoint, str | os.PathLike):
-            checkpoint_path = resume_from_checkpoint
-        elif resume_from_checkpoint is True:
-            checkpoint_path = get_last_checkpoint(self.args.output_dir)
-
+        checkpoint_path = validate_resume_checkpoint(
+            resume_from_checkpoint,
+            output_dir=self.args.output_dir,
+            world_size=int(self.args.world_size),
+            deepspeed_enabled=self.is_deepspeed_enabled,
+            require_distillm_state=self.distillation_args.is_adaptive,
+            train_batch_size=int(self._train_batch_size),
+            expected_config=getattr(self.args, "_cypher_resume_config", None),
+        )
         if checkpoint_path is not None:
-            self.load_distillm_state(checkpoint_path)
+            if self.distillation_args.is_adaptive and not self.load_distillm_state(checkpoint_path):
+                raise RuntimeError(f"Failed to restore adaptive DistiLLM state from {checkpoint_path}.")
+            resume_from_checkpoint = str(checkpoint_path)
         return super().train(resume_from_checkpoint=resume_from_checkpoint, *args, **kwargs)
 
     def save_state(self) -> None:

@@ -30,6 +30,14 @@ CONFIG_NAMES=(
   distillm_adaptive_srkl.yaml
 )
 
+for override in "$@"; do
+  if [[ "${override}" == resume_from_checkpoint=* ]]; then
+    echo "Do not resume through train_all_llama3.sh: one checkpoint cannot be applied to every method." >&2
+    echo "Resume one run with scripts/train.sh and its matching config/output_dir." >&2
+    exit 2
+  fi
+done
+
 if [[ ! -f "${TEACHER_CONFIG}" ]]; then
   echo "Missing teacher config: ${TEACHER_CONFIG}" >&2
   exit 2

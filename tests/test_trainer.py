@@ -28,3 +28,13 @@ def test_kd_trainer_disables_transformers_loss_kwargs_contract() -> None:
     assert len(assignments) == 1
     assert isinstance(assignments[0].value, ast.Constant)
     assert assignments[0].value.value is False
+
+
+def test_kd_trainer_saves_and_validates_custom_resume_state() -> None:
+    trainer_path = Path(__file__).parents[1] / "src" / "distillation" / "trainer.py"
+    source = trainer_path.read_text(encoding="utf-8")
+
+    assert "self.trainer.save_resume_manifest(checkpoint, state.global_step)" in source
+    assert "self.trainer.save_distillm_state(checkpoint)" in source
+    assert "checkpoint_path = validate_resume_checkpoint(" in source
+    assert "get_last_checkpoint" not in source

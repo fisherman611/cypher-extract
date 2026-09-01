@@ -445,12 +445,33 @@ RUN_GPUS=2,3 bash scripts/train.sh configs/distillation/kd.yaml
 NPROC_PER_NODE=4 bash scripts/train.sh configs/distillation/kd.yaml
 ```
 
-Resume từ checkpoint:
+Resume chính xác một run từ checkpoint (không dùng `train_all_*`):
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
+RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml \
   resume_from_checkpoint=results/qwen3/fkl/checkpoint-1000
 ```
+
+Phải giữ nguyên config của run cũ, đặc biệt là model/method, dataset, seed,
+batch size, gradient accumulation và số process. `resume_from_checkpoint` phải
+trỏ rõ tới `checkpoint-N` nằm trực tiếp trong đúng `output_dir`; project không
+tự chọn checkpoint mới nhất.
+
+Trước khi load model, resume preflight kiểm tra:
+
+- `trainer_state.json` và `global_step` khớp tên checkpoint;
+- model/adapter, optimizer và scheduler state đầy đủ;
+- RNG state đủ cho từng rank và `world_size` khớp lần train trước;
+- DeepSpeed `latest`, model state và optimizer shard đều trỏ đúng step;
+- `resume_manifest.json` xác nhận toàn bộ config (trừ chính đường dẫn resume)
+  không bị thay đổi;
+- với adaptive DistiLLM, có đủ `distillm_state_rankN.pt` để khôi phục threshold,
+  replay buffer, RNG của scheduler và rollout counters.
+
+Nếu một thành phần bị thiếu, lệnh dừng ngay thay vì âm thầm chỉ load weights rồi
+train tiếp với optimizer, scheduler hoặc DistiLLM state bị reset. Checkpoint cũ
+tạo trước cơ chế manifest vẫn resume được sau khi qua kiểm tra cấu trúc, nhưng sẽ
+cảnh báo vì không thể tự đối chiếu config cũ.
 
 Chạy test trước khi train dài:
 

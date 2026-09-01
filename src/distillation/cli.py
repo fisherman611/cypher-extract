@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from transformers.trainer_utils import IntervalStrategy
 
 from .arguments import DistillationArguments
+from .resume import canonical_resume_config, validate_resume_checkpoint
 from .utils import print_rank, resolve_hf_path, seed_everything
 
 _HF_PATH_KEYS = {
@@ -91,6 +92,7 @@ def _validate_required_placeholders(config: dict[str, Any]) -> None:
 
 def parse_arguments(argv: Sequence[str]) -> tuple[Any, Any, Any, Any, Any, DistillationArguments]:
     config = _load_config(argv)
+    explicit_resume = config.get("resume_from_checkpoint") is not None
     _validate_required_placeholders(config)
     distillation_args, llamafactory_config = DistillationArguments.split_config(config)
     if not distillation_args.uses_kd:
@@ -123,6 +125,22 @@ def parse_arguments(argv: Sequence[str]) -> tuple[Any, Any, Any, Any, Any, Disti
         cutoff_len=data_args.cutoff_len,
         per_device_train_batch_size=training_args.per_device_train_batch_size,
     )
+    if training_args.resume_from_checkpoint is not None and not explicit_resume:
+        raise ValueError(
+            "Implicit latest-checkpoint resume is disabled. Pass resume_from_checkpoint=.../checkpoint-N explicitly."
+        )
+    resume_config = canonical_resume_config(config)
+    training_args._cypher_resume_config = resume_config
+    checkpoint = validate_resume_checkpoint(
+        training_args.resume_from_checkpoint,
+        output_dir=training_args.output_dir,
+        world_size=int(training_args.world_size),
+        deepspeed_enabled=training_args.deepspeed is not None,
+        require_distillm_state=distillation_args.is_adaptive,
+        train_batch_size=int(training_args.per_device_train_batch_size),
+        expected_config=resume_config,
+    )
+    training_args.resume_from_checkpoint = str(checkpoint) if checkpoint is not None else None
     return model_args, data_args, training_args, finetuning_args, generating_args, distillation_args
 
 
