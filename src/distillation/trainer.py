@@ -49,15 +49,6 @@ class _DistillMStateCallback(TrainerCallback):
         self.trainer.save_distillm_state(checkpoint)
 
 
-class _DistillMInitialEvalCallback(TrainerCallback):
-    def __init__(self, trainer: KDTrainer) -> None:
-        self.trainer = trainer
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        del args, state, control, kwargs
-        self.trainer.initialize_distillm_baseline()
-
-
 class KDTrainer(CustomSeq2SeqTrainer):
     """Shared LlamaFactory trainer for SFT and teacher-based KD baselines."""
 
@@ -111,8 +102,8 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     getattr(self.model, "generation_config", None),
                 ),
             )
-            self.add_callback(_DistillMInitialEvalCallback(self))
             self.add_callback(_DistillMStateCallback(self))
+
     def get_train_dataloader(self) -> DataLoader:
         """Build distributed batches while preserving prepared task mixtures."""
 
@@ -200,19 +191,6 @@ class KDTrainer(CustomSeq2SeqTrainer):
         if checkpoint_path is not None:
             self.load_distillm_state(checkpoint_path)
         return super().train(resume_from_checkpoint=resume_from_checkpoint, *args, **kwargs)
-
-    def initialize_distillm_baseline(self) -> None:
-        """Evaluate once after DeepSpeed setup and before the first training batch."""
-
-        if self.rollout_scheduler is None or self.rollout_scheduler.previous_validation_loss is not None:
-            return
-        metrics = super().evaluate(metric_key_prefix="distillm_initial")
-        try:
-            initial_loss = float(metrics["distillm_initial_loss"])
-        except KeyError as exc:
-            raise RuntimeError("DistiLLM initial evaluation did not return a validation loss.") from exc
-        self.rollout_scheduler.initialize(initial_loss)
-        print_rank(f"DistiLLM initial validation loss={initial_loss:.6f}")
 
     def save_state(self) -> None:
         super().save_state()

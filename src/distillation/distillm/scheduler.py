@@ -20,7 +20,9 @@ class AdaptiveRolloutScheduler:
     loss_eps: float = 0.1
     replay_ratio: str = "decreasing"
     seed: int = 0
-    previous_validation_loss: float | None = None
+    # CypherKD starts the adaptive comparison baseline at zero rather than
+    # evaluating the untrained student before the first training epoch.
+    previous_validation_loss: float = 0.0
     _rng: np.random.RandomState = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -55,10 +57,8 @@ class AdaptiveRolloutScheduler:
         return RolloutSource.DATASET
 
     def update(self, validation_loss: float) -> bool:
-        """Increase the threshold by 0.1 when validation loss deteriorates."""
+        """Increase the threshold when loss exceeds the reference comparison baseline."""
 
-        if self.previous_validation_loss is None:
-            raise RuntimeError("Initialize the scheduler with the pre-training validation loss before updating it.")
         changed = validation_loss >= self.previous_validation_loss + self.loss_eps
         if changed:
             self.threshold = min(1.0, self.threshold + 0.1)
@@ -66,11 +66,6 @@ class AdaptiveRolloutScheduler:
             # deterioration event; improvements leave the baseline unchanged.
             self.previous_validation_loss = validation_loss
         return changed
-
-    def initialize(self, validation_loss: float) -> None:
-        """Store the validation loss measured immediately before training."""
-
-        self.previous_validation_loss = float(validation_loss)
 
     def state_dict(self) -> dict:
         return {
@@ -87,7 +82,9 @@ class AdaptiveRolloutScheduler:
         if state.get("replay_ratio", self.replay_ratio) != self.replay_ratio:
             raise ValueError("Scheduler replay_ratio does not match the current configuration.")
         self.threshold = float(state["threshold"])
-        previous_validation_loss = state.get("previous_validation_loss")
-        self.previous_validation_loss = None if previous_validation_loss is None else float(previous_validation_loss)
+        previous_validation_loss = state.get("previous_validation_loss", 0.0)
+        # Old checkpoints created before reference-parity initialization may
+        # contain None if they were saved before their initial-eval callback.
+        self.previous_validation_loss = 0.0 if previous_validation_loss is None else float(previous_validation_loss)
         if "random_state" in state:
             self._rng.set_state(state["random_state"])

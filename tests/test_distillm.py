@@ -44,9 +44,9 @@ def test_replay_state_round_trip_preserves_contents() -> None:
         torch.testing.assert_close(left["input_ids"], right["input_ids"])
 
 
-def test_scheduler_increases_threshold_after_validation_deteriorates() -> None:
+def test_scheduler_first_validation_uses_reference_zero_baseline() -> None:
     scheduler = AdaptiveRolloutScheduler(threshold=0.0, loss_eps=0.1, seed=1)
-    scheduler.initialize(0.05)
+    assert scheduler.previous_validation_loss == pytest.approx(0.0)
     assert scheduler.update(0.16) is True
     assert scheduler.threshold == pytest.approx(0.1)
     assert scheduler.update(0.20) is False
@@ -55,10 +55,26 @@ def test_scheduler_increases_threshold_after_validation_deteriorates() -> None:
 
 def test_scheduler_improvement_does_not_replace_comparison_baseline() -> None:
     scheduler = AdaptiveRolloutScheduler(threshold=0.0, loss_eps=0.1, seed=1)
-    scheduler.initialize(0.5)
+    assert scheduler.update(0.5) is True
     assert scheduler.update(0.3) is False
     assert scheduler.update(0.55) is False
     assert scheduler.previous_validation_loss == pytest.approx(0.5)
+
+
+def test_scheduler_state_round_trip_preserves_threshold_baseline_and_rng() -> None:
+    first = AdaptiveRolloutScheduler(threshold=0.0, loss_eps=0.1, seed=3)
+    assert first.update(0.5) is True
+    first.choose(progress=0.25, replay_size=2, capacity=10, batch_size=2)
+
+    second = AdaptiveRolloutScheduler(threshold=0.0, loss_eps=0.1, seed=999)
+    second.load_state_dict(first.state_dict())
+
+    assert second.threshold == pytest.approx(first.threshold)
+    assert second.previous_validation_loss == pytest.approx(first.previous_validation_loss)
+    for _ in range(5):
+        expected = first.choose(progress=0.25, replay_size=2, capacity=10, batch_size=2)
+        actual = second.choose(progress=0.25, replay_size=2, capacity=10, batch_size=2)
+        assert actual is expected
 
 
 def test_scheduler_fills_buffer_with_fresh_rollouts_before_replay() -> None:
