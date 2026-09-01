@@ -4,7 +4,7 @@ from typing import Any
 
 from .arguments import DistillationArguments
 from .data import register_tool_dataset_converters
-from .generation import generation_eos_value, resolve_eos_token_ids
+from .generation import reference_eval_generation_kwargs
 from .metrics import ComputeTaskMetrics
 from .trainer import KDTrainer
 
@@ -68,12 +68,13 @@ def run_kd(
     if training_args.predict_with_generate:
         metric_module["compute_metrics"] = ComputeTaskMetrics(tokenizer)
 
-    # Evaluation is deterministic and bounded. The longest gold response in
-    # the prepared corpus is well below this budget.
-    gen_kwargs = generating_args.to_dict(obey_generation_config=True)
-    gen_kwargs.update(do_sample=False, max_new_tokens=256, pad_token_id=tokenizer.pad_token_id)
-    eos_token_ids = resolve_eos_token_ids(tokenizer, getattr(model, "generation_config", None))
-    gen_kwargs["eos_token_id"] = generation_eos_value(eos_token_ids)
+    # Match the reference's stochastic validation decoding while keeping a
+    # bounded response budget. The longest gold response is well below it.
+    gen_kwargs = reference_eval_generation_kwargs(
+        generating_args,
+        tokenizer,
+        getattr(model, "generation_config", None),
+    )
 
     trainer = KDTrainer(
         model=model,

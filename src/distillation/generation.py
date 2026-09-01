@@ -32,3 +32,24 @@ def generation_eos_value(eos_token_ids: list[int]) -> int | list[int]:
     if not eos_token_ids:
         raise ValueError("Generation requires at least one EOS token ID.")
     return eos_token_ids[0] if len(eos_token_ids) == 1 else eos_token_ids
+
+
+def reference_eval_generation_kwargs(
+    generating_args: Any,
+    tokenizer: Any,
+    generation_config: Any | None = None,
+) -> dict[str, Any]:
+    """Build the stochastic validation decoding settings used by CypherKD."""
+
+    gen_kwargs = generating_args.to_dict(obey_generation_config=True)
+    gen_kwargs.update(
+        do_sample=True,
+        top_k=0,
+        top_p=0.95,
+        temperature=0.5,
+        max_new_tokens=256,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+    eos_token_ids = resolve_eos_token_ids(tokenizer, generation_config)
+    gen_kwargs["eos_token_id"] = generation_eos_value(eos_token_ids)
+    return gen_kwargs
