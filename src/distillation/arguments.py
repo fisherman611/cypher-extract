@@ -54,8 +54,8 @@ class DistillationArguments:
     capacity: int = 1000
     replay_ratio: str = "decreasing"
 
-    # FDD controls. Indices address Hugging Face `hidden_states`, where index
-    # zero is the embedding output. This matches the effective template index.
+    # FDD controls. Values index Hugging Face `hidden_states`, not transformer
+    # block IDs: block ID k maps to hidden-state index k + 1.
     fdd_weight: float | None = None
     student_layer_mapping: list[int] | None = None
     teacher_layer_mapping: list[int] | None = None
