@@ -6,6 +6,7 @@ import pytest
 from distillation.resume import (
     ResumeCheckpointError,
     canonical_resume_config,
+    full_model_checkpoint_identity,
     validate_fresh_output_dir,
     validate_resume_checkpoint,
     write_resume_manifest,
@@ -232,12 +233,12 @@ def test_resume_manifest_rejects_changed_runtime_content(tmp_path: Path) -> None
     write_resume_manifest(
         checkpoint,
         config={"distill_method": "fkl"},
-        runtime_identity={"train_dataset": {"fingerprint": "old"}, "teacher_adapters": [{"sha256": "old"}]},
+        runtime_identity={"train_dataset": {"fingerprint": "old"}, "teacher_checkpoint": {"sha256": "old"}},
         world_size=1,
         global_step=10,
     )
 
-    with pytest.raises(ResumeCheckpointError, match="changed sections: teacher_adapters, train_dataset"):
+    with pytest.raises(ResumeCheckpointError, match="changed sections: teacher_checkpoint, train_dataset"):
         validate_resume_checkpoint(
             checkpoint,
             output_dir=tmp_path,
@@ -248,6 +249,18 @@ def test_resume_manifest_rejects_changed_runtime_content(tmp_path: Path) -> None
             expected_config={"distill_method": "fkl"},
             expected_runtime={
                 "train_dataset": {"fingerprint": "new"},
-                "teacher_adapters": [{"sha256": "new"}],
+                "teacher_checkpoint": {"sha256": "new"},
             },
         )
+
+
+def test_full_teacher_checkpoint_identity_changes_with_weights(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher_full"
+    _write(teacher / "config.json", "{}")
+    _write(teacher / "model.safetensors", "first")
+    first = full_model_checkpoint_identity(str(teacher))
+
+    _write(teacher / "model.safetensors", "second")
+    second = full_model_checkpoint_identity(str(teacher))
+
+    assert first != second

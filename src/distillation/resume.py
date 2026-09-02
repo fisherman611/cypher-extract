@@ -28,10 +28,70 @@ _MODEL_STATE_NAMES = (
     "pytorch_model.bin",
     "pytorch_model.bin.index.json",
 )
+_MODEL_IDENTITY_FILES = frozenset(
+    {
+        "config.json",
+        "generation_config.json",
+        "model.safetensors.index.json",
+        "pytorch_model.bin.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+    }
+)
+_WEIGHT_SAMPLE_BYTES = 64 * 1024
 
 
 class ResumeCheckpointError(ValueError):
     """Raised when a checkpoint cannot restore the complete training state."""
+
+
+def _is_full_model_weight(path: Path) -> bool:
+    return (
+        path.name == "model.safetensors"
+        or (path.name.startswith("model-") and path.suffix == ".safetensors")
+        or path.name == "pytorch_model.bin"
+        or (path.name.startswith("pytorch_model-") and path.suffix == ".bin")
+    )
+
+
+def _file_sha256(path: Path, *, sampled: bool = False) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        if not sampled:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        else:
+            digest.update(handle.read(_WEIGHT_SAMPLE_BYTES))
+            if path.stat().st_size > _WEIGHT_SAMPLE_BYTES:
+                handle.seek(max(path.stat().st_size - _WEIGHT_SAMPLE_BYTES, 0))
+                digest.update(handle.read(_WEIGHT_SAMPLE_BYTES))
+    return digest.hexdigest()
+
+
+def full_model_checkpoint_identity(value: str | None) -> dict[str, Any] | None:
+    """Fingerprint local full-model assets without hashing every multi-GB shard."""
+
+    if not value:
+        return None
+    path = Path(value).expanduser().resolve()
+    identity: dict[str, Any] = {"source": value}
+    if not path.is_dir():
+        return identity
+
+    files = []
+    for candidate in sorted((item for item in path.iterdir() if item.is_file()), key=lambda item: item.name):
+        if _is_full_model_weight(candidate):
+            files.append(
+                {
+                    "name": candidate.name,
+                    "size": candidate.stat().st_size,
+                    "sample_sha256": _file_sha256(candidate, sampled=True),
+                }
+            )
+        elif candidate.name in _MODEL_IDENTITY_FILES:
+            files.append({"name": candidate.name, "sha256": _file_sha256(candidate)})
+    identity.update(resolved_path=str(path), files=files)
+    return identity
 
 
 def validate_fresh_output_dir(output_dir: str | os.PathLike[str]) -> None:

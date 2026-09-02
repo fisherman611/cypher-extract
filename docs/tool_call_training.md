@@ -127,7 +127,7 @@ the native template, for example:
 ```bash
 uv run bash scripts/train.sh configs/qwen3/fkl.yaml \
   dataset=tool_train eval_dataset=tool_validation \
-  ref_model_adapters=/path/to/teacher-adapter
+  ref_model=/path/to/full-teacher-checkpoint
 ```
 
 Adaptive DistiLLM supports tool trajectories by extracting every contiguous
@@ -138,7 +138,7 @@ or replace that observation with a live environment response.
 
 ## ShareGPT alternative
 
-Plain LlamaFactory `sharegpt` data also works without the adapter. Use
+Plain LlamaFactory `sharegpt` data also works without the custom converter. Use
 alternating roles `human`/`observation` and `gpt`/`function_call`:
 
 ```json

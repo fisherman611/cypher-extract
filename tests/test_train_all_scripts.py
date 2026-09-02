@@ -16,13 +16,13 @@ def test_train_all_scripts_route_every_method_through_results_root(script_name: 
 
     assert 'RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_ROOT}/results}"' in script
     assert f'FAMILY_RESULTS="${{RESULTS_ROOT}}/{family}"' in script
-    assert 'TEACHER_ADAPTER="${FAMILY_RESULTS}/teacher_lora"' in script
-    assert '"output_dir=${TEACHER_ADAPTER}"' in script
+    assert 'TEACHER_MODEL="${FAMILY_RESULTS}/teacher_full"' in script
+    assert '"output_dir=${TEACHER_MODEL}"' in script
     assert 'output_dir="${FAMILY_RESULTS}/${method}"' in script
-    assert 'method_overrides+=("ref_model_adapters=${TEACHER_ADAPTER}")' in script
+    assert 'method_overrides+=("ref_model=${TEACHER_MODEL}")' in script
     assert '"$@" "${method_overrides[@]}"' in script
     assert 'if [[ "${override}" == resume_from_checkpoint=* ]]; then' in script
     assert "one checkpoint cannot be applied to every method" in script
-    assert 'fresh_outputs=("${TEACHER_ADAPTER}")' in script
+    assert 'fresh_outputs=("${TEACHER_MODEL}")' in script
     assert 'for checkpoint in "${output_dir}"/checkpoint-*; do' in script
     assert "Choose a new RESULTS_ROOT" in script

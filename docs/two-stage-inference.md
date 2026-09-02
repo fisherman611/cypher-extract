@@ -1,6 +1,6 @@
 # Two-stage inference
 
-Pipeline inference chạy cùng một multitask LoRA adapter qua hai bước:
+Pipeline inference chạy cùng một multitask full-model checkpoint qua hai bước:
 
 1. `question + schema unit -> YES/NO` bằng greedy decoding, không sampling;
 2. merge các unit được chọn thành predicted sub-schema, rồi chạy
@@ -29,7 +29,7 @@ sẽ từ chối reuse output cũ. Hãy chọn một `--output-dir` inference m�
 `--methods all` gồm 13 model:
 
 ```text
-teacher_lora
+teacher_full
 sft
 fkl
 rkl
@@ -44,8 +44,8 @@ distillm_adaptive_sfkl
 distillm_adaptive_srkl
 ```
 
-Base model được đọc từ `adapter_config.json`, vì vậy student adapter dùng
-`Qwen/Qwen3-0.6B` còn `teacher_lora` dùng `Qwen/Qwen3-4B-Instruct-2507`.
+Mỗi method được nạp trực tiếp từ checkpoint chứa full model; không cần ghép
+base model với LoRA adapter.
 
 ## Chạy
 
@@ -77,19 +77,12 @@ Chạy một phần method trên một GPU cụ thể:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora,sft,fkl
+  --methods teacher_full,sft,fkl
 ```
 
 Trên nhiều GPU, chạy nhiều process với danh sách method không giao nhau. Mỗi
 process batch song song các schema unit trên GPU của nó; không nên load nhiều
-adapter vào cùng một GPU.
-
-Nếu base model trên Hugging Face cần authentication, đặt một trong hai biến:
-
-```bash
-export HF_READ_TOKEN=...
-# hoặc HF_TOKEN
-```
+model vào cùng một GPU.
 
 ## Merge policy
 

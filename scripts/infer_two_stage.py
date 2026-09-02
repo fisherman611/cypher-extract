@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         default="all",
-        help="Comma-separated methods or 'all'. 'all' includes teacher_lora.",
+        help="Comma-separated methods or 'all'. 'all' includes teacher_full.",
     )
     parser.add_argument(
         "--datasets",
@@ -95,11 +95,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--num-beams", type=int, default=1)
-    parser.add_argument(
-        "--no-merge-adapter",
-        action="store_true",
-        help="Keep LoRA modules separate instead of merging them into the base model.",
-    )
     parser.add_argument(
         "--no-relation-endpoint-closure",
         action="store_true",
@@ -218,7 +213,7 @@ def main() -> None:
             f"[{method}] resolved {checkpoint.uri} "
             f"(step {checkpoint.step}, fingerprint {checkpoint.fingerprint[:12]})"
         )
-        # Validate every local model/adapter before creating any resumable
+        # Validate every local full-model checkpoint before creating any resumable
         # output directory or run_config.json file.
         checkpoint_paths[method] = resolve_checkpoint_directory(checkpoint)
 
@@ -253,7 +248,6 @@ def main() -> None:
                     checkpoint_paths[method],
                     dtype=args.dtype,
                     device=args.device,
-                    merge_adapter=not args.no_merge_adapter,
                 )
             else:
                 print(f"[seed{seed}/{method}] all model-backed stages are complete; skipping model load")
