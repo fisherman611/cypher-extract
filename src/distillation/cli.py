@@ -21,7 +21,7 @@ _HF_PATH_KEYS = {
 }
 
 _REQUIRED_PLACEHOLDERS = {
-    "ref_model_adapters": "REPLACE_WITH_TEACHER_ADAPTER",
+    "ref_model": "REPLACE_WITH_TEACHER_MODEL",
     "dataset": "REPLACE_WITH_TRAIN_DATASET",
     "eval_dataset": "REPLACE_WITH_EVAL_DATASET",
 }
@@ -80,7 +80,7 @@ def _resolve_config_paths(config: dict[str, Any]) -> None:
 def _validate_required_placeholders(config: dict[str, Any]) -> None:
     required_placeholders = dict(_REQUIRED_PLACEHOLDERS)
     if not _requires_teacher(config):
-        required_placeholders.pop("ref_model_adapters")
+        required_placeholders.pop("ref_model")
     unresolved = [key for key, placeholder in required_placeholders.items() if config.get(key) == placeholder]
     if unresolved:
         fields = ", ".join(unresolved)

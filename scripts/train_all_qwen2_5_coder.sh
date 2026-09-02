@@ -3,13 +3,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_DIR="${PROJECT_ROOT}/configs/qwen2.5_coder"
-TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_lora_qwen2.5_coder.yaml"
+TEACHER_CONFIG="${PROJECT_ROOT}/configs/distillation/teacher_full_qwen2.5_coder.yaml"
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_ROOT}/results}"
 if [[ "${RESULTS_ROOT}" != /* ]]; then
   RESULTS_ROOT="${PROJECT_ROOT}/${RESULTS_ROOT}"
 fi
 FAMILY_RESULTS="${RESULTS_ROOT}/qwen2.5_coder"
-TEACHER_ADAPTER="${FAMILY_RESULTS}/teacher_lora"
+TEACHER_MODEL="${FAMILY_RESULTS}/teacher_full"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${QWEN2_5_CODER_LOG_DIR:-${FAMILY_RESULTS}/run_all_logs/${RUN_ID}}"
 CONFIG_NAMES=(
@@ -43,7 +43,7 @@ for config_name in "${CONFIG_NAMES[@]}"; do
     exit 2
   fi
 done
-fresh_outputs=("${TEACHER_ADAPTER}")
+fresh_outputs=("${TEACHER_MODEL}")
 for config_name in "${CONFIG_NAMES[@]}"; do
   fresh_outputs+=("${FAMILY_RESULTS}/${config_name%.yaml}")
 done
@@ -60,22 +60,24 @@ mkdir -p "${LOG_DIR}"
 cd "${PROJECT_ROOT}"
 echo
 echo "============================================================"
-echo "Running configs/distillation/teacher_lora_qwen2.5_coder.yaml"
-echo "Output: ${TEACHER_ADAPTER}"
-echo "Log: ${LOG_DIR}/teacher_lora_qwen2.5_coder.log"
+echo "Running configs/distillation/teacher_full_qwen2.5_coder.yaml"
+echo "Output: ${TEACHER_MODEL}"
+echo "Log: ${LOG_DIR}/teacher_full_qwen2.5_coder.log"
 echo "============================================================"
 # Every full run starts by training the teacher. A failed teacher cannot be
-# skipped because all KD methods depend on the adapter it produces.
-if bash scripts/train.sh configs/distillation/teacher_lora_qwen2.5_coder.yaml "$@" \
-  "output_dir=${TEACHER_ADAPTER}" 2>&1 | tee "${LOG_DIR}/teacher_lora_qwen2.5_coder.log"; then
-  echo "Completed: teacher_lora_qwen2.5_coder"
+# skipped because all KD methods depend on the full checkpoint it produces.
+if bash scripts/train.sh configs/distillation/teacher_full_qwen2.5_coder.yaml "$@" \
+  "output_dir=${TEACHER_MODEL}" 2>&1 | tee "${LOG_DIR}/teacher_full_qwen2.5_coder.log"; then
+  echo "Completed: teacher_full_qwen2.5_coder"
 else
   status=${PIPESTATUS[0]}
-  echo "Failed: teacher_lora_qwen2.5_coder (exit ${status}); dependent Qwen2.5-Coder runs were not started." >&2
+  echo "Failed: teacher_full_qwen2.5_coder (exit ${status}); dependent Qwen2.5-Coder runs were not started." >&2
   exit "${status}"
 fi
-if [[ ! -f "${TEACHER_ADAPTER}/adapter_config.json" ]]; then
-  echo "Teacher run completed but did not create ${TEACHER_ADAPTER}/adapter_config.json" >&2
+if [[ ! -f "${TEACHER_MODEL}/config.json" ]] || \
+   [[ ! -f "${TEACHER_MODEL}/model.safetensors" && ! -f "${TEACHER_MODEL}/model.safetensors.index.json" && \
+      ! -f "${TEACHER_MODEL}/pytorch_model.bin" && ! -f "${TEACHER_MODEL}/pytorch_model.bin.index.json" ]]; then
+  echo "Teacher run completed but did not create full-model weights in ${TEACHER_MODEL}" >&2
   exit 1
 fi
 failed=()
@@ -86,7 +88,7 @@ for config_name in "${CONFIG_NAMES[@]}"; do
   output_dir="${FAMILY_RESULTS}/${method}"
   method_overrides=("output_dir=${output_dir}")
   if [[ "${method}" != "sft" ]]; then
-    method_overrides+=("ref_model_adapters=${TEACHER_ADAPTER}")
+    method_overrides+=("ref_model=${TEACHER_MODEL}")
   fi
   echo
   echo "============================================================"

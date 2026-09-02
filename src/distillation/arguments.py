@@ -27,7 +27,7 @@ SUPPORTED_METHODS = frozenset(
 class DistillationArguments:
     """Arguments specific to the distillation algorithms.
 
-    Model, data, optimization, LoRA, generation, and DeepSpeed options remain
+    Model, data, optimization, fine-tuning, generation, and DeepSpeed options remain
     owned by LlamaFactory. These fields correspond to behavior present in the
     baseline scripts or required by their runtime implementation.
     """

@@ -102,7 +102,7 @@ def relation(source: str, relation_type: str, target: str) -> dict:
 
 
 def test_all_methods_include_teacher() -> None:
-    assert "teacher_lora" in DEFAULT_METHODS
+    assert "teacher_full" in DEFAULT_METHODS
     assert len(DEFAULT_METHODS) == 13
 
 
@@ -212,16 +212,16 @@ def test_last_checkpoint_rejects_manifest_with_wrong_step(tmp_path: Path) -> Non
 
 def test_training_output_dirs_match_local_inference_layout() -> None:
     teacher_configs = {
-        "qwen3": Path("configs/distillation/teacher_lora_qwen3.yaml"),
-        "llama3": Path("configs/distillation/teacher_lora_llama3.yaml"),
-        "qwen2.5_coder": Path("configs/distillation/teacher_lora_qwen2.5_coder.yaml"),
+        "qwen3": Path("configs/distillation/teacher_full_qwen3.yaml"),
+        "llama3": Path("configs/distillation/teacher_full_llama3.yaml"),
+        "qwen2.5_coder": Path("configs/distillation/teacher_full_qwen2.5_coder.yaml"),
     }
     for family, teacher_config in teacher_configs.items():
         output_dirs = {
             path.stem: yaml.safe_load(path.read_text(encoding="utf-8"))["output_dir"]
             for path in (Path("configs") / family).glob("*.yaml")
         }
-        output_dirs["teacher_lora"] = yaml.safe_load(teacher_config.read_text(encoding="utf-8"))["output_dir"]
+        output_dirs["teacher_full"] = yaml.safe_load(teacher_config.read_text(encoding="utf-8"))["output_dir"]
 
         assert set(output_dirs) == set(DEFAULT_METHODS)
         for method, output_dir in output_dirs.items():

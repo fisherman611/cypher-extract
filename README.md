@@ -276,19 +276,19 @@ Lệnh tạo bốn dataset `cypher_prepared_train`, `cypher_prepared_eval`,
 chúng trong `data/llamafactory/dataset_info.json`. Các YAML hiện tại đã trỏ
 sẵn tới train/eval local này.
 
-### 3. Train LoRA teacher Qwen
+### 3. Full fine-tune teacher Qwen
 
-Train teacher `Qwen/Qwen3-4B-Instruct-2507`. Adapter được lưu tại
-`results/qwen3/teacher_lora`:
+Train teacher `Qwen/Qwen3-4B-Instruct-2507`. Full checkpoint được lưu tại
+`results/qwen3/teacher_full`:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_full_qwen3.yaml
 ```
 
 Nếu chỉ dùng một GPU:
 
 ```bash
-RUN_GPUS=0 bash scripts/train.sh configs/distillation/teacher_lora_qwen3.yaml
+RUN_GPUS=0 bash scripts/train.sh configs/distillation/teacher_full_qwen3.yaml
 ```
 
 ### 4. Train SFT student làm baseline
@@ -304,8 +304,8 @@ Output nằm tại `results/qwen3/student_sft`.
 
 ### 5. Train student bằng KD
 
-Config project mặc định dùng FKL với `kd_ratio: 0.6`, tự nạp base teacher 4B
-và LoRA adapter vừa train tại `results/qwen3/teacher_lora`:
+Config project mặc định dùng FKL với `kd_ratio: 0.6` và tự nạp full teacher
+vừa train tại `results/qwen3/teacher_full`:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml
@@ -321,11 +321,11 @@ còn tự động có trọng số lớn hơn selector chỉ vì chứa nhiều 
 trọng số khi chạy, ví dụ `selector_loss_weight=0.6`; giá trị còn lại `0.4` là
 trọng số generator. Cơ chế này áp dụng nhất quán cho LM, KD, FDD và HPD loss.
 
-Có thể thay adapter, dataset hoặc output bằng override:
+Có thể thay full teacher checkpoint, dataset hoặc output bằng override:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
-  ref_model_adapters=/path/to/teacher-adapter \
+  ref_model=/path/to/full-teacher-checkpoint \
   dataset=cypher_prepared_train \
   eval_dataset=cypher_prepared_eval \
   output_dir=results/qwen3/my_fkl
@@ -333,8 +333,8 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml \
 
 ### 6. Chạy các method khác
 
-Các preset trong `configs/qwen3` đã dùng dataset local và tự nạp adapter tại
-`results/qwen3/teacher_lora`. Ví dụ AMID:
+Các preset trong `configs/qwen3` đã dùng dataset local và tự nạp teacher tại
+`results/qwen3/teacher_full`. Ví dụ AMID:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/amid.yaml
@@ -351,7 +351,7 @@ tất cả KD baseline):
 RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
 ```
 
-Mọi override phía sau script, trừ `output_dir` và `ref_model_adapters` do script
+Mọi override phía sau script, trừ `output_dir` và `ref_model` do script
 quản lý, được chuyển cho từng run. Ví dụ smoke-test một epoch:
 
 ```bash
@@ -366,7 +366,7 @@ RESULTS_ROOT=results_run2 \
 RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
 ```
 
-Output tương ứng là `results_run2/qwen3/teacher_lora`,
+Output tương ứng là `results_run2/qwen3/teacher_full`,
 `results_run2/qwen3/sft`, `results_run2/qwen3/fkl`, ...; mọi KD config trong
 run này tự dùng teacher tại root mới. Không truyền `output_dir=...` cho
 `train_all_*`, vì script quản lý riêng output của từng method.
@@ -378,14 +378,14 @@ chạy các method còn lại. Log riêng của từng method nằm trong
 
 Preset trong `configs/llama3` dùng student Llama 3.2 1B và teacher Llama 3 8B.
 Đăng nhập Hugging Face với tài khoản có quyền truy cập model gated, sau đó
-train đúng LoRA teacher Llama:
+full fine-tune teacher Llama:
 
 ```bash
 export HF_TOKEN=your_huggingface_token
-RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_lora_llama3.yaml
+RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/teacher_full_llama3.yaml
 ```
 
-Adapter được lưu tại `results/llama3/teacher_lora` và mọi preset Llama tự nạp
+Full checkpoint được lưu tại `results/llama3/teacher_full` và mọi preset Llama tự nạp
 đường dẫn này. Ví dụ:
 
 ```bash
@@ -420,7 +420,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_llama3.sh \
   --checkpoint-root results
 ```
 
-Không dùng adapter Qwen cho config Llama hoặc ngược lại.
+Không dùng teacher checkpoint Qwen cho config Llama hoặc ngược lại.
 
 ### Qwen2.5-Coder 3B/7B
 
@@ -430,7 +430,7 @@ Các preset trong `configs/qwen2.5_coder` dùng
 EOS generation được lấy từ generation config của model để hỗ trợ cả
 `<|im_end|>` và `<|endoftext|>`.
 
-Train teacher LoRA rồi chạy toàn bộ SFT/KD preset:
+Full fine-tune teacher rồi chạy toàn bộ SFT/KD preset:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
@@ -475,11 +475,11 @@ tự chọn checkpoint mới nhất.
 Trước khi load model, resume preflight kiểm tra:
 
 - `trainer_state.json` và `global_step` khớp tên checkpoint;
-- model/adapter, optimizer và scheduler state đầy đủ;
+- model, optimizer và scheduler state đầy đủ;
 - RNG state đủ cho từng rank và `world_size` khớp lần train trước;
 - DeepSpeed `latest`, model state và optimizer shard đều trỏ đúng step;
 - `resume_manifest.json` xác nhận config ảnh hưởng training, fingerprint của train/eval
-  dataset, commit/config model, toàn bộ teacher adapter weights, phiên bản
+  dataset, commit/config model, nội dung full teacher checkpoint, phiên bản
   runtime và loại GPU không bị thay đổi;
 - với adaptive DistiLLM, có đủ `distillm_state_rankN.pt` để khôi phục threshold,
   replay buffer, RNG của scheduler và rollout counters.
@@ -493,9 +493,9 @@ Fresh training cũng từ chối chạy nếu `output_dir` đã chứa `checkpoi
 Đổi `output_dir` hoặc `RESULTS_ROOT` cho run mới; không dùng
 `overwrite_output_dir=true` để trộn hai run vào cùng một cây kết quả.
 
-Mọi preset đã pin `model_revision` của student và `ref_model_revision` của
-teacher bằng commit SHA riêng. Checkpoint LoRA mới cũng ghi commit base model;
-inference ưu tiên commit trong `resume_manifest.json` thay vì branch `main`.
+Mọi preset đã pin `model_revision` của student bằng commit SHA. Teacher config
+cũng pin base revision trước khi tạo full checkpoint local; KD nạp trực tiếp
+checkpoint này và fingerprint nội dung teacher để bảo vệ resume.
 `save_total_limit: null` không giới hạn số checkpoint được giữ lại. Vì vậy cần
 theo dõi dung lượng của `output_dir` khi chạy nhiều epoch hoặc lưu thường xuyên.
 
@@ -507,7 +507,7 @@ python -m pytest
 
 ## Two-stage inference trên Linux
 
-Pipeline inference thực hiện tuần tự hai task bằng cùng một LoRA adapter:
+Pipeline inference thực hiện tuần tự hai task bằng cùng một full-model checkpoint:
 
 1. Chạy selector cho từng cặp `question + schema unit` để dự đoán `YES/NO`
    bằng greedy decoding (`do_sample=False`, tối đa một token).
@@ -567,7 +567,7 @@ python scripts/infer_two_stage.py --help
 `--methods all` chạy 13 model sau:
 
 ```text
-teacher_lora
+teacher_full
 sft
 fkl
 rkl
@@ -598,10 +598,8 @@ time và hash mẫu của weight files. Nếu weights bị thay ngay tại cùng
 cùng `checkpoint-N`, pipeline từ chối reuse prediction cũ và yêu cầu một
 `--output-dir` mới.
 
-Base model được lấy từ `adapter_config.json`:
-
-- `teacher_lora`: `Qwen/Qwen3-4B-Instruct-2507`;
-- 12 student methods: `Qwen/Qwen3-0.6B`.
+Mỗi method được nạp trực tiếp từ checkpoint chứa full model; không cần ghép
+base model với LoRA adapter.
 
 ### 3. Chạy toàn bộ trên một GPU
 
@@ -636,7 +634,7 @@ Ví dụ chạy teacher, SFT và FKL trên CypherBench:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora,sft,fkl \
+  --methods teacher_full,sft,fkl \
   --datasets cypherbench \
   --selector-batch-size 64 \
   --generator-batch-size 8 \
@@ -670,7 +668,7 @@ không trùng nhau. Ví dụ với bốn GPU:
 mkdir -p logs/inference
 
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora,sft,fkl \
+  --methods teacher_full,sft,fkl \
   > logs/inference/gpu0.log 2>&1 &
 pid0=$!
 
@@ -708,7 +706,7 @@ JSONL hoàn chỉnh. Nếu process bị dừng, chạy lại chính xác command
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora,sft,fkl \
+  --methods teacher_full,sft,fkl \
   --datasets cypherbench \
   --selector-batch-size 64 \
   --generator-batch-size 8
@@ -888,18 +886,17 @@ trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng
 
 ### 8. Điều chỉnh VRAM
 
-Nếu GPU ít VRAM, giảm batch size. Với `teacher_lora` 4B có thể bắt đầu bằng:
+Nếu GPU ít VRAM, giảm batch size. Với `teacher_full` 4B có thể bắt đầu bằng:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora \
+  --methods teacher_full \
   --selector-batch-size 32 \
   --generator-batch-size 4 \
   --dtype bfloat16
 ```
 
-Nếu GPU không hỗ trợ BF16, thử `--dtype float16`. Có thể giữ LoRA adapter chưa
-merge bằng `--no-merge-adapter`, nhưng inference thường chậm hơn.
+Nếu GPU không hỗ trợ BF16, thử `--dtype float16`.
 
 Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
 `temperature=0.5`, `top_p=0.95`, `top_k=0`, `num_beams=1`) và ChatML

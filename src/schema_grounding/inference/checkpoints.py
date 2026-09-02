@@ -11,7 +11,7 @@ DEFAULT_CHECKPOINT_ROOT = Path("results")
 DEFAULT_MODEL_FAMILY = "qwen3"
 SUPPORTED_MODEL_FAMILIES = ("qwen3", "llama3", "qwen2.5_coder")
 DEFAULT_METHODS = (
-    "teacher_lora",
+    "teacher_full",
     "sft",
     "fkl",
     "rkl",

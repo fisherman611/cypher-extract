@@ -102,29 +102,31 @@ def test_all_remote_base_models_are_pinned_to_immutable_commits(config_path: Pat
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["model_revision"] == PINNED_MODEL_REVISIONS[config["model_name_or_path"]]
     if "ref_model" in config:
-        assert config["ref_model_revision"] == PINNED_MODEL_REVISIONS[config["ref_model"]]
+        assert config["ref_model"].startswith("results/")
+        assert "ref_model_revision" not in config
 
 
 @pytest.mark.parametrize(
     ("teacher_path", "kd_path"),
     [
-        ("configs/distillation/teacher_lora_qwen3.yaml", "configs/qwen3/fkl.yaml"),
-        ("configs/distillation/teacher_lora_llama3.yaml", "configs/llama3/fkl.yaml"),
-        ("configs/distillation/teacher_lora_qwen2.5_coder.yaml", "configs/qwen2.5_coder/fkl.yaml"),
+        ("configs/distillation/teacher_full_qwen3.yaml", "configs/qwen3/fkl.yaml"),
+        ("configs/distillation/teacher_full_llama3.yaml", "configs/llama3/fkl.yaml"),
+        ("configs/distillation/teacher_full_qwen2.5_coder.yaml", "configs/qwen2.5_coder/fkl.yaml"),
     ],
 )
-def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
+def test_teacher_full_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
     teacher = yaml.safe_load(Path(teacher_path).read_text(encoding="utf-8"))
     kd = yaml.safe_load(Path(kd_path).read_text(encoding="utf-8"))
 
     assert teacher["distill_method"] == "sft"
     assert teacher["kd_ratio"] == 0.0
-    assert teacher["finetuning_type"] == "lora"
+    assert teacher["finetuning_type"] == "full"
+    assert not any(key.startswith("lora_") for key in teacher)
     assert "ref_model" not in teacher
     assert "ref_model_adapters" not in teacher
-    assert teacher["model_name_or_path"] == kd["ref_model"]
-    assert teacher["model_revision"] == kd["ref_model_revision"]
-    assert teacher["output_dir"] == kd["ref_model_adapters"]
+    assert teacher["output_dir"] == kd["ref_model"]
+    assert "ref_model_revision" not in kd
+    assert "ref_model_adapters" not in kd
     assert teacher["dataset"] == kd["dataset"]
     assert teacher["eval_dataset"] == kd["eval_dataset"]
     assert teacher["dataset_dir"] == kd["dataset_dir"]
@@ -135,16 +137,8 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert "lr_scheduler_kwargs" not in teacher
 
 
-@pytest.mark.parametrize(
-    "config_path",
-    [
-        Path("configs/distillation/student_sft.yaml"),
-        Path("configs/llama3/sft.yaml"),
-        Path("configs/qwen3/sft.yaml"),
-        Path("configs/qwen2.5_coder/sft.yaml"),
-    ],
-)
-def test_student_sft_configs_use_full_finetuning(config_path: Path) -> None:
+@pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
+def test_all_train_configs_use_full_finetuning(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["finetuning_type"] == "full"
     assert not any(key.startswith("lora_") for key in config)
@@ -175,8 +169,8 @@ def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     assert config["model_name_or_path"] == "Qwen/Qwen3-0.6B"
     assert config["model_revision"] == MODEL_REVISIONS["qwen3"]["student"]
     if config["distill_method"] != "sft":
-        assert config["ref_model"] == "Qwen/Qwen3-4B-Instruct-2507"
-        assert config["ref_model_revision"] == MODEL_REVISIONS["qwen3"]["teacher"]
+        assert config["ref_model"] == "results/qwen3/teacher_full"
+        assert "ref_model_revision" not in config
     assert config["template"] == "qwen3_nothink"
     assert config["cutoff_len"] == 892
     assert config["per_device_train_batch_size"] == 2
@@ -193,8 +187,8 @@ def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -
     assert config["model_name_or_path"] == "Qwen/Qwen2.5-Coder-3B-Instruct"
     assert config["model_revision"] == MODEL_REVISIONS["qwen2.5_coder"]["student"]
     if config["distill_method"] != "sft":
-        assert config["ref_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
-        assert config["ref_model_revision"] == MODEL_REVISIONS["qwen2.5_coder"]["teacher"]
+        assert config["ref_model"] == "results/qwen2.5_coder/teacher_full"
+        assert "ref_model_revision" not in config
     assert config["template"] == "qwen"
     assert config["cutoff_len"] == 892
     assert config["per_device_train_batch_size"] == 2
@@ -277,6 +271,22 @@ def test_reference_model_uses_its_own_revision_and_restores_student_revision() -
     assert model_args.model_revision == "student-commit"
 
 
+def test_local_reference_model_does_not_inherit_student_revision(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher_full"
+    teacher.mkdir()
+    model_args = SimpleNamespace(model_revision="student-commit")
+    finetuning_args = SimpleNamespace(ref_model=str(teacher))
+    observed = {}
+
+    def factory(received_model_args, _finetuning_args):
+        observed["revision"] = received_model_args.model_revision
+        return "teacher"
+
+    assert create_reference_model_at_revision(model_args, finetuning_args, None, factory) == "teacher"
+    assert observed["revision"] is None
+    assert model_args.model_revision == "student-commit"
+
+
 def test_zero_kd_ratio_ignores_stale_adaptive_options() -> None:
     args = DistillationArguments(
         distill_method="adaptive_srkl",
@@ -313,13 +323,14 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     distillation_args, _ = DistillationArguments.split_config(config)
     if distillation_args.uses_kd:
-        expected_adapter = {
-            "qwen3": "results/qwen3/teacher_lora",
-            "llama3": "results/llama3/teacher_lora",
-            "qwen2.5_coder": "results/qwen2.5_coder/teacher_lora",
+        expected_teacher = {
+            "qwen3": "results/qwen3/teacher_full",
+            "llama3": "results/llama3/teacher_full",
+            "qwen2.5_coder": "results/qwen2.5_coder/teacher_full",
         }[config_path.parent.name]
-        assert config["ref_model_adapters"] == expected_adapter
-        assert distillation_args.ref_model_revision == MODEL_REVISIONS[config_path.parent.name]["teacher"]
+        assert config["ref_model"] == expected_teacher
+        assert "ref_model_adapters" not in config
+        assert distillation_args.ref_model_revision is None
     else:
         assert "ref_model_adapters" not in config
     assert config["dataset"] == "cypher_prepared_train"
@@ -360,10 +371,10 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
 
 
 def test_unresolved_required_placeholders_are_rejected() -> None:
-    with pytest.raises(ValueError, match="ref_model_adapters, dataset, eval_dataset"):
+    with pytest.raises(ValueError, match="ref_model, dataset, eval_dataset"):
         _validate_required_placeholders(
             {
-                "ref_model_adapters": "REPLACE_WITH_TEACHER_ADAPTER",
+                "ref_model": "REPLACE_WITH_TEACHER_MODEL",
                 "dataset": "REPLACE_WITH_TRAIN_DATASET",
                 "eval_dataset": "REPLACE_WITH_EVAL_DATASET",
             }
@@ -373,7 +384,7 @@ def test_unresolved_required_placeholders_are_rejected() -> None:
 def test_overridden_required_placeholders_are_accepted() -> None:
     _validate_required_placeholders(
         {
-            "ref_model_adapters": "hf://owner/repo/adapter",
+            "ref_model": "results/qwen3/teacher_full",
             "dataset": "my_train",
             "eval_dataset": "my_eval",
         }
