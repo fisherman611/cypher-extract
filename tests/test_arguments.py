@@ -144,6 +144,25 @@ def test_student_sft_configs_use_full_finetuning(config_path: Path) -> None:
     assert not any(key.startswith("lora_") for key in config)
 
 
+@pytest.mark.parametrize(
+    ("family", "student_layers", "teacher_layers"),
+    [
+        ("llama3", 16, 32),
+        ("qwen3", 28, 36),
+        ("qwen2.5_coder", 36, 28),
+    ],
+)
+def test_fdd_configs_map_middle_and_final_hidden_states(
+    family: str,
+    student_layers: int,
+    teacher_layers: int,
+) -> None:
+    for config_path in (Path("configs") / family).glob("fdd_*.yaml"):
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["student_layer_mapping"] == [student_layers // 2, student_layers]
+        assert config["teacher_layer_mapping"] == [teacher_layers // 2, teacher_layers]
+
+
 @pytest.mark.parametrize("config_path", sorted(Path("configs/qwen3").glob("*.yaml")))
 def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -158,8 +177,8 @@ def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
     assert config["per_device_eval_batch_size"] == 16
     assert config["gradient_accumulation_steps"] == 8
     if config["distill_method"].startswith("fdd_"):
-        assert config["student_layer_mapping"] == [13, 27]
-        assert config["teacher_layer_mapping"] == [17, 35]
+        assert config["student_layer_mapping"] == [14, 28]
+        assert config["teacher_layer_mapping"] == [18, 36]
 
 
 @pytest.mark.parametrize("config_path", sorted(Path("configs/qwen2.5_coder").glob("*.yaml")))
@@ -176,8 +195,8 @@ def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -
     assert config["per_device_eval_batch_size"] == 8
     assert config["gradient_accumulation_steps"] == 8
     if config["distill_method"].startswith("fdd_"):
-        assert config["student_layer_mapping"] == [17, 35]
-        assert config["teacher_layer_mapping"] == [13, 27]
+        assert config["student_layer_mapping"] == [18, 36]
+        assert config["teacher_layer_mapping"] == [14, 28]
 
 
 def test_adaptive_method_requires_student_generation() -> None:

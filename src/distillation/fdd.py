@@ -67,9 +67,13 @@ def fdd_loss(
 ) -> torch.Tensor:
     """Feature distribution distillation from the reference FDD trainer.
 
-    Hugging Face hidden-state index zero is the embedding output. The template
-    prepended `None` to hooked student block outputs, which produces the same
-    effective indexing convention.
+    Config values are Hugging Face hidden-state indices, not zero-based block
+    IDs. For a model with ``n`` blocks, index zero is the embedding output,
+    index ``k`` is the representation after block ``k - 1``, and index ``n``
+    is the final representation after block ``n - 1`` and the model's final
+    norm. Therefore block IDs ``n / 2 - 1`` and ``n - 1`` map to config values
+    ``n / 2`` and ``n``. The reference prepended ``None`` to hooked student
+    block outputs, producing the same one-position offset.
     """
 
     if len(student_layer_mapping) != len(teacher_layer_mapping):

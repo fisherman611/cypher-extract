@@ -27,8 +27,8 @@ distill_method: fdd_sfkl
 kd_ratio: 0.5
 skew_alpha: 0.1
 fdd_weight: 0.2
-student_layer_mapping: [17, 35]
-teacher_layer_mapping: [13, 27]
+student_layer_mapping: [18, 36]
+teacher_layer_mapping: [14, 28]
 output_dir: results/qwen2.5_coder/fdd_sfkl
 overwrite_output_dir: true
 per_device_train_batch_size: 2

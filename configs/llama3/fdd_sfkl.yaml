@@ -30,8 +30,8 @@ distill_method: fdd_sfkl
 kd_ratio: 0.5
 skew_alpha: 0.1
 fdd_weight: 0.2
-student_layer_mapping: [7, 15]
-teacher_layer_mapping: [15, 31]
+student_layer_mapping: [8, 16]
+teacher_layer_mapping: [16, 32]
 
 output_dir: results/llama3/fdd_sfkl
 overwrite_output_dir: true
