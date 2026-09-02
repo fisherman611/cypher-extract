@@ -130,3 +130,43 @@ def test_stage_one_graph_quotas_follow_source_question_distribution() -> None:
     assert len(selected) == 16
     assert summaries["art"]["rows"] == 12
     assert summaries["soccer"]["rows"] == 4
+
+
+def test_stage_one_matches_joint_label_and_unit_type_distribution() -> None:
+    rows = []
+    for graph in ("art", "soccer"):
+        for question in range(10):
+            rows.extend(
+                [
+                    _source_row(graph, question, "node:A", 1),
+                    _source_row(graph, question, "relation:A|r|B", 1),
+                    _source_row(graph, question, "node:B", 0),
+                    _source_row(graph, question, "relation:B|s|A", 0),
+                ]
+            )
+
+    selected, summaries = select_stage_one_rows(
+        rows,
+        target_rows=16,
+        seed=42,
+        positive_ratio=0.25,
+        label_type_ratios={
+            1: {"node": 0.5, "relation": 0.5},
+            0: {"node": 0.25, "relation": 0.75},
+        },
+    )
+
+    counts = {}
+    for unit_type in ("node", "relation"):
+        for label in (0, 1):
+            counts[(unit_type, label)] = sum(
+                row["unit_id"].startswith(f"{unit_type}:") and row["label"] == label
+                for row in selected
+            )
+    assert counts == {
+        ("node", 1): 2,
+        ("relation", 1): 2,
+        ("node", 0): 3,
+        ("relation", 0): 9,
+    }
+    assert all(summary["schema_unit_label_pairs_covered"] == 4 for summary in summaries.values())

@@ -100,14 +100,26 @@ def _choose_row(
     return min(candidates, key=priority)
 
 
+def _unit_type(row: dict[str, Any]) -> str:
+    unit_type = row.get("unit_type")
+    if unit_type is None and isinstance(row.get("unit"), dict):
+        unit_type = row["unit"].get("kind")
+    if unit_type is None:
+        unit_type = str(row.get("unit_id", "")).split(":", 1)[0]
+    if unit_type not in {"node", "relation"}:
+        raise ValueError(f"Unsupported selector unit type: {unit_type!r}")
+    return str(unit_type)
+
+
 def load_test_distribution(
     manifest_paths: Iterable[Path],
-) -> tuple[float, list[dict[str, Any]]]:
-    """Return the row-weighted selector YES ratio from benchmark test manifests."""
+) -> tuple[float, dict[int, dict[str, float]], list[dict[str, Any]]]:
+    """Return row-weighted label and unit-type priors from benchmark tests."""
 
     distributions: list[dict[str, Any]] = []
     total_positive = 0
     total_negative = 0
+    total_type_labels: Counter[tuple[str, int]] = Counter()
     for manifest_path in manifest_paths:
         resolved = manifest_path.resolve()
         if not resolved.exists():
@@ -128,6 +140,19 @@ def load_test_distribution(
         if positive <= 0 or negative <= 0:
             raise ValueError(f"Invalid selector test counts in {resolved}: {counts}")
         total = positive + negative
+        selection_filename = manifest.get("files", {}).get("selection", {}).get("test")
+        if not isinstance(selection_filename, str):
+            raise ValueError(f"Missing files.selection.test in {resolved}")
+        selection_path = resolved.parent / selection_filename
+        type_labels = Counter(
+            (_unit_type(row), int(row["label"])) for row in read_jsonl(selection_path)
+        )
+        if sum(type_labels.values()) != total:
+            raise ValueError(
+                f"Selector test row count in {selection_path} does not match {resolved}"
+            )
+        if sum(count for (__, label), count in type_labels.items() if label == 1) != positive:
+            raise ValueError(f"Selector positive count in {selection_path} does not match {resolved}")
         distributions.append(
             {
                 "benchmark": benchmark,
@@ -136,22 +161,42 @@ def load_test_distribution(
                 "selection_positive": positive,
                 "selection_negative": negative,
                 "positive_ratio": positive / total,
+                "unit_type_labels": {
+                    f"{unit_type}:{label}": type_labels[(unit_type, label)]
+                    for label in (0, 1)
+                    for unit_type in ("node", "relation")
+                },
             }
         )
         total_positive += positive
         total_negative += negative
+        total_type_labels.update(type_labels)
 
     if not distributions:
         raise ValueError("At least one test-distribution manifest is required")
-    return total_positive / (total_positive + total_negative), distributions
+    label_type_ratios = {
+        label: {
+            unit_type: total_type_labels[(unit_type, label)]
+            / sum(total_type_labels[(kind, label)] for kind in ("node", "relation"))
+            for unit_type in ("node", "relation")
+        }
+        for label in (0, 1)
+    }
+    return (
+        total_positive / (total_positive + total_negative),
+        label_type_ratios,
+        distributions,
+    )
 
 
-def _proportional_quotas(total: int, weights: dict[str, int]) -> dict[str, int]:
+def _proportional_quotas(total: int, weights: dict[str, float]) -> dict[str, int]:
     """Allocate an integer total proportionally using largest remainders."""
 
-    if total < 0 or not weights or any(weight <= 0 for weight in weights.values()):
-        raise ValueError("Quota total and weights must be valid positive values")
+    if total < 0 or not weights or any(weight < 0 for weight in weights.values()):
+        raise ValueError("Quota total and weights must be non-negative")
     weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        raise ValueError("At least one quota weight must be positive")
     exact = {key: total * weight / weight_sum for key, weight in weights.items()}
     quotas = {key: int(value) for key, value in exact.items()}
     remainder = total - sum(quotas.values())
@@ -161,11 +206,189 @@ def _proportional_quotas(total: int, weights: dict[str, int]) -> dict[str, int]:
     return quotas
 
 
+def _rebalance_selected_unit_types(
+    selected_pair_groups: list[list[dict[str, Any]]],
+    selected_negative_rows: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+    label_type_ratios: dict[int, dict[str, float]],
+    rng: random.Random,
+) -> tuple[
+    list[list[dict[str, Any]]],
+    list[dict[str, Any]],
+    dict[str, Counter[tuple[str, int]]],
+]:
+    """Reselect units on the chosen questions to match label × type quotas."""
+
+    for label in (0, 1):
+        ratios = label_type_ratios.get(label, {})
+        if set(ratios) != {"node", "relation"}:
+            raise ValueError("label_type_ratios must define node and relation for labels 0 and 1")
+
+    source_by_question: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    pair_frequencies: Counter[tuple[str, str, int]] = Counter()
+    for row in source_rows:
+        question_id = str(row["example_id"])
+        label = int(row["label"])
+        source_by_question[question_id][label].append(row)
+        pair_frequencies[(str(row["schema_id"]), str(row["unit_id"]), label)] += 1
+
+    selected_by_graph_label: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for contrast in selected_pair_groups:
+        for row in contrast:
+            selected_by_graph_label[str(row["graph"])][int(row["label"])].append(row)
+    for row in selected_negative_rows:
+        selected_by_graph_label[str(row["graph"])][0].append(row)
+
+    graph_names = sorted(selected_by_graph_label)
+    target_type_labels: dict[int, dict[str, int]] = {}
+    graph_type_quotas: dict[str, dict[int, dict[str, int]]] = {
+        graph: {0: {}, 1: {}} for graph in graph_names
+    }
+    for label in (0, 1):
+        label_total = sum(len(selected_by_graph_label[graph][label]) for graph in graph_names)
+        target_type_labels[label] = _proportional_quotas(label_total, label_type_ratios[label])
+        graph_label_totals = {
+            graph: float(len(selected_by_graph_label[graph][label])) for graph in graph_names
+        }
+        node_quotas = _proportional_quotas(
+            target_type_labels[label]["node"], graph_label_totals
+        )
+        for graph in graph_names:
+            graph_type_quotas[graph][label] = {
+                "node": node_quotas[graph],
+                "relation": len(selected_by_graph_label[graph][label]) - node_quotas[graph],
+            }
+
+    replacements: dict[tuple[str, int], dict[str, Any]] = {}
+    type_summaries: dict[str, Counter[tuple[str, int]]] = {}
+    for graph in graph_names:
+        graph_counts: Counter[tuple[str, int]] = Counter()
+        for label in (0, 1):
+            selected_rows = selected_by_graph_label[graph][label]
+            selected_question_ids = {str(row["example_id"]) for row in selected_rows}
+            if len(selected_question_ids) != len(selected_rows):
+                raise AssertionError(f"{graph}: selected label {label} reuses a question")
+
+            # Preserve one currently selected row for every schema-unit×label
+            # pair. The original sampler already guarantees full coverage and
+            # one selected row per question and label.
+            assigned_questions: set[str] = set()
+            covered: set[tuple[str, str, int]] = set()
+            for row in selected_rows:
+                pair = (str(row["schema_id"]), str(row["unit_id"]), label)
+                question_id = str(row["example_id"])
+                if pair not in covered and question_id not in assigned_questions:
+                    replacement = dict(row)
+                    replacement.pop("contrast_pair_id", None)
+                    replacements[(question_id, label)] = replacement
+                    assigned_questions.add(question_id)
+                    covered.add(pair)
+                    graph_counts[(_unit_type(replacement), label)] += 1
+
+            quota = graph_type_quotas[graph][label]
+            for unit_type in ("node", "relation"):
+                if graph_counts[(unit_type, label)] > quota[unit_type]:
+                    raise ValueError(
+                        f"{graph}: {unit_type}:{label} quota is too small for unit coverage"
+                    )
+
+            remaining_questions = selected_question_ids.difference(assigned_questions)
+            unit_type_order = sorted(
+                ("node", "relation"),
+                key=lambda unit_type: sum(
+                    any(_unit_type(row) == unit_type for row in source_by_question[qid][label])
+                    for qid in remaining_questions
+                ),
+            )
+            for unit_type in unit_type_order:
+                needed = quota[unit_type] - graph_counts[(unit_type, label)]
+                candidates = [
+                    question_id
+                    for question_id in remaining_questions
+                    if any(
+                        _unit_type(row) == unit_type
+                        for row in source_by_question[question_id][label]
+                    )
+                ]
+                rng.shuffle(candidates)
+                if len(candidates) < needed:
+                    raise ValueError(
+                        f"{graph}: insufficient selected questions for {unit_type}:{label} quota"
+                    )
+                for question_id in candidates[:needed]:
+                    replacement = dict(
+                        _choose_row(
+                            [
+                                row
+                                for row in source_by_question[question_id][label]
+                                if _unit_type(row) == unit_type
+                            ],
+                            set(),
+                            pair_frequencies,
+                            rng,
+                        )
+                    )
+                    replacement.pop("contrast_pair_id", None)
+                    replacements[(question_id, label)] = replacement
+                    remaining_questions.remove(question_id)
+                    graph_counts[(unit_type, label)] += 1
+            if remaining_questions:
+                raise AssertionError(f"{graph}: not every selected label {label} row was assigned")
+
+        expected = Counter(
+            {
+                (unit_type, label): graph_type_quotas[graph][label][unit_type]
+                for label in (0, 1)
+                for unit_type in ("node", "relation")
+            }
+        )
+        if graph_counts != expected:
+            raise AssertionError(f"{graph}: unit-type quota validation failed")
+        type_summaries[graph] = graph_counts
+
+    rebalanced_pairs: list[list[dict[str, Any]]] = []
+    for contrast in selected_pair_groups:
+        question_id = str(contrast[0]["example_id"])
+        rebuilt = [dict(replacements[(question_id, label)]) for label in (0, 1)]
+        for row in rebuilt:
+            row["contrast_pair_id"] = question_id
+        rng.shuffle(rebuilt)
+        rebalanced_pairs.append(rebuilt)
+
+    rebalanced_negatives = [
+        dict(replacements[(str(row["example_id"]), 0)]) for row in selected_negative_rows
+    ]
+
+    # Coverage must remain identical after changing the chosen unit on a
+    # question; this catches any accidental loss of a rare schema unit.
+    source_coverage = {
+        (str(row["schema_id"]), str(row["unit_id"]), int(row["label"]))
+        for row in source_rows
+    }
+    selected_coverage = {
+        (str(row["schema_id"]), str(row["unit_id"]), int(row["label"]))
+        for contrast in rebalanced_pairs
+        for row in contrast
+    }
+    selected_coverage.update(
+        (str(row["schema_id"]), str(row["unit_id"]), int(row["label"]))
+        for row in rebalanced_negatives
+    )
+    if selected_coverage != source_coverage:
+        raise AssertionError("Unit-type rebalancing changed schema-unit×label coverage")
+    return rebalanced_pairs, rebalanced_negatives, type_summaries
+
+
 def select_stage_one_rows(
     rows: list[dict[str, Any]],
     target_rows: int,
     seed: int,
     positive_ratio: float = 0.5,
+    label_type_ratios: dict[int, dict[str, float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Select contrast pairs plus unique-question negatives with full coverage."""
 
@@ -416,6 +639,34 @@ def select_stage_one_rows(
 
     rng.shuffle(selected_pair_groups)
     rng.shuffle(selected_negative_rows)
+    if label_type_ratios is not None:
+        selected_pair_groups, selected_negative_rows, type_summaries = (
+            _rebalance_selected_unit_types(
+                selected_pair_groups,
+                selected_negative_rows,
+                rows,
+                label_type_ratios,
+                rng,
+            )
+        )
+    else:
+        type_summaries = {
+            graph: Counter(
+                (_unit_type(row), int(row["label"]))
+                for contrast in selected_pair_groups
+                for row in contrast
+                if str(row["graph"]) == graph
+            )
+            for graph in graph_names
+        }
+        for row in selected_negative_rows:
+            type_summaries[str(row["graph"])][(_unit_type(row), 0)] += 1
+    for graph in graph_names:
+        summaries[graph]["unit_type_labels"] = {
+            f"{unit_type}:{label}": type_summaries[graph][(unit_type, label)]
+            for label in (0, 1)
+            for unit_type in ("node", "relation")
+        }
     flattened = [row for contrast in selected_pair_groups for row in contrast] + selected_negative_rows
     contrast_pairs = len(selected_pair_groups)
     expected_unique_questions = len(flattened) - contrast_pairs
@@ -452,14 +703,20 @@ def main() -> None:
         if args.target_rows is not None
         else len(read_jsonl(generation_path))
     )
-    derived_positive_ratio, test_distributions = load_test_distribution(args.test_manifests)
+    derived_positive_ratio, label_type_ratios, test_distributions = load_test_distribution(
+        args.test_manifests
+    )
     target_positive_ratio = (
         args.target_positive_ratio
         if args.target_positive_ratio is not None
         else derived_positive_ratio
     )
     filtered_rows, graph_summaries = select_stage_one_rows(
-        selection_rows, target_rows, args.seed, target_positive_ratio
+        selection_rows,
+        target_rows,
+        args.seed,
+        target_positive_ratio,
+        label_type_ratios,
     )
     prepare_output_directory(input_dir, output_dir, args.overwrite)
 
@@ -475,6 +732,9 @@ def main() -> None:
     train_counts["selection_negative"] = len(filtered_rows) - train_counts["selection_positive"]
     contrast_pairs = sum(1 for row in filtered_rows if "contrast_pair_id" in row) // 2
     actual_positive_ratio = train_counts["selection_positive"] / len(filtered_rows)
+    actual_type_labels = Counter(
+        (_unit_type(row), int(row["label"])) for row in filtered_rows
+    )
     manifest["selector_stage1"] = {
         "source_directory": str(input_dir),
         "sampling_seed": args.seed,
@@ -489,13 +749,21 @@ def main() -> None:
         "unpaired_negative_rows": len(filtered_rows) - 2 * contrast_pairs,
         "target_positive_ratio": target_positive_ratio,
         "actual_positive_ratio": actual_positive_ratio,
+        "target_label_type_ratios": {
+            str(label): label_type_ratios[label] for label in (0, 1)
+        },
+        "actual_unit_type_labels": {
+            f"{unit_type}:{label}": actual_type_labels[(unit_type, label)]
+            for label in (0, 1)
+            for unit_type in ("node", "relation")
+        },
         "test_distribution_weighting": "row_weighted",
         "test_distributions": test_distributions,
         "policy": (
             "Every YES belongs to a same-question YES/NO contrast pair; unique-question NO rows "
-            "are added to match the row-weighted three-test label prior; per-graph quotas follow "
-            "the source question distribution; cover every observed schema unit and label pair. "
-            "Pair members are adjacent and precede unpaired negatives."
+            "are added to match the row-weighted three-test label and node/relation priors; "
+            "per-graph quotas follow the source question distribution; cover every observed "
+            "schema unit and label pair. Pair members are adjacent and precede unpaired negatives."
         ),
         "graphs": graph_summaries,
     }

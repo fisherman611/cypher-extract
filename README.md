@@ -120,11 +120,12 @@ positive unit trong `selection_<split>.jsonl`; nó không thay đổi generation
 
 ### Lọc selector stage-1
 
-Tạo tập selector có prior nhãn khớp với phân phối gộp theo số row của selector
-test CypherBench, Mind-the-Query và Neo4j Text2Cypher. Mọi row `YES` vẫn thuộc
-một cặp contrast `YES/NO` trên cùng question; các row `NO` bổ sung được lấy từ
-question riêng biệt. Tập vẫn cân bằng số row theo graph và cover mọi schema
-unit × label quan sát được trong `selection_train.jsonl`:
+Tạo tập selector có prior nhãn và prior `node/relation` theo từng nhãn khớp với
+phân phối gộp theo số row của selector test CypherBench, Mind-the-Query và Neo4j
+Text2Cypher. Mọi row `YES` vẫn thuộc một cặp contrast `YES/NO` trên cùng
+question; các row `NO` bổ sung được lấy từ question riêng biệt. Tập vẫn phân bổ
+số row theo tỷ lệ question của mỗi graph và cover mọi schema unit × label quan
+sát được trong `selection_train.jsonl`:
 
 ```powershell
 python scripts\filter_selector_stage1.py `
@@ -139,8 +140,10 @@ Script giữ nguyên generation data và selection dev/test; chỉ thay
 selector row bằng số row trong `generation_train.jsonl`. Với `6,827` generator
 và prior test gộp hiện tại là `16.914% YES / 83.086% NO`, đầu ra có `1,155 YES`,
 `5,672 NO`: `1,155` contrast pair và `4,517` negative-only row. Hai thành viên
-của mỗi pair nằm liền nhau và mọi question chỉ được chọn một lần. Có thể dùng
-`--target-rows` hoặc `--target-positive-ratio` để override các giá trị tự động.
+của mỗi pair nằm liền nhau và mọi question chỉ được chọn một lần. Joint quota
+là `729 YES-node`, `426 YES-relation`, `1,952 NO-node` và `3,720 NO-relation`.
+Có thể dùng `--target-rows` hoặc `--target-positive-ratio` để override các giá
+trị tự động.
 
 ### Chuẩn bị prompt multitask
 
