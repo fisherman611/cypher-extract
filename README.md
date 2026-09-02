@@ -120,38 +120,43 @@ positive unit trong `selection_<split>.jsonl`; nó không thay đổi generation
 
 ### Lọc selector stage-1
 
-Tạo tập selector theo cặp contrast trên cùng question. Mỗi question được chọn có
-đúng một schema unit `YES` và một schema unit `NO`; tập vẫn cân bằng theo graph
-và cover mọi schema unit × label quan sát được trong `selection_train.jsonl`:
+Tạo tập selector có prior nhãn khớp với phân phối gộp theo số row của selector
+test CypherBench, Mind-the-Query và Neo4j Text2Cypher. Mọi row `YES` vẫn thuộc
+một cặp contrast `YES/NO` trên cùng question; các row `NO` bổ sung được lấy từ
+question riêng biệt. Tập vẫn cân bằng số row theo graph và cover mọi schema
+unit × label quan sát được trong `selection_train.jsonl`:
 
 ```powershell
 python scripts\filter_selector_stage1.py `
   --input-dir data\cypherbench_schema_grounding_full `
   --output-dir data\cypherbench_schema_grounding_full_final `
-  --target-rows 3200 `
   --seed 42 `
   --overwrite
 ```
 
 Script giữ nguyên generation data và selection dev/test; chỉ thay
-`selection_train.jsonl` và cập nhật manifest với policy lọc. Với
-`--target-rows 3200`, đầu ra có `1600` contrast pair từ `1600` question riêng
-biệt; hai thành viên của mỗi pair nằm liền nhau.
+`selection_train.jsonl` và cập nhật manifest với policy lọc. Mặc định số
+selector row bằng số row trong `generation_train.jsonl`. Với `6,827` generator
+và prior test gộp hiện tại là `16.914% YES / 83.086% NO`, đầu ra có `1,155 YES`,
+`5,672 NO`: `1,155` contrast pair và `4,517` negative-only row. Hai thành viên
+của mỗi pair nằm liền nhau và mọi question chỉ được chọn một lần. Có thể dùng
+`--target-rows` hoặc `--target-positive-ratio` để override các giá trị tự động.
 
 ### Chuẩn bị prompt multitask
 
 Chuẩn bị `train.jsonl` và `eval.jsonl` sao cho batch có cả generator và
-selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Selector train
-được xếp theo cặp cùng question; với `batch-size=2`, hai thành viên của một pair
-nằm trong hai mixed batch liên tiếp (`generator + selector`). Batch còn lại chỉ
-chứa generator. Test generator và selector được ghi thành hai file riêng. Không
+selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Các cặp
+selector cùng question được xếp trước, sau đó là các negative-only row; với
+`batch-size=2`, hai thành viên của một pair nằm trong hai mixed batch liên tiếp
+(`generator + selector`). Batch còn lại chỉ chứa generator. Test generator và
+selector được ghi thành hai file riêng. Không
 bật shuffle từng row ở data loader vì sẽ phá task mix và contrast pairing.
 Trainer chỉ shuffle theo block hai batch hoàn chỉnh. Khi train 2 GPU với
 `batch-size=2`, hai selector row `YES/NO` của cùng question đi vào cùng một
 global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + selector`.
-Với CypherBench final hiện tại (`6,827` generator, `3,200` selector) và
-`batch-size=2`, train có `3,200` mixed batch (`1 generator + 1 selector`) và
-`1,814` batch chỉ generator; mọi mẫu nguồn chỉ xuất hiện một lần.
+Với CypherBench final hiện tại (`6,827` generator, `6,827` selector) và
+`batch-size=2`, train có `6,827` mixed batch (`1 generator + 1 selector`), không
+còn batch generator-only; mọi mẫu nguồn chỉ xuất hiện một lần.
 
 ```powershell
 python scripts\prepare_multitask_prompts.py `

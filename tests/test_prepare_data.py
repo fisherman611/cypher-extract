@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from distillation.prepare_data import SPLIT_FILES, convert_directory, to_openai_record
+from distillation.prepare_data import LAYOUT_FILE, SPLIT_FILES, convert_directory, to_openai_record
 
 
 def _prepared_record(task: str = "generator") -> dict[str, str]:
@@ -37,6 +37,17 @@ def test_convert_directory_writes_all_splits_and_registry(tmp_path: Path) -> Non
             "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
             encoding="utf-8",
         )
+    (input_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "batch_size": 2,
+                "files": {"train": {"rows": 1, "selector": 0}},
+                "train_selector_contrast_pairs": 0,
+                "train_selector_unpaired_negatives": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     counts = convert_directory(input_dir, output_dir)
     assert counts == {"train": 1, "eval": 2, "test_generator": 1, "test_selector": 2}
@@ -46,6 +57,9 @@ def test_convert_directory_writes_all_splits_and_registry(tmp_path: Path) -> Non
     assert registry["cypher_prepared_train"]["formatting"] == "openai"
     train = json.loads((output_dir / "cypher_prepared_train.jsonl").read_text(encoding="utf-8"))
     assert [message["role"] for message in train["messages"]] == ["system", "user", "assistant"]
+    layout = json.loads((output_dir / LAYOUT_FILE).read_text(encoding="utf-8"))
+    assert layout["batch_size"] == 2
+    assert layout["train_rows"] == 1
 
     with pytest.raises(FileExistsError, match="--overwrite"):
         convert_directory(input_dir, output_dir)

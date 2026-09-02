@@ -23,6 +23,7 @@ SPLIT_FILES = {
 }
 
 DATASET_PREFIX = "cypher_prepared"
+LAYOUT_FILE = f"{DATASET_PREFIX}_layout.json"
 
 
 def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -101,6 +102,9 @@ def convert_directory(input_dir: Path, output_dir: Path, *, overwrite: bool = Fa
     output_names = {split: f"{DATASET_PREFIX}_{split}.jsonl" for split in SPLIT_FILES}
     managed_targets = [output_dir / name for name in output_names.values()]
     managed_targets.append(output_dir / "dataset_info.json")
+    input_manifest = input_dir / "manifest.json"
+    if input_manifest.is_file():
+        managed_targets.append(output_dir / LAYOUT_FILE)
     existing_targets = [path for path in managed_targets if path.exists()]
     if existing_targets and not overwrite:
         raise FileExistsError(
@@ -122,6 +126,21 @@ def convert_directory(input_dir: Path, output_dir: Path, *, overwrite: bool = Fa
             json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        if input_manifest.is_file():
+            manifest = json.loads(input_manifest.read_text(encoding="utf-8"))
+            layout = {
+                "batch_size": int(manifest["batch_size"]),
+                "train_rows": int(manifest["files"]["train"]["rows"]),
+                "train_selector_rows": int(manifest["files"]["train"]["selector"]),
+                "train_selector_contrast_pairs": int(manifest["train_selector_contrast_pairs"]),
+                "train_selector_unpaired_negatives": int(
+                    manifest["train_selector_unpaired_negatives"]
+                ),
+            }
+            (staging_dir / LAYOUT_FILE).write_text(
+                json.dumps(layout, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         for target in managed_targets:

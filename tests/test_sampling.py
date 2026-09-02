@@ -94,3 +94,24 @@ def test_accelerate_propagates_epoch_to_wrapped_batch_sampler() -> None:
     for rank_zero_batch, rank_one_batch in zip(*epoch_batches, strict=True):
         assert rank_one_batch[0] == rank_zero_batch[0] + 2
         assert rank_one_batch[1] == rank_zero_batch[1] + 2
+
+
+def test_odd_batch_count_rotates_only_droppable_tail_batch() -> None:
+    sampler = TemplateDistributedBatchSampler(
+        range(30),
+        batch_size=2,
+        num_replicas=2,
+        seed=17,
+        droppable_batch_start=4,
+        droppable_batch_count=11,
+    )
+    omitted_by_epoch = []
+    for epoch in (0, 1):
+        sampler.set_epoch(epoch)
+        included = {index for batch in sampler for index in batch}
+        omitted = set(range(30)).difference(included)
+        assert len(omitted) == 2
+        assert min(omitted) >= 8
+        omitted_by_epoch.append(omitted)
+
+    assert omitted_by_epoch[0] != omitted_by_epoch[1]

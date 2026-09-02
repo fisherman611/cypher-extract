@@ -37,32 +37,51 @@ def _preserved_distributed_batches(
     num_replicas: int,
     seed: int,
     epoch: int,
+    droppable_batch_start: int = 0,
+    droppable_batch_count: int = 0,
 ) -> Iterator[list[int]]:
-    """Shuffle two-batch contrast blocks without shuffling their samples.
+    """Shuffle two-batch prepared blocks without shuffling their samples.
 
     The prepared dataset already encodes the intended generator/selector batch
     composition and same-question selector pairs. At batch size two, a contrast
-    pair spans two consecutive prepared batches. Shuffling complete two-batch
-    blocks preserves both the local task mix and, with two replicas, places the
-    YES/NO pair in the same distributed micro-step.
+    pair spans two consecutive prepared batches; extra selector negatives are
+    also arranged in two-batch blocks. Shuffling complete blocks preserves both
+    the local task mix and, with two replicas, places each YES/NO pair in the
+    same distributed micro-step.
     """
 
     full_batch_count, remainder = divmod(len(indices), batch_size)
     batches = [indices[start * batch_size : (start + 1) * batch_size] for start in range(full_batch_count)]
+    drop_count = full_batch_count % num_replicas if num_replicas > 1 else 0
+    if drop_count:
+        droppable_stop = droppable_batch_start + droppable_batch_count
+        if (
+            droppable_batch_start < 0
+            or droppable_stop > full_batch_count
+            or droppable_batch_count < drop_count
+        ):
+            raise ValueError(
+                "Distributed sampling needs enough explicitly droppable non-contrast batches "
+                "to equalize rank lengths."
+            )
+        first_offset = (epoch * drop_count) % droppable_batch_count
+        dropped = {
+            droppable_batch_start + (first_offset + offset) % droppable_batch_count
+            for offset in range(drop_count)
+        }
+        batches = [batch for index, batch in enumerate(batches) if index not in dropped]
+        full_batch_count = len(batches)
     generator = torch.Generator().manual_seed(seed + epoch)
     complete_block_count, trailing_batch_count = divmod(full_batch_count, 2)
     blocks = [batches[start * 2 : (start + 1) * 2] for start in range(complete_block_count)]
     block_order = torch.randperm(complete_block_count, generator=generator).tolist()
     ordered_batches = [batch for block_index in block_order for batch in blocks[block_index]]
     if trailing_batch_count:
-        # The prepared train layout puts any unpaired full batch after all
-        # contrast blocks (it contains generator rows only), so leave it last.
+        # Keep the incomplete two-batch block last so it cannot shift the
+        # distributed-rank alignment of any preceding contrast pair.
         ordered_batches.append(batches[-1])
-    if num_replicas > 1:
-        # Each consecutive group of batches is sharded one-per-rank by
-        # Accelerate. Drop fewer than ``num_replicas`` whole batches so every
-        # rank has equal steps; never split or pad a prepared batch.
-        ordered_batches = ordered_batches[: (full_batch_count // num_replicas) * num_replicas]
+    if num_replicas > 1 and full_batch_count % num_replicas:
+        raise AssertionError("Distributed batch count was not equalized across ranks")
     yield from ordered_batches
     if num_replicas == 1 and remainder:
         # Accelerate accepts a single-process incomplete batch only at the end.
@@ -70,14 +89,23 @@ def _preserved_distributed_batches(
 
 
 class TemplateDistributedBatchSampler(BatchSampler):
-    """Distribute prepared contrast blocks without destroying their composition.
+    """Distribute prepared two-batch blocks without destroying their composition.
 
     With ``even_batches=False``, ranks have equal step counts and no examples
     are duplicated. Only complete two-batch blocks and their rank ownership are
     shuffled.
     """
 
-    def __init__(self, dataset: Sized, *, batch_size: int, num_replicas: int, seed: int = 0) -> None:
+    def __init__(
+        self,
+        dataset: Sized,
+        *,
+        batch_size: int,
+        num_replicas: int,
+        seed: int = 0,
+        droppable_batch_start: int = 0,
+        droppable_batch_count: int = 0,
+    ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
         if num_replicas <= 0:
@@ -87,6 +115,8 @@ class TemplateDistributedBatchSampler(BatchSampler):
         self.dataset = dataset
         self.num_replicas = num_replicas
         self.seed = seed
+        self.droppable_batch_start = droppable_batch_start
+        self.droppable_batch_count = droppable_batch_count
 
     @property
     def epoch(self) -> int:
@@ -99,6 +129,8 @@ class TemplateDistributedBatchSampler(BatchSampler):
             num_replicas=self.num_replicas,
             seed=self.seed,
             epoch=self.epoch,
+            droppable_batch_start=self.droppable_batch_start,
+            droppable_batch_count=self.droppable_batch_count,
         )
 
     def __len__(self) -> int:

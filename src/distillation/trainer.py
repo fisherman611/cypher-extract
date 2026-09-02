@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 from collections import defaultdict
@@ -22,6 +23,7 @@ from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, Stu
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
 from .losses import compute_distillation_loss, compute_hpd_loss
+from .prepare_data import LAYOUT_FILE
 from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
 from .sampling import TemplateDistributedBatchSampler
 from .utils import print_rank
@@ -235,12 +237,29 @@ class KDTrainer(CustomSeq2SeqTrainer):
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="Training")
 
+        droppable_batch_start = 0
+        droppable_batch_count = 0
+        layout_path = Path(self.data_args.dataset_dir, LAYOUT_FILE)
+        if layout_path.is_file():
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            prepared_batch_size = int(layout["batch_size"])
+            if prepared_batch_size != self._train_batch_size:
+                raise ValueError(
+                    f"Prepared batch size is {prepared_batch_size}, but training uses "
+                    f"{self._train_batch_size}. Regenerate the prepared data."
+                )
+            contrast_pairs = int(layout["train_selector_contrast_pairs"])
+            droppable_batch_start = contrast_pairs * 2
+            droppable_batch_count = int(layout["train_selector_unpaired_negatives"])
+
         batch_sampler = TemplateDistributedBatchSampler(
             train_dataset,
             batch_size=self._train_batch_size,
             num_replicas=self.accelerator.num_processes,
             # Match the template's fixed sampler seed while shuffling whole batches.
             seed=0,
+            droppable_batch_start=droppable_batch_start,
+            droppable_batch_count=droppable_batch_count,
         )
         should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1
         dataloader = DataLoader(

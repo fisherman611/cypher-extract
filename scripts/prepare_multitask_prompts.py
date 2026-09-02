@@ -170,10 +170,10 @@ def interleave_without_replacement(
     """Mix tasks while retaining same-question selector contrast pairs.
 
     Mixed batches are emitted first and later shuffled only as complete batches
-    by the trainer. For batch size two, each pair spans two consecutive mixed
-    batches; for larger even batches, pair members stay in the same batch or in
-    two consecutive batches. Remaining generator rows form generator-only
-    batches. No source row is duplicated.
+    by the trainer. Paired selector rows precede unpaired negative rows. For
+    batch size two, each contrast pair spans two consecutive mixed batches;
+    remaining selector rows then form negative-only two-batch blocks. Remaining
+    generator rows form generator-only batches. No source row is duplicated.
     """
 
     if batch_size < 2 or batch_size % 2:
@@ -184,10 +184,14 @@ def interleave_without_replacement(
         raise ValueError("This preparation policy expects generator rows to be at least as numerous as selector rows")
 
     by_contrast: dict[str, list[dict[str, Any]]] = {}
+    unpaired_negatives: list[dict[str, Any]] = []
     for row in selector_rows:
         pair_id = row.get("contrast_pair_id")
         if pair_id is None:
-            raise ValueError("Every train selector row must contain contrast_pair_id")
+            if row.get("label") != NEGATIVE_SELECTOR_LABEL:
+                raise ValueError("Only negative train selector rows may be unpaired")
+            unpaired_negatives.append(row)
+            continue
         by_contrast.setdefault(str(pair_id), []).append(row)
     malformed = {
         pair_id: [row.get("label") for row in pair]
@@ -201,7 +205,10 @@ def interleave_without_replacement(
 
     contrast_pairs = list(by_contrast.values())
     rng.shuffle(contrast_pairs)
-    selectors = [row for pair in contrast_pairs for row in pair]
+    for pair in contrast_pairs:
+        rng.shuffle(pair)
+    rng.shuffle(unpaired_negatives)
+    selectors = [row for pair in contrast_pairs for row in pair] + unpaired_negatives
 
     generators = list(generator_rows)
     rng.shuffle(generators)
@@ -284,8 +291,9 @@ def main() -> None:
         "seed": args.seed,
         "batch_size": args.batch_size,
         "batch_policy": (
-            "Mixed batches retain adjacent same-question YES/NO selector contrasts; remaining batches contain "
-            "generator rows only. Source rows are never duplicated. Keep individual-row dataloader shuffle disabled."
+            "Mixed batches begin with adjacent same-question YES/NO selector contrasts, followed by unpaired "
+            "negative selector rows; remaining batches contain generator rows only. Source rows are never "
+            "duplicated. Keep individual-row dataloader shuffle disabled."
         ),
         "files": {
             "train": {"rows": len(train), "generator": len(generator_train), "selector": len(selector_train)},
@@ -298,7 +306,13 @@ def main() -> None:
             "test_selector": {"rows": len(selector_test)},
         },
         "eval_selector_labels": dict(Counter(row["label"] for row in eval_selector_balanced)),
-        "train_selector_contrast_pairs": len(selector_train) // 2,
+        "train_selector_labels": dict(Counter(row["label"] for row in selector_train)),
+        "train_selector_contrast_pairs": len(
+            {str(row["contrast_pair_id"]) for row in selector_train if "contrast_pair_id" in row}
+        ),
+        "train_selector_unpaired_negatives": sum(
+            1 for row in selector_train if "contrast_pair_id" not in row
+        ),
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
