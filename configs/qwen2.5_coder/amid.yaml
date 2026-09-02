@@ -25,6 +25,7 @@ lora_dropout: 0.1
 train_on_prompt: false
 distill_method: amid
 kd_ratio: 1.0
+selector_loss_weight: 0.5
 amid_div_name: ab
 amid_div_order: pr
 amid_alpha: 0.5

@@ -314,6 +314,13 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml
 Loss train là `0.4 * LM loss + 0.6 * FKL loss`; output mặc định nằm tại
 `results/qwen3/fkl`.
 
+Mọi config multitask mặc định dùng `selector_loss_weight: 0.5`. Trainer tính
+token-mean riêng cho generator và selector rồi mới ghép
+`0.5 * generator_loss + 0.5 * selector_loss`. Vì vậy response Cypher dài không
+còn tự động có trọng số lớn hơn selector chỉ vì chứa nhiều token. Có thể đổi
+trọng số khi chạy, ví dụ `selector_loss_weight=0.6`; giá trị còn lại `0.4` là
+trọng số generator. Cơ chế này áp dụng nhất quán cho LM, KD, FDD và HPD loss.
+
 Có thể thay adapter, dataset hoặc output bằng override:
 
 ```bash

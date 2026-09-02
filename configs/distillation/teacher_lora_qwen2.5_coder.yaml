@@ -23,6 +23,7 @@ train_on_prompt: false
 # The shared CLI treats kd_ratio=0 as ordinary SFT, so no reference model is loaded.
 distill_method: sft
 kd_ratio: 0.0
+selector_loss_weight: 0.5
 # LlamaFactory saves the trained LoRA adapter in this directory. kd.yaml loads it
 # through ref_model_adapters while keeping the 7B base model frozen.
 output_dir: results/qwen2.5_coder/teacher_lora

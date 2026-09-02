@@ -86,6 +86,12 @@ def test_all_train_configs_use_the_same_effective_batch_settings(config_path: Pa
 
 
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
+def test_all_train_configs_balance_generator_and_selector_loss(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["selector_loss_weight"] == 0.5
+
+
+@pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_all_train_configs_keep_all_checkpoints(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["save_total_limit"] is None
@@ -288,6 +294,12 @@ def test_zero_kd_ratio_ignores_stale_adaptive_options() -> None:
 def test_explicit_sft_rejects_nonzero_kd_ratio() -> None:
     with pytest.raises(ValueError, match="distill_method=sft requires kd_ratio=0"):
         DistillationArguments(distill_method="sft", kd_ratio=0.5)
+
+
+@pytest.mark.parametrize("weight", [0.0, 1.0, -0.1, 1.1])
+def test_selector_loss_weight_must_keep_both_tasks_active(weight: float) -> None:
+    with pytest.raises(ValueError, match="selector_loss_weight"):
+        DistillationArguments(selector_loss_weight=weight)
 
 
 @pytest.mark.parametrize("field, value", [("amid_div_name", "js"), ("amid_div_order", "pp")])

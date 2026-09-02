@@ -28,6 +28,7 @@ train_on_prompt: false
 
 distill_method: fkl
 kd_ratio: 0.7
+selector_loss_weight: 0.5
 
 output_dir: results/llama3/fkl
 overwrite_output_dir: true

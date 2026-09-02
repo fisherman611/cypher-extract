@@ -7,6 +7,7 @@ from .data import register_tool_dataset_converters
 from .generation import reference_eval_generation_kwargs
 from .metrics import ComputeTaskMetrics
 from .reference import create_reference_model_at_revision
+from .task_balancing import TaskAwareDataCollator
 from .trainer import KDTrainer
 
 
@@ -58,7 +59,7 @@ def run_kd(
         if ref_model is None:
             raise ValueError("Set ref_model to the teacher checkpoint for knowledge distillation.")
 
-    data_collator = SFTDataCollatorWith4DAttentionMask(
+    llama_factory_collator = SFTDataCollatorWith4DAttentionMask(
         template=template,
         model=model,
         pad_to_multiple_of=8 if training_args.do_train else None,
@@ -69,6 +70,7 @@ def run_kd(
         compute_dtype=model_args.compute_dtype,
         **tokenizer_module,
     )
+    data_collator = TaskAwareDataCollator(llama_factory_collator, tokenizer)
 
     metric_module = {}
     if training_args.predict_with_generate:

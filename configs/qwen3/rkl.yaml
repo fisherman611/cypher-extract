@@ -28,6 +28,7 @@ train_on_prompt: false
 
 distill_method: rkl
 kd_ratio: 0.6
+selector_loss_weight: 0.5
 
 output_dir: results/qwen3/rkl
 overwrite_output_dir: true

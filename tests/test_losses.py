@@ -3,7 +3,28 @@ from __future__ import annotations
 import pytest
 import torch
 
-from distillation.losses import compute_distillation_loss, compute_hpd_loss, forward_kl, reverse_kl
+from distillation.losses import causal_lm_loss, compute_distillation_loss, compute_hpd_loss, forward_kl, reverse_kl
+
+
+def test_causal_lm_loss_matches_huggingface_token_mean() -> None:
+    generator = torch.Generator().manual_seed(3)
+    logits = torch.randn(2, 5, 7, generator=generator)
+    labels = torch.tensor([[-100, -100, 1, 2, 3], [-100, 4, 5, -100, 6]])
+
+    expected = torch.nn.functional.cross_entropy(
+        logits[:, :-1].reshape(-1, 7),
+        labels[:, 1:].reshape(-1),
+        ignore_index=-100,
+    )
+    torch.testing.assert_close(causal_lm_loss(logits, labels), expected)
+
+
+def test_causal_lm_loss_upcasts_bf16_logits() -> None:
+    logits = torch.randn(2, 4, 7, dtype=torch.bfloat16)
+    labels = torch.tensor([[-100, 1, 2, 3], [-100, -100, 4, 5]])
+    loss = causal_lm_loss(logits, labels)
+    assert loss.dtype == torch.float32
+    assert torch.isfinite(loss)
 
 
 @pytest.mark.parametrize(

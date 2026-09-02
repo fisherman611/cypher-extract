@@ -44,6 +44,14 @@ def test_replay_state_round_trip_preserves_contents() -> None:
         torch.testing.assert_close(left["input_ids"], right["input_ids"])
 
 
+def test_replay_buffer_preserves_task_identity() -> None:
+    buffer = ReplayBuffer(2)
+    feature = _feature(1)
+    feature["task_id"] = torch.tensor(1)
+    buffer.add(feature)
+    assert buffer.sample(1)[0]["task_id"].item() == 1
+
+
 def test_scheduler_first_validation_uses_reference_zero_baseline() -> None:
     scheduler = AdaptiveRolloutScheduler(threshold=0.0, loss_eps=0.1, seed=1)
     assert scheduler.previous_validation_loss == pytest.approx(0.0)
@@ -112,6 +120,7 @@ def test_student_rollout_keeps_full_chat_context_and_masks_it() -> None:
         "input_ids": torch.tensor([[10, 2, 12, 20, 2, 2], [2, 30, 31, 40, 2, 2]]),
         "attention_mask": torch.tensor([[1, 1, 1, 1, 1, 0], [0, 1, 1, 1, 1, 0]]),
         "labels": torch.tensor([[-100, -100, -100, 20, 2, -100], [-100, -100, -100, 40, 2, -100]]),
+        "task_ids": torch.tensor([0, 1]),
     }
     features = generator.generate(_GenerateModel(), inputs)
     assert generator.generation_config.pad_token_id == _Tokenizer.pad_token_id
@@ -119,6 +128,7 @@ def test_student_rollout_keeps_full_chat_context_and_masks_it() -> None:
     assert features[0]["labels"].tolist() == [-100, -100, -100, 7]
     assert features[1]["input_ids"].tolist() == [30, 31, 8]
     assert features[1]["labels"].tolist() == [-100, -100, 8]
+    assert [feature["task_id"].item() for feature in features] == [0, 1]
 
 
 def test_student_rollout_extracts_every_assistant_target_span() -> None:

@@ -25,6 +25,7 @@ lora_dropout: 0.1
 train_on_prompt: false
 distill_method: hpd
 kd_ratio: 1.0
+selector_loss_weight: 0.5
 hpd_sample_in_fp32: true
 output_dir: results/qwen2.5_coder/hpd
 overwrite_output_dir: true

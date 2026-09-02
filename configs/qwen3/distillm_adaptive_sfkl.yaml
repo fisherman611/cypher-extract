@@ -28,6 +28,7 @@ train_on_prompt: false
 
 distill_method: adaptive_sfkl
 kd_ratio: 0.6
+selector_loss_weight: 0.5
 skew_alpha: 0.1
 student_gen: true
 rollout_context_length: 797

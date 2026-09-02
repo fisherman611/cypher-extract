@@ -25,6 +25,7 @@ train_on_prompt: false
 
 distill_method: sft
 kd_ratio: 0.0
+selector_loss_weight: 0.5
 
 output_dir: results/llama3/teacher_lora
 overwrite_output_dir: true

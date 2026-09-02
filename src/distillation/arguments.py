@@ -34,6 +34,9 @@ class DistillationArguments:
 
     distill_method: str = "fkl"
     kd_ratio: float = 0.7
+    # Generator and selector are normalized independently before this task
+    # mixture is applied. The generator weight is 1 - selector_loss_weight.
+    selector_loss_weight: float = 0.5
     # LlamaFactory otherwise copies the student's ``model_revision`` into
     # ``ref_model``, even when teacher and student come from different repos.
     ref_model_revision: str | None = None
@@ -114,6 +117,8 @@ class DistillationArguments:
             raise ValueError(f"Unsupported distill_method={self.distill_method!r}. Expected one of: {allowed}.")
         if not 0.0 <= self.kd_ratio <= 1.0:
             raise ValueError("kd_ratio must be in [0, 1].")
+        if not 0.0 < self.selector_loss_weight < 1.0:
+            raise ValueError("selector_loss_weight must be in (0, 1).")
         if self.distill_method == "sft" and self.kd_ratio != 0.0:
             raise ValueError("distill_method=sft requires kd_ratio=0.")
         if self.base_method in {"sfkl", "srkl"} and not 0.0 < self.skew_alpha < 1.0:

@@ -22,10 +22,11 @@ from .arguments import DistillationArguments
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
-from .losses import compute_distillation_loss, compute_hpd_loss
+from .losses import causal_lm_loss, compute_distillation_loss, compute_hpd_loss
 from .prepare_data import LAYOUT_FILE
 from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
 from .sampling import TemplateDistributedBatchSampler
+from .task_balancing import task_balanced_loss
 from .utils import print_rank
 
 DISTILLM_STATE_NAME = "distillm_state"
@@ -413,15 +414,21 @@ class KDTrainer(CustomSeq2SeqTrainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         del num_items_in_batch
         inputs = self._maybe_replace_with_student_data(model, inputs)
+        task_ids = inputs.pop("task_ids", None)
+        if task_ids is None:
+            raise ValueError("KDTrainer requires task_ids from TaskAwareDataCollator.")
         labels = inputs.get("labels")
         if labels is None:
             raise ValueError("KDTrainer requires labels from the LlamaFactory SFT collator.")
 
         output_hidden_states = self.distillation_args.uses_fdd and model.training
-        student_outputs = model(**inputs, output_hidden_states=output_hidden_states, use_cache=False)
-        if student_outputs.loss is None:
-            raise ValueError("The student model did not return an LM loss.")
-        lm_loss = student_outputs.loss
+        student_inputs = {key: value for key, value in inputs.items() if key != "labels"}
+        student_outputs = model(**student_inputs, output_hidden_states=output_hidden_states, use_cache=False)
+        lm_loss, _ = task_balanced_loss(
+            task_ids,
+            self.distillation_args.selector_loss_weight,
+            lambda mask: causal_lm_loss(student_outputs.logits[mask], labels[mask]),
+        )
 
         # SFT is deliberately teacher-free.  This also makes every existing
         # KD method with kd_ratio=0 a true SFT run: no teacher forward, no KD
@@ -435,29 +442,33 @@ class KDTrainer(CustomSeq2SeqTrainer):
         if not model.training:
             return (lm_loss, student_outputs) if return_outputs else lm_loss
 
-        teacher_inputs = {key: value for key, value in inputs.items() if key != "labels"}
         with torch.no_grad():
             self.ref_model.eval()
             teacher_outputs = self.ref_model(
-                **teacher_inputs,
+                **student_inputs,
                 output_hidden_states=output_hidden_states,
                 use_cache=False,
             )
 
-        if self.distillation_args.base_method == "hpd":
-            kd_loss, hpd_metrics = compute_hpd_loss(
-                student_outputs.logits,
-                teacher_outputs.logits,
-                labels,
-                sample_in_fp32=self.distillation_args.hpd_sample_in_fp32,
-            )
-            self._store_hpd_metrics(hpd_metrics)
-        else:
-            kd_loss = compute_distillation_loss(
+        hpd_task_metrics: dict[str, dict[str, float]] = {}
+
+        def compute_task_kd(mask: torch.Tensor) -> torch.Tensor:
+            if self.distillation_args.base_method == "hpd":
+                task_loss, task_metrics = compute_hpd_loss(
+                    student_outputs.logits[mask],
+                    teacher_outputs.logits[mask],
+                    labels[mask],
+                    sample_in_fp32=self.distillation_args.hpd_sample_in_fp32,
+                )
+                # The mask uniquely identifies the task within this batch.
+                task_name = "selector" if torch.equal(mask, task_ids.eq(1)) else "generator"
+                hpd_task_metrics[task_name] = task_metrics
+                return task_loss
+            return compute_distillation_loss(
                 self.distillation_args.base_method,
-                student_outputs.logits,
-                teacher_outputs.logits,
-                labels,
+                student_outputs.logits[mask],
+                teacher_outputs.logits[mask],
+                labels[mask],
                 skew_alpha=self.distillation_args.skew_alpha,
                 amid_div_name=self.distillation_args.amid_div_name,
                 amid_div_order=self.distillation_args.amid_div_order,
@@ -466,18 +477,30 @@ class KDTrainer(CustomSeq2SeqTrainer):
                 bdl_lambda=self.distillation_args.bdl_lambda,
             )
 
+        kd_loss, _ = task_balanced_loss(
+            task_ids,
+            self.distillation_args.selector_loss_weight,
+            compute_task_kd,
+        )
+        for task_name, task_metrics in hpd_task_metrics.items():
+            self._store_hpd_metrics({f"{task_name}_{key}": value for key, value in task_metrics.items()})
+
         if self.distillation_args.uses_fdd:
             if student_outputs.hidden_states is None or teacher_outputs.hidden_states is None:
                 raise ValueError("FDD requires output_hidden_states from student and teacher.")
             feature_mask = causal_response_mask(labels, inputs["attention_mask"])
-            feature_loss = fdd_loss(
-                student_outputs.hidden_states,
-                teacher_outputs.hidden_states,
-                feature_mask,
-                _lm_head(model, self.accelerator),
-                _lm_head(self.ref_model, self.accelerator),
-                self.distillation_args.student_layer_mapping,
-                self.distillation_args.teacher_layer_mapping,
+            feature_loss, _ = task_balanced_loss(
+                task_ids,
+                self.distillation_args.selector_loss_weight,
+                lambda mask: fdd_loss(
+                    tuple(hidden[mask] for hidden in student_outputs.hidden_states),
+                    tuple(hidden[mask] for hidden in teacher_outputs.hidden_states),
+                    feature_mask[mask],
+                    _lm_head(model, self.accelerator),
+                    _lm_head(self.ref_model, self.accelerator),
+                    self.distillation_args.student_layer_mapping,
+                    self.distillation_args.teacher_layer_mapping,
+                ),
             )
             kd_component = 2.0 * (
                 (1.0 - self.distillation_args.fdd_weight) * kd_loss + self.distillation_args.fdd_weight * feature_loss
