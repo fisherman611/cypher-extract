@@ -1,14 +1,18 @@
+import random
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 from distillation.utils import (
     all_gather_tensor,
+    capture_rng_state,
     get_rank,
     hf_paths,
     parse_hf_path,
     resolve_hf_path,
+    restore_rng_state,
     save_rank,
     seed_everything,
 )
@@ -51,6 +55,20 @@ def test_seed_everything_is_repeatable() -> None:
     seed_everything(12, rank_offset=False)
     second = torch.rand(3)
     torch.testing.assert_close(first, second)
+
+
+def test_capture_and_restore_rng_state_covers_python_numpy_and_torch() -> None:
+    seed_everything(19, rank_offset=False)
+    state = capture_rng_state()
+    expected = (random.random(), np.random.random(), torch.rand(3))
+
+    seed_everything(999, rank_offset=False)
+    restore_rng_state(state)
+    actual = (random.random(), np.random.random(), torch.rand(3))
+
+    assert actual[0] == expected[0]
+    assert actual[1] == expected[1]
+    torch.testing.assert_close(actual[2], expected[2])
 
 
 def test_rank_is_available_from_torchrun_environment_before_process_group(monkeypatch) -> None:

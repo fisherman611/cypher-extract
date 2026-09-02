@@ -152,10 +152,12 @@ def run_selector_stage(
 ) -> dict[str, Any]:
     output = ResumableJsonl(output_path)
     if output.complete:
+        output.rng_state_path.unlink(missing_ok=True)
+        output.rng_temporary_path.unlink(missing_ok=True)
         return {"status": "reused", "path": str(output_path)}
     if runner is None:
         raise RuntimeError("Selector output is incomplete but no model runner was loaded")
-    completed_rows, last_id = output.progress()
+    completed_rows, last_id = output.restore_rng_progress()
     started = time.monotonic()
     generated_rows = 0
     invalid_rows = 0
@@ -189,7 +191,11 @@ def run_selector_stage(
                     },
                 )
                 generated_rows += 1
-            handle.flush()
+            output.checkpoint_rng_progress(
+                handle,
+                completed_rows + generated_rows,
+                str(batch[-1]["id"]),
+            )
             if generated_rows and generated_rows % (options.selector_batch_size * 100) == 0:
                 print(f"[{spec.name}/selector] generated {completed_rows + generated_rows} unit labels", flush=True)
     output.publish()
@@ -285,11 +291,13 @@ def run_generator_stage(
 ) -> dict[str, Any]:
     output = ResumableJsonl(output_path)
     if output.complete:
+        output.rng_state_path.unlink(missing_ok=True)
+        output.rng_temporary_path.unlink(missing_ok=True)
         return {"status": "reused", "path": str(output_path)}
     if runner is None:
         raise RuntimeError("Generator output is incomplete but no model runner was loaded")
     _, generation_rows = load_generation_index(spec.generation_test)
-    completed_rows, last_id = output.progress()
+    completed_rows, last_id = output.restore_rng_progress()
     started = time.monotonic()
     generated_rows = 0
     max_prompt_length = 0
@@ -333,7 +341,11 @@ def run_generator_stage(
                     },
                 )
                 generated_rows += 1
-            handle.flush()
+            output.checkpoint_rng_progress(
+                handle,
+                completed_rows + generated_rows,
+                str(batch[-1]["id"]),
+            )
             if generated_rows and generated_rows % (options.generator_batch_size * 25) == 0:
                 print(
                     f"[{spec.name}/generator] generated {completed_rows + generated_rows} Cypher queries",
@@ -447,18 +459,26 @@ def prepare_run_directory(
     output_directory.mkdir(parents=True, exist_ok=True)
     selector_path = output_directory / "selector_predictions.jsonl"
     selector_partial_path = selector_path.with_suffix(selector_path.suffix + ".partial")
+    selector_rng_state_path = selector_path.with_suffix(selector_path.suffix + ".rng_state.pt")
+    selector_rng_temporary_path = selector_rng_state_path.with_suffix(selector_rng_state_path.suffix + ".tmp")
     sub_schema_path = output_directory / "predicted_subschemas.jsonl"
     sub_schema_temporary_path = sub_schema_path.with_suffix(sub_schema_path.suffix + ".tmp")
     generator_path = output_directory / "generator_predictions.jsonl"
     generator_partial_path = generator_path.with_suffix(generator_path.suffix + ".partial")
+    generator_rng_state_path = generator_path.with_suffix(generator_path.suffix + ".rng_state.pt")
+    generator_rng_temporary_path = generator_rng_state_path.with_suffix(generator_rng_state_path.suffix + ".tmp")
     run_config_path = output_directory / "run_config.json"
     inference_artifacts = (
         selector_path,
         selector_partial_path,
+        selector_rng_state_path,
+        selector_rng_temporary_path,
         sub_schema_path,
         sub_schema_temporary_path,
         generator_path,
         generator_partial_path,
+        generator_rng_state_path,
+        generator_rng_temporary_path,
         output_directory / "metrics.json",
         output_directory / "manifest.json",
     )
@@ -472,7 +492,9 @@ def prepare_run_directory(
             f"Inconsistent inference outputs in {output_directory}: sub-schema output exists without completed "
             "selector_predictions.jsonl"
         )
-    if (generator_path.is_file() or generator_partial_path.is_file()) and not sub_schema_path.is_file():
+    if (
+        generator_path.is_file() or generator_partial_path.is_file() or generator_rng_state_path.is_file()
+    ) and not sub_schema_path.is_file():
         raise ValueError(
             f"Inconsistent inference outputs in {output_directory}: generator output exists without completed "
             "predicted_subschemas.jsonl"

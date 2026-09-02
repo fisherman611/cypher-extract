@@ -43,6 +43,19 @@ for config_name in "${CONFIG_NAMES[@]}"; do
     exit 2
   fi
 done
+fresh_outputs=("${TEACHER_ADAPTER}")
+for config_name in "${CONFIG_NAMES[@]}"; do
+  fresh_outputs+=("${FAMILY_RESULTS}/${config_name%.yaml}")
+done
+for output_dir in "${fresh_outputs[@]}"; do
+  for checkpoint in "${output_dir}"/checkpoint-*; do
+    if [[ -d "${checkpoint}" ]]; then
+      echo "Refusing fresh train-all run: old checkpoint found at ${checkpoint}" >&2
+      echo "Choose a new RESULTS_ROOT. Resume a single run through scripts/train.sh instead." >&2
+      exit 2
+    fi
+  done
+done
 mkdir -p "${LOG_DIR}"
 cd "${PROJECT_ROOT}"
 echo

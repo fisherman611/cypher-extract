@@ -36,6 +36,7 @@ _FULL_HASH_FILES = frozenset(
         "merges.txt",
         "model.safetensors.index.json",
         "pytorch_model.bin.index.json",
+        "resume_manifest.json",
         "sentencepiece.bpe.model",
         "special_tokens_map.json",
         "spiece.model",
@@ -47,6 +48,7 @@ _FULL_HASH_FILES = frozenset(
     }
 )
 _WEIGHT_SAMPLE_BYTES = 64 * 1024
+_RESUME_MANIFEST_NAME = "resume_manifest.json"
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,32 @@ def checkpoint_fingerprint(directory: Path) -> str:
     return hashlib.sha256(f"checkpoint-fingerprint-v1\0{serialized}".encode()).hexdigest()
 
 
+def _run_signature(directory: Path, step: int) -> tuple[int, str, str | None] | None:
+    manifest_path = directory / _RESUME_MANIFEST_NAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"{manifest_path} must contain a JSON object")
+    if manifest.get("global_step") != step:
+        raise ValueError(
+            f"{manifest_path} global_step={manifest.get('global_step')!r} does not match checkpoint-{step}"
+        )
+    format_version = manifest.get("format_version")
+    config_sha256 = manifest.get("config_sha256")
+    if format_version not in {1, 2}:
+        raise ValueError(f"{manifest_path} has unsupported format_version={format_version!r}")
+    if not isinstance(config_sha256, str) or not config_sha256:
+        raise ValueError(f"{manifest_path} has no valid config_sha256")
+    runtime_sha256 = manifest.get("runtime_sha256")
+    if format_version >= 2 and (not isinstance(runtime_sha256, str) or not runtime_sha256):
+        raise ValueError(f"{manifest_path} has no valid runtime_sha256")
+    return format_version, config_sha256, runtime_sha256
+
+
 def resolve_last_checkpoint(
     method: str,
     *,
@@ -142,7 +170,32 @@ def resolve_last_checkpoint(
     if not method_directory.is_dir():
         raise FileNotFoundError(f"Local checkpoint directory does not exist: {method_directory}")
 
-    paths = (path.relative_to(root).as_posix() for path in method_directory.iterdir() if path.is_dir())
+    checkpoint_directories = []
+    signed_candidates = []
+    for path in method_directory.iterdir():
+        if not path.is_dir():
+            continue
+        match = _CHECKPOINT_RE.search(path.relative_to(root).as_posix())
+        if match is None:
+            continue
+        step = int(match.group("step"))
+        checkpoint_directories.append(path)
+        signature = _run_signature(path, step)
+        if signature is not None:
+            signed_candidates.append((path, signature))
+
+    if signed_candidates:
+        newest_format = max(signature[0] for _, signature in signed_candidates)
+        signed_candidates = [item for item in signed_candidates if item[1][0] == newest_format]
+        run_signatures = {signature[1:] for _, signature in signed_candidates}
+        if len(run_signatures) != 1:
+            raise ValueError(
+                f"Mixed training-run fingerprints found under {method_directory}; "
+                "use a clean checkpoint root for one run."
+            )
+        checkpoint_directories = [path for path, _ in signed_candidates]
+
+    paths = (path.relative_to(root).as_posix() for path in checkpoint_directories)
     step, subfolder = select_last_checkpoint(paths, method_prefix)
     directory = root / Path(*subfolder.split("/"))
     return LastCheckpoint(

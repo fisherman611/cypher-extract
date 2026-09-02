@@ -6,6 +6,7 @@ import pytest
 import torch
 import yaml
 
+from distillation.utils import seed_everything
 from schema_grounding.inference import model as inference_model
 from schema_grounding.inference.checkpoints import (
     DEFAULT_METHODS,
@@ -17,6 +18,7 @@ from schema_grounding.inference.checkpoints import (
 from schema_grounding.inference.data import DatasetSpec, iter_jsonl
 from schema_grounding.inference.merge import merge_schema_units
 from schema_grounding.inference.model import ModelRunner
+from schema_grounding.inference.outputs import ResumableJsonl
 from schema_grounding.inference.parsing import parse_selector_label
 from schema_grounding.inference.pipeline import (
     InferenceOptions,
@@ -52,6 +54,26 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def write_resume_manifest(
+    checkpoint_directory: Path,
+    *,
+    step: int,
+    config_sha256: str = "config-a",
+    runtime_sha256: str = "runtime-a",
+) -> None:
+    (checkpoint_directory / "resume_manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "global_step": step,
+                "config_sha256": config_sha256,
+                "runtime_sha256": runtime_sha256,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -140,6 +162,54 @@ def test_checkpoint_fingerprint_changes_when_weights_are_replaced_in_place(tmp_p
     assert replaced.fingerprint != original.fingerprint
 
 
+def test_checkpoint_fingerprint_includes_resume_manifest(tmp_path: Path) -> None:
+    checkpoint_directory = tmp_path / "qwen3/sft/checkpoint-10"
+    checkpoint_directory.mkdir(parents=True)
+    (checkpoint_directory / "adapter_config.json").write_text('{}', encoding="utf-8")
+    (checkpoint_directory / "adapter_model.safetensors").write_bytes(b"weights")
+    write_resume_manifest(checkpoint_directory, step=10, config_sha256="old")
+    original = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    write_resume_manifest(checkpoint_directory, step=10, config_sha256="new")
+    updated = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    assert updated.fingerprint != original.fingerprint
+
+
+def test_last_checkpoint_ignores_higher_incomplete_checkpoint_without_manifest(tmp_path: Path) -> None:
+    complete = tmp_path / "qwen3/sft/checkpoint-10"
+    incomplete = tmp_path / "qwen3/sft/checkpoint-20"
+    complete.mkdir(parents=True)
+    incomplete.mkdir(parents=True)
+    write_resume_manifest(complete, step=10)
+
+    checkpoint = resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+    assert checkpoint.step == 10
+    assert checkpoint.path == complete.resolve()
+
+
+def test_last_checkpoint_rejects_mixed_training_run_fingerprints(tmp_path: Path) -> None:
+    first = tmp_path / "qwen3/sft/checkpoint-10"
+    second = tmp_path / "qwen3/sft/checkpoint-20"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    write_resume_manifest(first, step=10, runtime_sha256="runtime-a")
+    write_resume_manifest(second, step=20, runtime_sha256="runtime-b")
+
+    with pytest.raises(ValueError, match="Mixed training-run fingerprints"):
+        resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+
+def test_last_checkpoint_rejects_manifest_with_wrong_step(tmp_path: Path) -> None:
+    checkpoint_directory = tmp_path / "qwen3/sft/checkpoint-10"
+    checkpoint_directory.mkdir(parents=True)
+    write_resume_manifest(checkpoint_directory, step=9)
+
+    with pytest.raises(ValueError, match="does not match checkpoint-10"):
+        resolve_last_checkpoint("sft", checkpoint_root=tmp_path)
+
+
 def test_training_output_dirs_match_local_inference_layout() -> None:
     teacher_configs = {
         "qwen3": Path("configs/distillation/teacher_lora_qwen3.yaml"),
@@ -156,6 +226,14 @@ def test_training_output_dirs_match_local_inference_layout() -> None:
         assert set(output_dirs) == set(DEFAULT_METHODS)
         for method, output_dir in output_dirs.items():
             assert output_dir == f"results/{family}/{method}"
+
+
+def test_inference_validates_all_checkpoints_before_preparing_output_directories() -> None:
+    source = (REPOSITORY_ROOT / "scripts/infer_two_stage.py").read_text(encoding="utf-8")
+
+    validation = source.index("checkpoint_paths[method] = resolve_checkpoint_directory(checkpoint)")
+    output_preparation = source.index("prepare_run_directory(", validation)
+    assert validation < output_preparation
 
 
 def test_cli_rejects_empty_method_or_dataset_lists() -> None:
@@ -409,6 +487,49 @@ def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenize
     assert calls["model"][1]["revision"] == "base-commit"
 
 
+def test_model_runner_prefers_manifest_base_commit_over_moving_adapter_revision(tmp_path: Path) -> None:
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "resume_manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "runtime": {
+                    "student_model": {
+                        "name_or_path": "owner/base",
+                        "commit_hash": "immutable-commit",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert inference_model._pinned_base_revision(adapter, "owner/base", "main") == "immutable-commit"
+
+
+def test_model_runner_rejects_manifest_for_another_base_model(tmp_path: Path) -> None:
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "resume_manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "runtime": {
+                    "student_model": {
+                        "name_or_path": "owner/wrong-base",
+                        "commit_hash": "immutable-commit",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match adapter base model"):
+        inference_model._pinned_base_revision(adapter, "owner/base", "main")
+
+
 def test_model_runner_loads_full_checkpoint_without_peft(monkeypatch, tmp_path: Path) -> None:
     checkpoint = tmp_path / "full"
     checkpoint.mkdir()
@@ -468,6 +589,52 @@ def test_model_runner_remembers_safe_batch_size_after_oom(monkeypatch) -> None:
     assert runner.safe_batch_sizes[8] == 2
     assert runner.generate(conversations, max_new_tokens=8) == ["ok"] * 8
     assert all(size <= 2 for size in attempted_batch_sizes[attempts_after_first_call:])
+
+
+def test_model_runner_restores_rng_before_oom_batch_split(monkeypatch) -> None:
+    def fake_generate_batch(conversations, **kwargs):
+        del kwargs
+        values = torch.rand(len(conversations)).tolist()
+        if len(conversations) > 2:
+            raise torch.cuda.OutOfMemoryError("simulated OOM")
+        return [str(value) for value in values]
+
+    conversations = [[{"role": "user", "content": str(index)}] for index in range(4)]
+    recovered = ModelRunner(model=None, tokenizer=None, device=torch.device("cpu"))
+    monkeypatch.setattr(recovered, "_generate_batch", fake_generate_batch)
+    seed_everything(77, rank_offset=False)
+    recovered_outputs = recovered.generate(conversations, max_new_tokens=8)
+
+    direct = ModelRunner(model=None, tokenizer=None, device=torch.device("cpu"), safe_batch_sizes={8: 2})
+    monkeypatch.setattr(direct, "_generate_batch", fake_generate_batch)
+    seed_everything(77, rank_offset=False)
+    direct_outputs = direct.generate(conversations, max_new_tokens=8)
+
+    assert recovered_outputs == direct_outputs
+
+
+def test_resumable_jsonl_restores_rng_and_rolls_back_uncommitted_batch_tail(tmp_path: Path) -> None:
+    output = ResumableJsonl(tmp_path / "generator_predictions.jsonl")
+    seed_everything(91, rank_offset=False)
+    with output.open_append() as handle:
+        handle.write('{"id":"row-1"}\n{"id":"row-2"}\n')
+        output.checkpoint_rng_progress(handle, 2, "row-2")
+    expected_next = torch.rand(4)
+    with output.open_append() as handle:
+        handle.write('{"id":"uncommitted-row"}\n')
+
+    seed_everything(999, rank_offset=False)
+    assert output.restore_rng_progress() == (2, "row-2")
+    torch.testing.assert_close(torch.rand(4), expected_next)
+    assert [row["id"] for row in iter_jsonl(output.partial_path)] == ["row-1", "row-2"]
+
+
+def test_resumable_jsonl_restarts_uncommitted_legacy_partial(tmp_path: Path) -> None:
+    output = ResumableJsonl(tmp_path / "generator_predictions.jsonl")
+    output.partial_path.write_text('{"id":"uncommitted"}\n', encoding="utf-8")
+
+    assert output.restore_rng_progress() == (0, None)
+    assert not output.partial_path.exists()
 
 
 def test_end_to_end_pipeline_with_fake_model(tmp_path: Path) -> None:
@@ -765,6 +932,10 @@ def test_selector_stage_resumes_a_contiguous_partial_file(tmp_path: Path) -> Non
             }
         ],
     )
+    resumable_output = ResumableJsonl(output)
+    seed_everything(42, rank_offset=False)
+    with partial.open("a", encoding="utf-8") as handle:
+        resumable_output.checkpoint_rng_progress(handle, 1, selection[0]["id"])
     runner = CountingRunner()
     result = run_selector_stage(
         DatasetSpec("fixture", data),

@@ -34,6 +34,9 @@ class DistillationArguments:
 
     distill_method: str = "fkl"
     kd_ratio: float = 0.7
+    # LlamaFactory otherwise copies the student's ``model_revision`` into
+    # ``ref_model``, even when teacher and student come from different repos.
+    ref_model_revision: str | None = None
     skew_alpha: float = 0.1
     amid_div_name: str = "fkl"
     amid_div_order: str = "pr"

@@ -206,6 +206,7 @@ def main() -> None:
         )
     )
     checkpoints = {}
+    checkpoint_paths = {}
     for method in methods:
         checkpoints[method] = resolve_last_checkpoint(
             method,
@@ -217,6 +218,9 @@ def main() -> None:
             f"[{method}] resolved {checkpoint.uri} "
             f"(step {checkpoint.step}, fingerprint {checkpoint.fingerprint[:12]})"
         )
+        # Validate every local model/adapter before creating any resumable
+        # output directory or run_config.json file.
+        checkpoint_paths[method] = resolve_checkpoint_directory(checkpoint)
 
     run_groups = build_seed_first_run_groups(
         methods=methods,
@@ -245,9 +249,8 @@ def main() -> None:
             checkpoint = checkpoints[method]
             runner = None
             if any(model_runner_required(output_directory) for _, output_directory, _ in planned_runs):
-                checkpoint_path = resolve_checkpoint_directory(checkpoint)
                 runner = ModelRunner.from_checkpoint(
-                    checkpoint_path,
+                    checkpoint_paths[method],
                     dtype=args.dtype,
                     device=args.device,
                     merge_adapter=not args.no_merge_adapter,

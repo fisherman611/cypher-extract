@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 from transformers.trainer_utils import IntervalStrategy
 
 from .arguments import DistillationArguments
-from .resume import canonical_resume_config, validate_resume_checkpoint
+from .resume import canonical_resume_config, validate_fresh_output_dir, validate_resume_checkpoint
 from .utils import print_rank, resolve_hf_path, seed_everything
 
 _HF_PATH_KEYS = {
@@ -141,6 +141,8 @@ def parse_arguments(argv: Sequence[str]) -> tuple[Any, Any, Any, Any, Any, Disti
         expected_config=resume_config,
     )
     training_args.resume_from_checkpoint = str(checkpoint) if checkpoint is not None else None
+    if training_args.do_train and checkpoint is None:
+        validate_fresh_output_dir(training_args.output_dir)
     return model_args, data_args, training_args, finetuning_args, generating_args, distillation_args
 
 

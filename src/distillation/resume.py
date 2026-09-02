@@ -14,6 +14,12 @@ _RANKED_RNG_RE = re.compile(r"^rng_state_(\d+)\.pth$")
 _DISTILLM_STATE_RE = re.compile(r"^distillm_state_rank(\d+)\.pt$")
 _DEEPSPEED_OPTIM_RANK_RE = re.compile(r"zero_pp_rank_(\d+)")
 RESUME_MANIFEST_NAME = "resume_manifest.json"
+_RESUME_CONFIG_IGNORED_FIELDS = {
+    "model_revision",
+    "ref_model_revision",
+    "resume_from_checkpoint",
+    "save_total_limit",
+}
 _MODEL_STATE_NAMES = (
     "adapter_model.safetensors",
     "adapter_model.bin",
@@ -26,6 +32,24 @@ _MODEL_STATE_NAMES = (
 
 class ResumeCheckpointError(ValueError):
     """Raised when a checkpoint cannot restore the complete training state."""
+
+
+def validate_fresh_output_dir(output_dir: str | os.PathLike[str]) -> None:
+    """Reject a new run that could coexist with checkpoints from an older run."""
+
+    directory = Path(output_dir).expanduser().resolve()
+    if not directory.is_dir():
+        return
+    checkpoints = sorted(
+        (path for path in directory.iterdir() if path.is_dir() and _CHECKPOINT_RE.fullmatch(path.name)),
+        key=lambda path: int(_CHECKPOINT_RE.fullmatch(path.name).group(1)),
+    )
+    if checkpoints:
+        names = ", ".join(path.name for path in checkpoints)
+        raise ResumeCheckpointError(
+            f"Refusing to start fresh training in {directory}: existing checkpoints: {names}. "
+            "Use a new output_dir/RESULTS_ROOT, or pass one explicit resume_from_checkpoint path."
+        )
 
 
 def canonical_resume_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -45,12 +69,12 @@ def canonical_resume_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         str(key): normalize(value)
         for key, value in sorted(config.items(), key=lambda pair: str(pair[0]))
-        if key != "resume_from_checkpoint"
+        if key not in _RESUME_CONFIG_IGNORED_FIELDS
     }
 
 
-def _config_fingerprint(config: Mapping[str, Any]) -> str:
-    payload = json.dumps(canonical_resume_config(config), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
+    payload = json.dumps(canonical_resume_config(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -60,16 +84,20 @@ def write_resume_manifest(
     config: Mapping[str, Any],
     world_size: int,
     global_step: int,
+    runtime_identity: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist the run identity used to reject incompatible future resumes."""
 
     normalized_config = canonical_resume_config(config)
+    normalized_runtime = canonical_resume_config(runtime_identity or {})
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "global_step": int(global_step),
         "world_size": int(world_size),
-        "config_sha256": _config_fingerprint(normalized_config),
+        "config_sha256": _payload_fingerprint(normalized_config),
         "config": normalized_config,
+        "runtime_sha256": _payload_fingerprint(normalized_runtime),
+        "runtime": normalized_runtime,
     }
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -128,6 +156,7 @@ def _validate_resume_manifest(
     checkpoint: Path,
     *,
     expected_config: Mapping[str, Any] | None,
+    expected_runtime: Mapping[str, Any] | None,
     step: int,
     world_size: int,
     errors: list[str],
@@ -150,7 +179,8 @@ def _validate_resume_manifest(
     if not isinstance(manifest, dict):
         errors.append(f"{RESUME_MANIFEST_NAME} must contain a JSON object")
         return
-    if manifest.get("format_version") != 1:
+    format_version = manifest.get("format_version")
+    if format_version not in {1, 2}:
         errors.append(f"unsupported resume manifest format {manifest.get('format_version')!r}")
     if manifest.get("global_step") != step:
         errors.append(f"resume manifest step {manifest.get('global_step')!r} does not match checkpoint step {step}")
@@ -160,7 +190,7 @@ def _validate_resume_manifest(
         )
 
     normalized_expected = canonical_resume_config(expected_config)
-    expected_fingerprint = _config_fingerprint(normalized_expected)
+    expected_fingerprint = _payload_fingerprint(normalized_expected)
     if manifest.get("config_sha256") != expected_fingerprint:
         saved_config = manifest.get("config")
         changed_keys: list[str] = []
@@ -172,6 +202,25 @@ def _validate_resume_manifest(
             )
         detail = f"; changed fields: {', '.join(changed_keys)}" if changed_keys else ""
         errors.append(f"training config fingerprint does not match the checkpoint{detail}")
+
+    if expected_runtime is None:
+        return
+    if format_version == 1 or not isinstance(manifest.get("runtime"), dict):
+        warnings.warn(
+            f"{checkpoint} has no runtime/content fingerprint; config and structural state were validated only.",
+            stacklevel=2,
+        )
+        return
+    normalized_runtime = canonical_resume_config(expected_runtime)
+    if manifest.get("runtime_sha256") != _payload_fingerprint(normalized_runtime):
+        saved_runtime = manifest["runtime"]
+        changed_keys = sorted(
+            key
+            for key in set(saved_runtime) | set(normalized_runtime)
+            if saved_runtime.get(key) != normalized_runtime.get(key)
+        )
+        detail = f"; changed sections: {', '.join(changed_keys)}" if changed_keys else ""
+        errors.append(f"runtime/data/model fingerprint does not match the checkpoint{detail}")
 
 
 def _validate_deepspeed_state(checkpoint: Path, step: int, world_size: int, errors: list[str]) -> None:
@@ -230,6 +279,7 @@ def validate_resume_checkpoint(
     require_distillm_state: bool,
     train_batch_size: int | None = None,
     expected_config: Mapping[str, Any] | None = None,
+    expected_runtime: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Resolve and validate an explicit checkpoint before resuming training.
 
@@ -288,6 +338,7 @@ def validate_resume_checkpoint(
         _validate_resume_manifest(
             checkpoint,
             expected_config=expected_config,
+            expected_runtime=expected_runtime,
             step=step,
             world_size=world_size,
             errors=errors,

@@ -23,3 +23,6 @@ def test_train_all_scripts_route_every_method_through_results_root(script_name: 
     assert '"$@" "${method_overrides[@]}"' in script
     assert 'if [[ "${override}" == resume_from_checkpoint=* ]]; then' in script
     assert "one checkpoint cannot be applied to every method" in script
+    assert 'fresh_outputs=("${TEACHER_ADAPTER}")' in script
+    assert 'for checkpoint in "${output_dir}"/checkpoint-*; do' in script
+    assert "Choose a new RESULTS_ROOT" in script

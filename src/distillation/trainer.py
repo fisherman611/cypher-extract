@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import platform
 from collections import defaultdict
+from collections.abc import Mapping
 from functools import partial
+from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -18,11 +22,12 @@ from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, Stu
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids
 from .losses import compute_distillation_loss, compute_hpd_loss
-from .resume import validate_resume_checkpoint, write_resume_manifest
+from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
 from .sampling import TemplateDistributedBatchSampler
 from .utils import print_rank
 
 DISTILLM_STATE_NAME = "distillm_state"
+_RUNTIME_PACKAGES = ("torch", "transformers", "accelerate", "datasets", "peft", "llamafactory", "deepspeed")
 
 
 def _unwrap_model(model: torch.nn.Module, accelerator: Any) -> torch.nn.Module:
@@ -38,6 +43,100 @@ def _lm_head(model: torch.nn.Module, accelerator: Any) -> torch.nn.Module:
     if output_embeddings is None:
         raise ValueError(f"{type(unwrapped).__name__} does not expose output embeddings required by FDD.")
     return output_embeddings
+
+
+def _dataset_identity(dataset: Any) -> Any:
+    if isinstance(dataset, Mapping):
+        return {str(key): _dataset_identity(value) for key, value in sorted(dataset.items())}
+    identity = {"type": type(dataset).__name__}
+    fingerprint = getattr(dataset, "_fingerprint", None)
+    if fingerprint is not None:
+        identity["fingerprint"] = str(fingerprint)
+    try:
+        identity["rows"] = len(dataset)
+    except TypeError:
+        identity["rows"] = None
+    return identity
+
+
+def _model_identity(model: torch.nn.Module | None, accelerator: Any) -> dict[str, Any] | None:
+    if model is None:
+        return None
+    config = getattr(_unwrap_model(model, accelerator), "config", None)
+    if config is None:
+        return {"type": type(model).__name__}
+    return {
+        "type": type(config).__name__,
+        "name_or_path": getattr(config, "_name_or_path", None),
+        "commit_hash": getattr(config, "_commit_hash", None),
+        "model_type": getattr(config, "model_type", None),
+        "architectures": getattr(config, "architectures", None),
+        "vocab_size": getattr(config, "vocab_size", None),
+        "hidden_size": getattr(config, "hidden_size", None),
+        "num_hidden_layers": getattr(config, "num_hidden_layers", None),
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _adapter_identity(value: str | None) -> list[dict[str, Any]]:
+    if not value:
+        return []
+    identities = []
+    for item in (part.strip() for part in value.split(",")):
+        path = Path(item).expanduser().resolve()
+        identity: dict[str, Any] = {"source": item}
+        if path.is_dir():
+            files = []
+            for name in ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"):
+                candidate = path / name
+                if candidate.is_file():
+                    files.append({"name": name, "size": candidate.stat().st_size, "sha256": _file_sha256(candidate)})
+            identity.update(resolved_path=str(path), files=files)
+        identities.append(identity)
+    return identities
+
+
+def _tokenizer_identity(tokenizer: Any) -> dict[str, Any]:
+    init_kwargs = getattr(tokenizer, "init_kwargs", {})
+    chat_template = getattr(tokenizer, "chat_template", None)
+    return {
+        "type": type(tokenizer).__name__,
+        "name_or_path": getattr(tokenizer, "name_or_path", None),
+        "commit_hash": init_kwargs.get("_commit_hash") if isinstance(init_kwargs, Mapping) else None,
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "model_max_length": getattr(tokenizer, "model_max_length", None),
+        "pad_token_id": getattr(tokenizer, "pad_token_id", None),
+        "eos_token_id": getattr(tokenizer, "eos_token_id", None),
+        "chat_template_sha256": sha256(str(chat_template).encode("utf-8")).hexdigest(),
+    }
+
+
+def _config_file_identity(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value
+    if not isinstance(value, str):
+        return value
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        return {"source": value}
+    return {"source": value, "resolved_path": str(path), "sha256": _file_sha256(path)}
+
+
+def _package_versions() -> dict[str, str | None]:
+    versions = {}
+    for package in _RUNTIME_PACKAGES:
+        try:
+            versions[package] = version(package)
+        except PackageNotFoundError:
+            versions[package] = None
+    return versions
 
 
 class _CheckpointStateCallback(TrainerCallback):
@@ -103,6 +202,20 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     getattr(self.model, "generation_config", None),
                 ),
             )
+        self._resume_runtime_identity = {
+            "packages": _package_versions(),
+            "python": platform.python_version(),
+            "cuda": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version(),
+            "gpu_names": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
+            "train_dataset": _dataset_identity(self.train_dataset),
+            "eval_dataset": _dataset_identity(self.eval_dataset),
+            "student_model": _model_identity(self.model, self.accelerator),
+            "teacher_model": _model_identity(self.ref_model, self.accelerator),
+            "teacher_adapters": _adapter_identity(getattr(self.finetuning_args, "ref_model_adapters", None)),
+            "tokenizer": _tokenizer_identity(self.processing_class),
+            "deepspeed_config": _config_file_identity(self.args.deepspeed),
+        }
         self.add_callback(_CheckpointStateCallback(self))
 
     def get_train_dataloader(self) -> DataLoader:
@@ -163,6 +276,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
         write_resume_manifest(
             directory,
             config=resume_config,
+            runtime_identity=self._resume_runtime_identity,
             world_size=int(self.args.world_size),
             global_step=global_step,
         )
@@ -202,11 +316,14 @@ class KDTrainer(CustomSeq2SeqTrainer):
             require_distillm_state=self.distillation_args.is_adaptive,
             train_batch_size=int(self._train_batch_size),
             expected_config=getattr(self.args, "_cypher_resume_config", None),
+            expected_runtime=self._resume_runtime_identity,
         )
         if checkpoint_path is not None:
             if self.distillation_args.is_adaptive and not self.load_distillm_state(checkpoint_path):
                 raise RuntimeError(f"Failed to restore adaptive DistiLLM state from {checkpoint_path}.")
             resume_from_checkpoint = str(checkpoint_path)
+        else:
+            validate_fresh_output_dir(self.args.output_dir)
         return super().train(resume_from_checkpoint=resume_from_checkpoint, *args, **kwargs)
 
     def save_state(self) -> None:

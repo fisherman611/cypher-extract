@@ -6,6 +6,7 @@ from .arguments import DistillationArguments
 from .data import register_tool_dataset_converters
 from .generation import reference_eval_generation_kwargs
 from .metrics import ComputeTaskMetrics
+from .reference import create_reference_model_at_revision
 from .trainer import KDTrainer
 
 
@@ -48,7 +49,12 @@ def run_kd(
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     ref_model = None
     if distillation_args.uses_kd:
-        ref_model = create_ref_model(model_args, finetuning_args)
+        ref_model = create_reference_model_at_revision(
+            model_args,
+            finetuning_args,
+            distillation_args.ref_model_revision,
+            create_ref_model,
+        )
         if ref_model is None:
             raise ValueError("Set ref_model to the teacher checkpoint for knowledge distillation.")
 

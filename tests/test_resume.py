@@ -6,6 +6,7 @@ import pytest
 from distillation.resume import (
     ResumeCheckpointError,
     canonical_resume_config,
+    validate_fresh_output_dir,
     validate_resume_checkpoint,
     write_resume_manifest,
 )
@@ -153,15 +154,41 @@ def test_rejects_deepspeed_latest_tag_mismatch(tmp_path: Path) -> None:
         _validate(checkpoint, tmp_path, deepspeed=True)
 
 
-def test_resume_manifest_ignores_only_checkpoint_path_and_accepts_same_config(tmp_path: Path) -> None:
+def test_fresh_training_rejects_output_directory_with_old_checkpoints(tmp_path: Path) -> None:
+    (tmp_path / "checkpoint-10").mkdir()
+
+    with pytest.raises(ResumeCheckpointError, match="Refusing to start fresh training"):
+        validate_fresh_output_dir(tmp_path)
+
+
+def test_fresh_training_accepts_new_or_checkpoint_free_output_directory(tmp_path: Path) -> None:
+    validate_fresh_output_dir(tmp_path / "new-run")
+    (tmp_path / "logs").mkdir()
+    validate_fresh_output_dir(tmp_path)
+
+
+def test_resume_manifest_ignores_checkpoint_path_revision_pins_and_retention_limit(tmp_path: Path) -> None:
     checkpoint = _make_checkpoint(tmp_path)
-    original = {"distill_method": "fkl", "gradient_accumulation_steps": 8, "resume_from_checkpoint": None}
+    original = {
+        "distill_method": "fkl",
+        "gradient_accumulation_steps": 8,
+        "resume_from_checkpoint": None,
+    }
     resumed = {
         "distill_method": "fkl",
         "gradient_accumulation_steps": 8,
         "resume_from_checkpoint": str(checkpoint),
+        "model_revision": "student-commit",
+        "ref_model_revision": "teacher-commit",
+        "save_total_limit": None,
     }
-    write_resume_manifest(checkpoint, config=original, world_size=1, global_step=10)
+    write_resume_manifest(
+        checkpoint,
+        config=original,
+        runtime_identity={"dataset": "fingerprint-a"},
+        world_size=1,
+        global_step=10,
+    )
 
     result = validate_resume_checkpoint(
         checkpoint,
@@ -171,6 +198,7 @@ def test_resume_manifest_ignores_only_checkpoint_path_and_accepts_same_config(tm
         require_distillm_state=False,
         train_batch_size=2,
         expected_config=canonical_resume_config(resumed),
+        expected_runtime={"dataset": "fingerprint-a"},
     )
 
     assert result == checkpoint.resolve()
@@ -181,6 +209,7 @@ def test_resume_manifest_rejects_changed_training_config(tmp_path: Path) -> None
     write_resume_manifest(
         checkpoint,
         config={"distill_method": "fkl", "gradient_accumulation_steps": 8},
+        runtime_identity={"dataset": "fingerprint-a"},
         world_size=1,
         global_step=10,
     )
@@ -194,4 +223,31 @@ def test_resume_manifest_rejects_changed_training_config(tmp_path: Path) -> None
             require_distillm_state=False,
             train_batch_size=2,
             expected_config={"distill_method": "fkl", "gradient_accumulation_steps": 4},
+            expected_runtime={"dataset": "fingerprint-a"},
+        )
+
+
+def test_resume_manifest_rejects_changed_runtime_content(tmp_path: Path) -> None:
+    checkpoint = _make_checkpoint(tmp_path)
+    write_resume_manifest(
+        checkpoint,
+        config={"distill_method": "fkl"},
+        runtime_identity={"train_dataset": {"fingerprint": "old"}, "teacher_adapters": [{"sha256": "old"}]},
+        world_size=1,
+        global_step=10,
+    )
+
+    with pytest.raises(ResumeCheckpointError, match="changed sections: teacher_adapters, train_dataset"):
+        validate_resume_checkpoint(
+            checkpoint,
+            output_dir=tmp_path,
+            world_size=1,
+            deepspeed_enabled=False,
+            require_distillm_state=False,
+            train_batch_size=2,
+            expected_config={"distill_method": "fkl"},
+            expected_runtime={
+                "train_dataset": {"fingerprint": "new"},
+                "teacher_adapters": [{"sha256": "new"}],
+            },
         )

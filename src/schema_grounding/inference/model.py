@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,7 @@ from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from distillation.generation import generation_eos_value, resolve_eos_token_ids
+from distillation.utils import capture_rng_state, restore_rng_state
 from schema_grounding.inference.prompting import Message
 
 _DTYPES = {
@@ -18,6 +20,29 @@ _DTYPES = {
     "float16": torch.float16,
     "float32": torch.float32,
 }
+
+
+def _pinned_base_revision(checkpoint_path: Path, base_name: str, adapter_revision: str | None) -> str | None:
+    """Prefer the immutable base commit recorded when this checkpoint was saved."""
+
+    manifest_path = checkpoint_path / "resume_manifest.json"
+    if not manifest_path.is_file():
+        return adapter_revision
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid training manifest {manifest_path}: {exc}") from exc
+    runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
+    student_model = runtime.get("student_model") if isinstance(runtime, dict) else None
+    if not isinstance(student_model, dict):
+        return adapter_revision
+    recorded_name = student_model.get("name_or_path")
+    if recorded_name and recorded_name != base_name:
+        raise ValueError(
+            f"Training manifest base model {recorded_name!r} does not match adapter base model {base_name!r}"
+        )
+    commit_hash = student_model.get("commit_hash")
+    return commit_hash if isinstance(commit_hash, str) and commit_hash else adapter_revision
 _TOKENIZER_ASSETS = (
     "tokenizer.json",
     "tokenizer.model",
@@ -45,15 +70,16 @@ class ModelRunner:
     ) -> ModelRunner:
         if dtype not in _DTYPES:
             raise ValueError(f"Unsupported dtype {dtype!r}; choose from {', '.join(_DTYPES)}")
-        checkpoint_path = str(checkpoint_path)
-        if not (Path(checkpoint_path) / "adapter_config.json").is_file():
-            tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, use_fast=True)
+        checkpoint_directory = Path(checkpoint_path)
+        checkpoint_source = str(checkpoint_directory)
+        if not (checkpoint_directory / "adapter_config.json").is_file():
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint_source, use_fast=True)
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token = tokenizer.eos_token
             tokenizer.padding_side = "left"
             target_device = torch.device(device)
             model = AutoModelForCausalLM.from_pretrained(
-                checkpoint_path,
+                checkpoint_source,
                 dtype=_DTYPES[dtype],
                 low_cpu_mem_usage=True,
             )
@@ -61,15 +87,15 @@ class ModelRunner:
             model.eval()
             return cls(model=model, tokenizer=tokenizer, device=target_device)
 
-        peft_config = PeftConfig.from_pretrained(checkpoint_path)
+        peft_config = PeftConfig.from_pretrained(checkpoint_source)
         base_name = peft_config.base_model_name_or_path
         if not base_name:
-            raise ValueError(f"Adapter {checkpoint_path} does not declare a base model")
-        base_revision = peft_config.revision
-        has_local_tokenizer = (Path(checkpoint_path) / "tokenizer_config.json").is_file() and any(
-            (Path(checkpoint_path) / filename).is_file() for filename in _TOKENIZER_ASSETS
+            raise ValueError(f"Adapter {checkpoint_directory} does not declare a base model")
+        base_revision = _pinned_base_revision(checkpoint_directory, base_name, peft_config.revision)
+        has_local_tokenizer = (checkpoint_directory / "tokenizer_config.json").is_file() and any(
+            (checkpoint_directory / filename).is_file() for filename in _TOKENIZER_ASSETS
         )
-        tokenizer_source = checkpoint_path if has_local_tokenizer else base_name
+        tokenizer_source = checkpoint_source if has_local_tokenizer else base_name
         tokenizer_revision = None if has_local_tokenizer else base_revision
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, revision=tokenizer_revision, use_fast=True)
         if tokenizer.pad_token_id is None:
@@ -83,7 +109,7 @@ class ModelRunner:
             dtype=_DTYPES[dtype],
             low_cpu_mem_usage=True,
         )
-        model = PeftModel.from_pretrained(model, checkpoint_path)
+        model = PeftModel.from_pretrained(model, checkpoint_source)
         if merge_adapter:
             model = model.merge_and_unload()
         model.to(target_device)
@@ -154,6 +180,7 @@ class ModelRunner:
                     )
                 )
             return outputs
+        rng_state = capture_rng_state()
         try:
             return self._generate_batch(
                 conversations,
@@ -167,6 +194,7 @@ class ModelRunner:
         except torch.cuda.OutOfMemoryError:
             if len(conversations) == 1:
                 raise
+            restore_rng_state(rng_state)
             torch.cuda.empty_cache()
             middle = len(conversations) // 2
             previous_safe_size = self.safe_batch_sizes.get(max_new_tokens, len(conversations))

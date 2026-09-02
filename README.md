@@ -463,8 +463,9 @@ Trước khi load model, resume preflight kiểm tra:
 - model/adapter, optimizer và scheduler state đầy đủ;
 - RNG state đủ cho từng rank và `world_size` khớp lần train trước;
 - DeepSpeed `latest`, model state và optimizer shard đều trỏ đúng step;
-- `resume_manifest.json` xác nhận toàn bộ config (trừ chính đường dẫn resume)
-  không bị thay đổi;
+- `resume_manifest.json` xác nhận config ảnh hưởng training, fingerprint của train/eval
+  dataset, commit/config model, toàn bộ teacher adapter weights, phiên bản
+  runtime và loại GPU không bị thay đổi;
 - với adaptive DistiLLM, có đủ `distillm_state_rankN.pt` để khôi phục threshold,
   replay buffer, RNG của scheduler và rollout counters.
 
@@ -472,6 +473,16 @@ Nếu một thành phần bị thiếu, lệnh dừng ngay thay vì âm thầm c
 train tiếp với optimizer, scheduler hoặc DistiLLM state bị reset. Checkpoint cũ
 tạo trước cơ chế manifest vẫn resume được sau khi qua kiểm tra cấu trúc, nhưng sẽ
 cảnh báo vì không thể tự đối chiếu config cũ.
+
+Fresh training cũng từ chối chạy nếu `output_dir` đã chứa `checkpoint-*`.
+Đổi `output_dir` hoặc `RESULTS_ROOT` cho run mới; không dùng
+`overwrite_output_dir=true` để trộn hai run vào cùng một cây kết quả.
+
+Mọi preset đã pin `model_revision` của student và `ref_model_revision` của
+teacher bằng commit SHA riêng. Checkpoint LoRA mới cũng ghi commit base model;
+inference ưu tiên commit trong `resume_manifest.json` thay vì branch `main`.
+`save_total_limit: null` không giới hạn số checkpoint được giữ lại. Vì vậy cần
+theo dõi dung lượng của `output_dir` khi chạy nhiều epoch hoặc lưu thường xuyên.
 
 Chạy test trước khi train dài:
 
@@ -560,10 +571,14 @@ Với mỗi model, script đọc checkpoint local tại
 `results/<model-family>/<method>/checkpoint-N`. Tên `<model-family>/<method>`
 khớp trực tiếp với `output_dir` trong config training; inference không tải
 checkpoint từ một Hugging Face result repository. Trong một method directory,
-inference chọn checkpoint có `N` lớn nhất.
+inference ưu tiên các checkpoint hoàn tất có `resume_manifest.json`, xác nhận tất
+cả thuộc cùng một training fingerprint rồi mới chọn `N` lớn nhất. Checkpoint cao
+hơn nhưng chưa ghi xong manifest sẽ bị bỏ qua; nếu các fingerprint bị trộn, script
+dừng và yêu cầu dùng checkpoint root sạch. Với checkpoint cũ chưa có manifest,
+script vẫn giữ cách chọn `N` lớn nhất để tương thích ngược.
 
 `run_config.json` lưu fingerprint của checkpoint đã chọn. Fingerprint bao gồm
-metadata và hash của config/tokenizer/trainer state, cùng size, modification
+metadata và hash của config/tokenizer/trainer/resume state, cùng size, modification
 time và hash mẫu của weight files. Nếu weights bị thay ngay tại cùng path và
 cùng `checkpoint-N`, pipeline từ chối reuse prediction cũ và yêu cầu một
 `--output-dir` mới.
@@ -687,6 +702,9 @@ CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
 Pipeline sẽ:
 
 - tiếp tục selector/generator từ row cuối của file `.partial`;
+- khôi phục Python/NumPy/PyTorch/CUDA RNG sau batch cuối đã commit, nên phần
+  generator sampling sau resume giống một lần chạy liên tục;
+- rollback phần đuôi của batch đang ghi dở rồi sinh lại batch đó;
 - reuse stage đã hoàn thành;
 - tính lại metrics và manifest sau khi đủ output.
 
