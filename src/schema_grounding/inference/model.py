@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from distillation.generation import generation_eos_value, resolve_eos_token_ids
 from distillation.utils import capture_rng_state, restore_rng_state
-from schema_grounding.inference.prompting import Message
+from schema_grounding.inference.prompting import Message, render_llama3, render_qwen3_nothink
 
 _DTYPES = {
     "auto": "auto",
@@ -57,6 +57,7 @@ class ModelRunner:
     model: Any
     tokenizer: Any
     device: torch.device
+    model_family: str | None = None
     safe_batch_sizes: dict[int, int] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -67,6 +68,7 @@ class ModelRunner:
         dtype: str = "bfloat16",
         device: str = "cuda",
         merge_adapter: bool = True,
+        model_family: str | None = None,
     ) -> ModelRunner:
         if dtype not in _DTYPES:
             raise ValueError(f"Unsupported dtype {dtype!r}; choose from {', '.join(_DTYPES)}")
@@ -85,7 +87,12 @@ class ModelRunner:
             )
             model.to(target_device)
             model.eval()
-            return cls(model=model, tokenizer=tokenizer, device=target_device)
+            return cls(
+                model=model,
+                tokenizer=tokenizer,
+                device=target_device,
+                model_family=model_family,
+            )
 
         peft_config = PeftConfig.from_pretrained(checkpoint_source)
         base_name = peft_config.base_model_name_or_path
@@ -114,7 +121,12 @@ class ModelRunner:
             model = model.merge_and_unload()
         model.to(target_device)
         model.eval()
-        return cls(model=model, tokenizer=tokenizer, device=target_device)
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            device=target_device,
+            model_family=model_family,
+        )
 
     @classmethod
     def from_adapter(
@@ -124,6 +136,7 @@ class ModelRunner:
         dtype: str = "bfloat16",
         device: str = "cuda",
         merge_adapter: bool = True,
+        model_family: str | None = None,
     ) -> ModelRunner:
         """Backward-compatible adapter entry point."""
 
@@ -132,12 +145,26 @@ class ModelRunner:
             dtype=dtype,
             device=device,
             merge_adapter=merge_adapter,
+            model_family=model_family,
         )
 
     def prompt_length(self, messages: Sequence[Message]) -> int:
         return len(self._tokenize_chat(messages))
 
     def _tokenize_chat(self, messages: Sequence[Message]) -> list[int]:
+        if self.model_family in {"qwen3", "qwen2.5_coder"}:
+            return self.tokenizer.encode(
+                render_qwen3_nothink(list(messages)),
+                add_special_tokens=False,
+            )
+        if self.model_family == "llama3":
+            bos_token = self.tokenizer.bos_token
+            if not isinstance(bos_token, str) or not bos_token:
+                raise ValueError("Llama 3 inference requires a tokenizer BOS token.")
+            return self.tokenizer.encode(
+                render_llama3(list(messages), bos_token=bos_token),
+                add_special_tokens=False,
+            )
         token_ids = self.tokenizer.apply_chat_template(
             list(messages),
             tokenize=True,
