@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from distillation.fdd import causal_hidden_state_mask, causal_response_mask, fdd_loss
+from distillation.fdd import _masked_mean, causal_hidden_state_mask, causal_response_mask, fdd_loss
 
 
 def _template_fdd_loss(student_hidden, teacher_hidden, mask, student_head, teacher_head, student_map, teacher_map):
@@ -49,6 +49,18 @@ def test_fdd_is_finite_and_backpropagates_to_student() -> None:
     assert student_hidden[3].grad is not None
     assert all(hidden.grad is None for hidden in teacher_hidden)
     assert teacher_head.weight.grad is None
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+def test_masked_mean_neutralizes_ignored_non_finite_values(non_finite: float) -> None:
+    values = torch.tensor([[non_finite, 2.0]], requires_grad=True)
+    mask = torch.tensor([[0, 1]])
+
+    loss = _masked_mean(values, mask)
+
+    torch.testing.assert_close(loss, torch.tensor(2.0))
+    loss.backward()
+    torch.testing.assert_close(values.grad, torch.tensor([[0.0, 1.0]]))
 
 
 def test_fdd_aligns_different_padded_vocab_sizes() -> None:

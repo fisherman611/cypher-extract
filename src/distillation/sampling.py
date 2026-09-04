@@ -30,6 +30,41 @@ def _distributed_batch_count(size: int, batch_size: int, num_replicas: int) -> i
     return (full_batches // num_replicas) * num_replicas
 
 
+def selector_droppable_batch_range(
+    *,
+    batch_size: int,
+    contrast_pairs: int,
+    unpaired_negatives: int,
+    total_rows: int,
+) -> tuple[int, int]:
+    """Locate full prepared batches containing only unpaired selector rows.
+
+    Preparation assigns half of each mixed batch to selector rows. Contrast
+    rows precede unpaired negatives, so a boundary batch containing both is
+    protected and only the subsequent negative-only batches are droppable.
+    """
+
+    if batch_size < 2 or batch_size % 2:
+        raise ValueError("batch_size must be a positive even number.")
+    if contrast_pairs < 0 or unpaired_negatives < 0 or total_rows < 0:
+        raise ValueError("Selector layout counts must be non-negative.")
+    selector_capacity = batch_size // 2
+    contrast_rows = contrast_pairs * 2
+    selector_rows = contrast_rows + unpaired_negatives
+    if total_rows < selector_rows:
+        raise ValueError("Prepared row count cannot be smaller than its selector row count.")
+    first_negative_only_batch = (contrast_rows + selector_capacity - 1) // selector_capacity
+    selector_batch_count = (selector_rows + selector_capacity - 1) // selector_capacity
+    # The final mixed chunk can be a partial dataloader batch when generator
+    # and selector row counts are equal but selector_capacity does not divide
+    # selector_rows. Distributed sampling never yields that remainder, so it
+    # must not be advertised as a full droppable batch.
+    full_batch_count = total_rows // batch_size
+    droppable_start = min(first_negative_only_batch, full_batch_count)
+    droppable_stop = min(selector_batch_count, full_batch_count)
+    return droppable_start, max(0, droppable_stop - droppable_start)
+
+
 def _preserved_distributed_batches(
     indices: list[int],
     *,
@@ -40,14 +75,14 @@ def _preserved_distributed_batches(
     droppable_batch_start: int = 0,
     droppable_batch_count: int = 0,
 ) -> Iterator[list[int]]:
-    """Shuffle two-batch prepared blocks without shuffling their samples.
+    """Shuffle prepared contrast blocks without shuffling their samples.
 
     The prepared dataset already encodes the intended generator/selector batch
-    composition and same-question selector pairs. At batch size two, a contrast
-    pair spans two consecutive prepared batches; extra selector negatives are
-    also arranged in two-batch blocks. Shuffling complete blocks preserves both
-    the local task mix and, with two replicas, places each YES/NO pair in the
-    same distributed micro-step.
+    composition and same-question selector pairs. A block contains two batches
+    only when the per-batch selector capacity is odd, which prevents an adjacent
+    YES/NO pair from being separated by shuffling. Otherwise each prepared batch
+    is independently movable. At batch size two with two replicas, this also
+    places both sides of a contrast pair in the same distributed micro-step.
     """
 
     full_batch_count, remainder = divmod(len(indices), batch_size)
@@ -72,14 +107,19 @@ def _preserved_distributed_batches(
         batches = [batch for index, batch in enumerate(batches) if index not in dropped]
         full_batch_count = len(batches)
     generator = torch.Generator().manual_seed(seed + epoch)
-    complete_block_count, trailing_batch_count = divmod(full_batch_count, 2)
-    blocks = [batches[start * 2 : (start + 1) * 2] for start in range(complete_block_count)]
+    selector_capacity = batch_size // 2
+    shuffle_block_size = 2 if selector_capacity % 2 else 1
+    complete_block_count, trailing_batch_count = divmod(full_batch_count, shuffle_block_size)
+    blocks = [
+        batches[start * shuffle_block_size : (start + 1) * shuffle_block_size]
+        for start in range(complete_block_count)
+    ]
     block_order = torch.randperm(complete_block_count, generator=generator).tolist()
     ordered_batches = [batch for block_index in block_order for batch in blocks[block_index]]
     if trailing_batch_count:
-        # Keep the incomplete two-batch block last so it cannot shift the
+        # Keep an incomplete contrast block last so it cannot shift the
         # distributed-rank alignment of any preceding contrast pair.
-        ordered_batches.append(batches[-1])
+        ordered_batches.extend(batches[-trailing_batch_count:])
     if num_replicas > 1 and full_batch_count % num_replicas:
         raise AssertionError("Distributed batch count was not equalized across ranks")
     yield from ordered_batches
@@ -89,11 +129,11 @@ def _preserved_distributed_batches(
 
 
 class TemplateDistributedBatchSampler(BatchSampler):
-    """Distribute prepared two-batch blocks without destroying their composition.
+    """Distribute prepared contrast blocks without destroying their composition.
 
     With ``even_batches=False``, ranks have equal step counts and no examples
-    are duplicated. Only complete two-batch blocks and their rank ownership are
-    shuffled.
+    are duplicated. Only complete contrast-safe blocks and their rank ownership
+    are shuffled.
     """
 
     def __init__(
@@ -106,8 +146,8 @@ class TemplateDistributedBatchSampler(BatchSampler):
         droppable_batch_start: int = 0,
         droppable_batch_count: int = 0,
     ) -> None:
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive.")
+        if batch_size < 2 or batch_size % 2:
+            raise ValueError("batch_size must be a positive even number.")
         if num_replicas <= 0:
             raise ValueError("num_replicas must be positive.")
         self._index_sampler = _EpochAwareSequentialSampler(dataset)

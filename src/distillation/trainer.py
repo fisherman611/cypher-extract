@@ -27,7 +27,7 @@ from .generation import resolve_eos_token_ids, selector_generation_kwargs
 from .losses import compute_distillation_loss, compute_hpd_loss
 from .prepare_data import LAYOUT_FILE
 from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
-from .sampling import TemplateDistributedBatchSampler
+from .sampling import TemplateDistributedBatchSampler, selector_droppable_batch_range
 from .utils import print_rank
 
 DISTILLM_STATE_NAME = "distillm_state"
@@ -251,8 +251,12 @@ class KDTrainer(CustomSeq2SeqTrainer):
                     f"{self._train_batch_size}. Regenerate the prepared data."
                 )
             contrast_pairs = int(layout["train_selector_contrast_pairs"])
-            droppable_batch_start = contrast_pairs * 2
-            droppable_batch_count = int(layout["train_selector_unpaired_negatives"])
+            droppable_batch_start, droppable_batch_count = selector_droppable_batch_range(
+                batch_size=prepared_batch_size,
+                contrast_pairs=contrast_pairs,
+                unpaired_negatives=int(layout["train_selector_unpaired_negatives"]),
+                total_rows=int(layout["train_rows"]),
+            )
 
         batch_sampler = TemplateDistributedBatchSampler(
             train_dataset,

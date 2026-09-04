@@ -152,10 +152,12 @@ Chuẩn bị `train.jsonl` và `eval.jsonl` sao cho batch có cả generator và
 selector khi số row cho phép, không lặp lại bất kỳ row nguồn nào. Các cặp
 selector cùng question được xếp trước, sau đó là các negative-only row; với
 `batch-size=2`, hai thành viên của một pair nằm trong hai mixed batch liên tiếp
-(`generator + selector`). Batch còn lại chỉ chứa generator. Test generator và
-selector được ghi thành hai file riêng. Không
-bật shuffle từng row ở data loader vì sẽ phá task mix và contrast pairing.
-Trainer chỉ shuffle theo block hai batch hoàn chỉnh. Khi train 2 GPU với
+(`generator + selector`); với `batch-size=4`, `8`, ... pair được giữ nguyên trong
+prepared batch khi có đủ selector capacity. Batch còn lại chỉ chứa generator.
+Test generator và selector được ghi thành hai file riêng. Không bật shuffle từng
+row ở data loader vì sẽ phá task mix và contrast pairing. Trainer tự suy ra số
+batch chứa contrast pair, vùng negative-only có thể drop và kích thước block
+shuffle từ `batch_size` trong layout. Khi train 2 GPU với
 `batch-size=2`, hai selector row `YES/NO` của cùng question đi vào cùng một
 global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + selector`.
 Với CypherBench final hiện tại (`6,827` generator, `6,827` selector) và
@@ -188,6 +190,22 @@ python scripts\prepare_llamafactory_data.py `
 Mỗi row đầu ra chỉ giữ `messages` theo thứ tự `system -> user -> assistant`.
 Các config train dùng tên `cypher_prepared_train` và `cypher_prepared_eval`
 trong `data/llamafactory/dataset_info.json`.
+
+`scripts/train.sh` tự động đọc `per_device_train_batch_size` sau khi gộp
+các CLI override. Nếu batch size khác layout hiện có, script sẽ tạo và dùng
+cache riêng tại `data/prepared/batch_<N>` và
+`data/llamafactory/batch_<N>`. Ví dụ, lệnh sau tự chuẩn bị data cho
+batch size 8 trước khi khởi chạy `torchrun`:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml \
+  per_device_train_batch_size=8
+```
+
+Cache có thể dùng lại khi chuyển qua lại giữa các batch size. Dùng
+`AUTO_PREPARE_FORCE=1` khi muốn build lại cache sau khi thay data/prompt;
+`AUTO_PREPARE_DATA=0` tắt cơ chế này cho dataset tự quản lý. Có thể đổi
+nguồn grounding bằng `CYPHER_GROUNDING_INPUT_DIR`.
 
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
@@ -311,8 +329,9 @@ cho method `sft`.
 
 ### 5. Train student bằng KD
 
-Config project mặc định dùng FKL với `kd_ratio: 0.6`, tự nạp base teacher 4B
-và LoRA adapter vừa train tại `results/qwen3/teacher_lora`:
+Config project mặc định và các preset FKL/RKL của cả ba họ model đều dùng
+`kd_ratio: 0.6`, tự nạp base teacher 4B và LoRA adapter vừa train tại
+`results/qwen3/teacher_lora`:
 
 ```bash
 RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/kd.yaml

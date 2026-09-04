@@ -41,7 +41,10 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=2,
-        help="Even batch size used for pre-interleaving. Default: 2 (matches training configs).",
+        help=(
+            "Positive even batch size used for pre-interleaving; it must match "
+            "per_device_train_batch_size. Default: 2."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
@@ -170,11 +173,12 @@ def interleave_without_replacement(
 ) -> list[dict[str, Any]]:
     """Mix tasks while retaining same-question selector contrast pairs.
 
-    Mixed batches are emitted first and later shuffled only as complete batches
-    by the trainer. Paired selector rows precede unpaired negative rows. For
-    batch size two, each contrast pair spans two consecutive mixed batches;
-    remaining selector rows then form negative-only two-batch blocks. Remaining
-    generator rows form generator-only batches. No source row is duplicated.
+    Mixed batches are emitted first and later shuffled only in contrast-safe
+    blocks by the trainer. Paired selector rows precede unpaired negative rows.
+    At batch size two, each contrast pair spans two consecutive mixed batches;
+    at larger batch sizes, multiple selector rows share a batch. Remaining
+    selector rows form negative-only mixed batches, followed by generator-only
+    batches. No source row is duplicated.
     """
 
     if batch_size < 2 or batch_size % 2:
@@ -218,9 +222,10 @@ def interleave_without_replacement(
     selector_capacity = batch_size // 2
     for selector_offset in range(0, len(selectors), selector_capacity):
         selector_chunk = selectors[selector_offset : selector_offset + selector_capacity]
-        generator_count = batch_size - len(selector_chunk)
-        if generator_offset + generator_count > len(generators):
-            raise ValueError("Not enough generator rows to construct mixed contrast batches")
+        generator_count = min(
+            batch_size - len(selector_chunk),
+            len(generators) - generator_offset,
+        )
         result.extend(generators[generator_offset : generator_offset + generator_count])
         result.extend(selector_chunk)
         generator_offset += generator_count

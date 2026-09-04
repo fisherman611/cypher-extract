@@ -37,10 +37,10 @@ def causal_response_mask(labels: torch.Tensor, attention_mask: torch.Tensor) -> 
 
 
 def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    mask = mask.to(dtype=values.dtype)
+    mask = mask.bool()
     if not torch.any(mask):
         raise ValueError("FDD received an empty attention mask.")
-    return (values * mask).sum() / mask.sum()
+    return values.masked_fill(~mask, 0.0).sum() / mask.sum()
 
 
 def soft_label_distillation_loss(

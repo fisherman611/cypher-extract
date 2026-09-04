@@ -1,7 +1,41 @@
+import pytest
 from accelerate.data_loader import BatchSamplerShard, prepare_data_loader
 from torch.utils.data import DataLoader
 
-from distillation.sampling import TemplateDistributedBatchSampler
+from distillation.sampling import (
+    TemplateDistributedBatchSampler,
+    selector_droppable_batch_range,
+)
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "expected"),
+    [(2, (10, 5)), (4, (5, 3)), (8, (3, 1))],
+)
+def test_selector_droppable_batch_range_scales_with_batch_size(
+    batch_size: int, expected: tuple[int, int]
+) -> None:
+    assert selector_droppable_batch_range(
+        batch_size=batch_size,
+        contrast_pairs=5,
+        unpaired_negatives=5,
+        total_rows=32 if batch_size > 2 else 30,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "expected"),
+    [(2, (4096, 2731)), (4, (2048, 1365)), (8, (1024, 682)), (16, (512, 341))],
+)
+def test_current_equal_task_layout_excludes_partial_tail_from_droppable_batches(
+    batch_size: int, expected: tuple[int, int]
+) -> None:
+    assert selector_droppable_batch_range(
+        batch_size=batch_size,
+        contrast_pairs=2048,
+        unpaired_negatives=2731,
+        total_rows=13654,
+    ) == expected
 
 
 def test_distributed_batches_preserve_contiguous_groups_without_duplicates() -> None:
@@ -115,3 +149,30 @@ def test_odd_batch_count_rotates_only_droppable_tail_batch() -> None:
         omitted_by_epoch.append(omitted)
 
     assert omitted_by_epoch[0] != omitted_by_epoch[1]
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "dataset_size", "droppable_start", "droppable_count"),
+    [(4, 36, 5, 3), (8, 56, 3, 1)],
+)
+def test_larger_batches_drop_only_the_computed_negative_region(
+    batch_size: int,
+    dataset_size: int,
+    droppable_start: int,
+    droppable_count: int,
+) -> None:
+    sampler = TemplateDistributedBatchSampler(
+        range(dataset_size),
+        batch_size=batch_size,
+        num_replicas=2,
+        seed=17,
+        droppable_batch_start=droppable_start,
+        droppable_batch_count=droppable_count,
+    )
+
+    included = {index for batch in sampler for index in batch}
+    omitted = set(range(dataset_size)).difference(included)
+
+    assert len(omitted) == batch_size
+    assert min(omitted) >= droppable_start * batch_size
+    assert max(omitted) < (droppable_start + droppable_count) * batch_size

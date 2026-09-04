@@ -27,7 +27,7 @@ lora_dropout: 0.1
 train_on_prompt: false
 
 distill_method: rkl
-kd_ratio: 0.7
+kd_ratio: 0.6
 
 output_dir: results/llama3/rkl
 overwrite_output_dir: true

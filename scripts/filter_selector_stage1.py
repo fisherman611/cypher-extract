@@ -685,6 +685,58 @@ def prepare_output_directory(input_dir: Path, output_dir: Path, overwrite: bool)
     output_dir.mkdir(parents=True)
 
 
+def _copy_unchanged_files(input_dir: Path, output_dir: Path) -> None:
+    """Copy regular files that are not rewritten by the stage-one filter."""
+
+    for path in input_dir.iterdir():
+        if path.is_file() and path.name not in {"selection_train.jsonl", "manifest.json"}:
+            shutil.copy2(path, output_dir / path.name)
+
+
+def _update_train_selection_counts(
+    manifest: dict[str, Any], filtered_rows: Iterable[dict[str, Any]]
+) -> tuple[int, int]:
+    """Update every source-specific ``*/train`` manifest entry."""
+
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("Manifest must contain a counts object")
+
+    train_entries: dict[str, dict[str, Any]] = {}
+    for key, entry in counts.items():
+        source, separator, split = str(key).rpartition("/")
+        if separator and split == "train":
+            if not isinstance(entry, dict):
+                raise ValueError(f"Manifest count entry {key!r} must be an object")
+            train_entries[source] = entry
+    if not train_entries:
+        raise ValueError("Manifest contains no */train count entries")
+
+    totals: Counter[str] = Counter()
+    positives: Counter[str] = Counter()
+    for row in filtered_rows:
+        source = row.get("source")
+        if not isinstance(source, str) or not source:
+            raise ValueError("Filtered selector row is missing a source")
+        label = int(row["label"])
+        if label not in (0, 1):
+            raise ValueError(f"Selection label must be 0 or 1: {row['label']!r}")
+        totals[source] += 1
+        positives[source] += label
+
+    unknown_sources = set(totals) - set(train_entries)
+    if unknown_sources:
+        raise ValueError(
+            f"Filtered rows contain sources absent from manifest train counts: {sorted(unknown_sources)}"
+        )
+
+    for source, entry in train_entries.items():
+        entry["selection_examples"] = totals[source]
+        entry["selection_positive"] = positives[source]
+        entry["selection_negative"] = totals[source] - positives[source]
+    return sum(positives.values()), sum(totals.values()) - sum(positives.values())
+
+
 def main() -> None:
     args = parse_args()
     input_dir = args.input_dir.resolve()
@@ -720,18 +772,15 @@ def main() -> None:
     )
     prepare_output_directory(input_dir, output_dir, args.overwrite)
 
-    for path in input_dir.iterdir():
-        if path.name not in {"selection_train.jsonl", "manifest.json"}:
-            shutil.copy2(path, output_dir / path.name)
+    _copy_unchanged_files(input_dir, output_dir)
     write_jsonl(output_dir / "selection_train.jsonl", filtered_rows)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    train_counts = manifest["counts"]["cypherbench/train"]
-    train_counts["selection_examples"] = len(filtered_rows)
-    train_counts["selection_positive"] = sum(int(row["label"]) for row in filtered_rows)
-    train_counts["selection_negative"] = len(filtered_rows) - train_counts["selection_positive"]
+    filtered_positive, filtered_negative = _update_train_selection_counts(
+        manifest, filtered_rows
+    )
     contrast_pairs = sum(1 for row in filtered_rows if "contrast_pair_id" in row) // 2
-    actual_positive_ratio = train_counts["selection_positive"] / len(filtered_rows)
+    actual_positive_ratio = filtered_positive / (filtered_positive + filtered_negative)
     actual_type_labels = Counter(
         (_unit_type(row), int(row["label"])) for row in filtered_rows
     )

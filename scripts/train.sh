@@ -29,10 +29,18 @@ export FORCE_TORCHRUN=1
 export ACCELERATE_MIXED_PRECISION=bf16
 cd "${PROJECT_ROOT}"
 
+AUTO_DATA_OVERRIDES=()
+if [[ "${AUTO_PREPARE_DATA:-1}" == "1" ]]; then
+  MANAGED_DATASET_DIR="$(python -m distillation.auto_prepare "${CONFIG_PATH}" "$@")"
+  if [[ -n "${MANAGED_DATASET_DIR}" ]]; then
+    AUTO_DATA_OVERRIDES+=("dataset_dir=${MANAGED_DATASET_DIR}")
+  fi
+fi
+
 torchrun \
   --nproc_per_node "${NPROC_PER_NODE}" \
   --nnodes "${NNODES:-1}" \
   --node_rank "${NODE_RANK:-0}" \
   --master_addr "${RUN_MASTER_ADDR:-${MASTER_ADDR:-localhost}}" \
   --master_port "${RUN_MASTER_PORT:-${MASTER_PORT:-29500}}" \
-  -m distillation.cli "${CONFIG_PATH}" "$@"
+  -m distillation.cli "${CONFIG_PATH}" "$@" "${AUTO_DATA_OVERRIDES[@]}"

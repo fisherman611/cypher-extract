@@ -46,7 +46,7 @@ def _masked_token_mean(token_values: torch.Tensor, labels: torch.Tensor) -> torc
     count = mask.sum()
     if not torch.any(mask):
         raise ValueError("The distillation batch contains no response tokens.")
-    return (token_values * mask).sum() / count
+    return token_values.masked_fill(~mask, 0.0).sum() / count
 
 
 def forward_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -84,8 +84,9 @@ def skewed_forward_kl(
     teacher_probs = F.softmax(teacher_logits, dim=-1, dtype=torch.float32)
     student_probs = F.softmax(student_logits, dim=-1, dtype=torch.float32)
     mixture = alpha * teacher_probs + (1.0 - alpha) * student_probs
+    mixture_log_probs = mixture.clamp_min(torch.finfo(mixture.dtype).tiny).log()
     inf_mask = torch.isinf(student_logits) | torch.isinf(teacher_logits)
-    product = torch.masked_fill(teacher_probs * mixture.log(), inf_mask, 0)
+    product = torch.masked_fill(teacher_probs * mixture_log_probs, inf_mask, 0)
     token_loss = -product.sum(dim=-1)
     return _masked_token_mean(token_loss, labels)
 
@@ -101,7 +102,7 @@ def skewed_reverse_kl(
     student_log_probs = F.log_softmax(student_logits, dim=-1, dtype=torch.float32)
     student_probs = student_log_probs.exp()
     mixture = (1.0 - alpha) * teacher_probs + alpha * student_probs
-    mixture_log_probs = mixture.log()
+    mixture_log_probs = mixture.clamp_min(torch.finfo(mixture.dtype).tiny).log()
     inf_mask = torch.isinf(student_logits) | torch.isinf(teacher_logits)
     mixture_product = torch.masked_fill(student_probs * mixture_log_probs, inf_mask, 0)
     student_product = torch.masked_fill(student_probs * student_log_probs, inf_mask, 0)

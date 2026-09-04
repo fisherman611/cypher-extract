@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from distillation.losses import compute_distillation_loss, compute_hpd_loss, forward_kl, reverse_kl
+from distillation.losses import (
+    _masked_token_mean,
+    compute_distillation_loss,
+    compute_hpd_loss,
+    forward_kl,
+    reverse_kl,
+)
 
 
 @pytest.mark.parametrize(
@@ -56,6 +62,35 @@ def test_reverse_kl_is_zero_for_identical_distributions() -> None:
     logits = torch.tensor([[[1.0, 2.0, 3.0]]])
     labels = torch.tensor([[1]])
     torch.testing.assert_close(reverse_kl(logits, logits, labels), torch.tensor(0.0))
+
+
+@pytest.mark.parametrize("method", ["sfkl", "srkl"])
+def test_skewed_kl_is_finite_when_softmax_probability_underflows(method: str) -> None:
+    student = torch.tensor(
+        [[[0.0, 0.0, 0.0, 0.0, -300.0], [0.0, 0.0, 0.0, 0.0, 0.0]]],
+        requires_grad=True,
+    )
+    teacher = student.detach().clone()
+    labels = torch.tensor([[-100, 1]])
+
+    loss = compute_distillation_loss(method, student, teacher, labels)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert student.grad is not None
+    assert torch.isfinite(student.grad).all()
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+def test_masked_token_mean_neutralizes_ignored_non_finite_values(non_finite: float) -> None:
+    values = torch.tensor([[non_finite, 2.0]], requires_grad=True)
+    labels = torch.tensor([[-100, 1]])
+
+    loss = _masked_token_mean(values, labels)
+
+    torch.testing.assert_close(loss, torch.tensor(2.0))
+    loss.backward()
+    torch.testing.assert_close(values.grad, torch.tensor([[0.0, 1.0]]))
 
 
 def test_causal_alignment_uses_shifted_response_mask() -> None:
