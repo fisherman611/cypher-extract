@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,10 @@ from typing import Any
 from transformers import AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from schema_grounding.inference.prompting import render_qwen3_nothink  # noqa: E402
+
 DEFAULT_DATASETS = {
     "cypherbench": ROOT / "data" / "cypherbench_schema_grounding_full_final",
     "mind_the_query": ROOT / "data" / "mind_the_query_schema_grounding_full",
@@ -75,7 +80,7 @@ def build_messages(row: dict[str, Any], task: str) -> list[dict[str, str]]:
         system = load_prompt("selector/system_prompt.txt")
         user_template = load_prompt("selector/user_prompt.txt")
         user = user_template.format(question=row["question"], schema_unit=row["unit"]["text"])
-        response = "YES" if row["label"] == 1 else "NO"
+        response = json.dumps({"label": "YES" if row["label"] == 1 else "NO"})
     else:
         raise ValueError(f"Unsupported task: {task}")
     return [
@@ -85,32 +90,51 @@ def build_messages(row: dict[str, Any], task: str) -> list[dict[str, str]]:
     ]
 
 
-def token_count(tokenizer: Any, messages: list[dict[str, str]], *, generation_prompt: bool) -> int:
-    token_ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=generation_prompt,
-        enable_thinking=False,
+def token_lengths(tokenizer: Any, rendered: list[str]) -> list[int]:
+    encoded = tokenizer(
+        rendered,
+        add_special_tokens=False,
+        padding=False,
+        truncation=False,
+        return_length=True,
     )
-    if hasattr(token_ids, "keys") and "input_ids" in token_ids:
-        token_ids = token_ids["input_ids"]
-    return len(token_ids)
+    return [int(length) for length in encoded["length"]]
 
 
 def analyze_file(path: Path, task: str, tokenizer: Any, max_rows: int | None) -> dict[str, int]:
     maxima = {"rows": 0, "max_prompt_length": 0, "max_length": 0, "max_target_length": 0}
+    pending: list[tuple[int, list[dict[str, str]]]] = []
+
+    def consume_batch() -> None:
+        prompt_lengths = token_lengths(
+            tokenizer,
+            [render_qwen3_nothink(messages[:-1]) for _, messages in pending],
+        )
+        full_lengths = token_lengths(
+            tokenizer,
+            [
+                render_qwen3_nothink(messages, add_generation_prompt=False)
+                for _, messages in pending
+            ],
+        )
+        for prompt_length, full_length in zip(prompt_lengths, full_lengths, strict=True):
+            target_length = max(full_length - prompt_length, 0)
+            maxima["rows"] += 1
+            maxima["max_prompt_length"] = max(maxima["max_prompt_length"], prompt_length)
+            maxima["max_length"] = max(maxima["max_length"], full_length)
+            maxima["max_target_length"] = max(maxima["max_target_length"], target_length)
+        pending.clear()
+
     for line_number, row in iter_jsonl(path, max_rows):
         try:
             messages = build_messages(row, task)
-            prompt_length = token_count(tokenizer, messages[:-1], generation_prompt=True)
-            full_length = token_count(tokenizer, messages, generation_prompt=False)
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Invalid {task} row at {path}:{line_number}: {error}") from error
-        target_length = max(full_length - prompt_length, 0)
-        maxima["rows"] += 1
-        maxima["max_prompt_length"] = max(maxima["max_prompt_length"], prompt_length)
-        maxima["max_length"] = max(maxima["max_length"], full_length)
-        maxima["max_target_length"] = max(maxima["max_target_length"], target_length)
+        pending.append((line_number, messages))
+        if len(pending) == 256:
+            consume_batch()
+    if pending:
+        consume_batch()
     if maxima["rows"] == 0:
         raise ValueError(f"No rows found in {path}")
     return maxima

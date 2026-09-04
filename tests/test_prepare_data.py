@@ -7,7 +7,7 @@ from distillation.prepare_data import LAYOUT_FILE, SPLIT_FILES, convert_director
 
 
 def _prepared_record(task: str = "generator") -> dict[str, str]:
-    response = '{"cypher":"MATCH (n) RETURN n"}' if task == "generator" else "YES"
+    response = '{"cypher":"MATCH (n) RETURN n"}' if task == "generator" else '{"label": "YES"}'
     return {
         "task": task,
         "system_prompt": "System",

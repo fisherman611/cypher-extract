@@ -56,6 +56,6 @@ def test_selector_eval_generation_matches_inference_protocol() -> None:
         "top_k": 0,
         "top_p": 1.0,
         "temperature": 1.0,
-        "max_new_tokens": 1,
+        "max_new_tokens": 16,
         "num_beams": 1,
     }

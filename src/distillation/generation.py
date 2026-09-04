@@ -35,14 +35,14 @@ def generation_eos_value(eos_token_ids: list[int]) -> int | list[int]:
 
 
 def selector_generation_kwargs() -> dict[str, Any]:
-    """Return the deterministic one-token protocol shared by eval and inference."""
+    """Return the deterministic JSON protocol shared by eval and inference."""
 
     return {
         "do_sample": False,
         "top_k": 0,
         "top_p": 1.0,
         "temperature": 1.0,
-        "max_new_tokens": 1,
+        "max_new_tokens": 16,
         "num_beams": 1,
     }
 

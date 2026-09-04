@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from schema_grounding.selector_labels import (  # noqa: E402
     NEGATIVE_SELECTOR_LABEL,
     POSITIVE_SELECTOR_LABEL,
+    format_selector_response,
     selector_label_from_binary,
 )
 
@@ -96,7 +97,7 @@ def format_selector_rows(
                 "user_prompt": user_template.format(
                     question=row["question"], schema_unit=row["unit"]["text"]
                 ),
-                "response": classification_label,
+                "response": format_selector_response(classification_label),
                 "example_id": row["example_id"],
                 "source": row["source"],
                 "split": row["split"],
@@ -290,6 +291,11 @@ def main() -> None:
         "input_directory": str(input_dir),
         "seed": args.seed,
         "batch_size": args.batch_size,
+        "selector_output_format": {
+            "type": "json",
+            "field": "label",
+            "labels": [POSITIVE_SELECTOR_LABEL, NEGATIVE_SELECTOR_LABEL],
+        },
         "batch_policy": (
             "Mixed batches begin with adjacent same-question YES/NO selector contrasts, followed by unpaired "
             "negative selector rows; remaining batches contain generator rows only. Source rows are never "

@@ -56,7 +56,7 @@ class GenerationRunner(Protocol):
 class InferenceOptions:
     selector_batch_size: int = 128
     generator_batch_size: int = 16
-    selector_max_new_tokens: int = 1
+    selector_max_new_tokens: int = 16
     generator_max_new_tokens: int = 256
     close_relation_endpoints: bool = True
     generator_do_sample: bool = True
@@ -70,14 +70,13 @@ class InferenceOptions:
         for name in (
             "selector_batch_size",
             "generator_batch_size",
+            "selector_max_new_tokens",
             "generator_max_new_tokens",
             "num_beams",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.selector_max_new_tokens != 1:
-            raise ValueError("selector_max_new_tokens must be 1 for the one-token YES/NO protocol")
         if not isinstance(self.top_k, int) or self.top_k < 0:
             raise ValueError("top_k must be a non-negative integer")
         if not isinstance(self.seed, int) or self.seed < 0:
@@ -504,6 +503,7 @@ def prepare_run_directory(
         "selector_protocol": {
             "positive_label": POSITIVE_SELECTOR_LABEL,
             "negative_label": NEGATIVE_SELECTOR_LABEL,
+            "output_format": {"label": "YES|NO"},
             "do_sample": False,
             "num_beams": 1,
         },
