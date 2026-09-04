@@ -2,7 +2,8 @@
 
 Pipeline inference chạy cùng một multitask full-model checkpoint qua hai bước:
 
-1. `question + schema unit -> YES/NO` bằng greedy decoding, không sampling;
+1. `question + schema unit -> {"label": "YES|NO"}` bằng greedy decoding,
+   không sampling;
 2. merge các unit được chọn thành predicted sub-schema, rồi chạy
    `question + predicted sub-schema -> Cypher`.
 
@@ -100,9 +101,11 @@ một relationship được chọn nhưng endpoint node chưa được chọn, n
 được thêm từ schema unit của chính sample đó. Có thể tắt bằng
 `--no-relation-endpoint-closure`.
 
-Selector output không phải chính xác `YES` hoặc `NO` được ghi là
-`INVALID`, lưu nguyên raw output và không được chọn vào sub-schema. Empty schema
-được giữ nguyên thay vì âm thầm fallback sang gold/full schema.
+Selector output không parse được thành JSON `{"label": "YES"}` hoặc
+`{"label": "NO"}` được ghi là `INVALID`, lưu nguyên raw output và không được
+chọn vào sub-schema. Parser tạm thời vẫn nhận bare `YES/NO` để các checkpoint cũ
+tiếp tục chạy. Empty schema được giữ nguyên thay vì âm thầm fallback sang
+gold/full schema.
 
 ## Output và resume
 
@@ -130,7 +133,7 @@ Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
 `seed -> method -> dataset`, hoàn tất mọi method/dataset của một seed trước khi chuyển seed. Các seed mặc định là
 `10,42,50,100,1234`;
 Python, NumPy, PyTorch và toàn bộ CUDA RNG được reset trước từng dataset. Seed chỉ
-ảnh hưởng generator; selector dùng greedy decoding với tối đa một new token và
+ảnh hưởng generator; selector dùng greedy decoding với tối đa 16 new tokens và
 generator dùng tối đa 256 new tokens.
 
 Để eval toàn bộ output sau inference (PowerShell hoặc Linux Bash), dùng:

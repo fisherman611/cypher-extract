@@ -4,4 +4,4 @@ QUESTION:
 SCHEMA UNIT:
 {schema_unit}
 
-LABEL (YES or NO):
+Classify the schema unit and return only the required JSON object.
