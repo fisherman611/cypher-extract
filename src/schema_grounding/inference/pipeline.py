@@ -8,6 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
+from distillation.generation import selector_generation_kwargs
 from distillation.metrics import compute_task_metrics, extract_cypher
 from schema_grounding.inference.checkpoints import LastCheckpoint
 from schema_grounding.inference.data import (
@@ -87,16 +88,6 @@ class InferenceOptions:
             raise ValueError("top_p must be in (0, 1]")
 
 
-def _selector_generation_kwargs() -> dict[str, Any]:
-    return {
-        "do_sample": False,
-        "temperature": 1.0,
-        "top_p": 1.0,
-        "top_k": 0,
-        "num_beams": 1,
-    }
-
-
 def _generator_generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
     return {
         "do_sample": options.generator_do_sample,
@@ -167,11 +158,9 @@ def run_selector_stage(
             conversations = [
                 templates.selector_messages(str(row["question"]), str(row["unit"]["text"])) for row in batch
             ]
-            raw_outputs = runner.generate(
-                conversations,
-                max_new_tokens=options.selector_max_new_tokens,
-                **_selector_generation_kwargs(),
-            )
+            selector_kwargs = selector_generation_kwargs()
+            selector_kwargs["max_new_tokens"] = options.selector_max_new_tokens
+            raw_outputs = runner.generate(conversations, **selector_kwargs)
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of selector outputs")
             for row, raw_output in zip(batch, raw_outputs, strict=True):

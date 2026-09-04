@@ -227,6 +227,11 @@ def test_training_output_dirs_match_local_inference_layout() -> None:
         for method, output_dir in output_dirs.items():
             assert output_dir == f"results/{family}/{method}"
 
+    legacy_qwen_sft = yaml.safe_load(
+        Path("configs/distillation/student_sft.yaml").read_text(encoding="utf-8")
+    )
+    assert legacy_qwen_sft["output_dir"] == "results/qwen3/sft"
+
 
 def test_inference_validates_all_checkpoints_before_preparing_output_directories() -> None:
     source = (REPOSITORY_ROOT / "scripts/infer_two_stage.py").read_text(encoding="utf-8")
