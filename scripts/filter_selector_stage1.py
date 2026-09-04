@@ -1,8 +1,8 @@
 """Build a compact selector-training corpus from a pipeline output.
 
 Every selected positive belongs to a same-question YES/NO contrast pair. Extra
-negative-only questions are then sampled so the final label prior matches the
-combined selector-test distribution. The filter also keeps every observed
+negative-only questions are then sampled to reach either an explicit positive
+ratio or the combined selector-test prior. The filter also keeps every observed
 ``(schema_id, unit_id, label)`` combination and balances row counts by graph.
 Generation data and evaluation splits are copied unchanged.
 """
@@ -761,7 +761,8 @@ def main() -> None:
         "test_distributions": test_distributions,
         "policy": (
             "Every YES belongs to a same-question YES/NO contrast pair; unique-question NO rows "
-            "are added to match the row-weighted three-test label and node/relation priors; "
+            f"are added to reach the configured positive ratio {target_positive_ratio:.6f}; "
+            "node/relation priors within each label are row-weighted across the three test sets; "
             "per-graph quotas follow the source question distribution; cover every observed "
             "schema unit and label pair. Pair members are adjacent and precede unpaired negatives."
         ),

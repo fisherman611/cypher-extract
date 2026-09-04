@@ -6,6 +6,7 @@ from distillation.generation import (
     generation_eos_value,
     reference_eval_generation_kwargs,
     resolve_eos_token_ids,
+    selector_generation_kwargs,
 )
 
 
@@ -46,4 +47,15 @@ def test_reference_eval_generation_uses_stochastic_cypherkd_settings() -> None:
         "max_new_tokens": 256,
         "pad_token_id": 151643,
         "eos_token_id": [151645, 151643],
+    }
+
+
+def test_selector_eval_generation_matches_inference_protocol() -> None:
+    assert selector_generation_kwargs() == {
+        "do_sample": False,
+        "top_k": 0,
+        "top_p": 1.0,
+        "temperature": 1.0,
+        "max_new_tokens": 1,
+        "num_beams": 1,
     }

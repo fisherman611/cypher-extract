@@ -38,3 +38,12 @@ def test_kd_trainer_saves_and_validates_custom_resume_state() -> None:
     assert "self.trainer.save_distillm_state(checkpoint)" in source
     assert "checkpoint_path = validate_resume_checkpoint(" in source
     assert "get_last_checkpoint" not in source
+
+
+def test_eval_generation_splits_selector_and_generator_protocols() -> None:
+    trainer_path = Path(__file__).parents[1] / "src" / "distillation" / "trainer.py"
+    source = trainer_path.read_text(encoding="utf-8")
+
+    assert "(generator_rows, gen_kwargs)" in source
+    assert "(selector_rows, {**gen_kwargs, **selector_generation_kwargs()})" in source
+    assert "generated_tokens[indices, : task_tokens.size(1)] = task_tokens" in source

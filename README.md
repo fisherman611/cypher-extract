@@ -131,19 +131,21 @@ sát được trong `selection_train.jsonl`:
 python scripts\filter_selector_stage1.py `
   --input-dir data\cypherbench_schema_grounding_full `
   --output-dir data\cypherbench_schema_grounding_full_final `
+  --target-positive-ratio 0.30 `
   --seed 42 `
   --overwrite
 ```
 
 Script giữ nguyên generation data và selection dev/test; chỉ thay
-`selection_train.jsonl` và cập nhật manifest với policy lọc. Mặc định số
-selector row bằng số row trong `generation_train.jsonl`. Với `6,827` generator
-và prior test gộp hiện tại là `16.914% YES / 83.086% NO`, đầu ra có `1,155 YES`,
-`5,672 NO`: `1,155` contrast pair và `4,517` negative-only row. Hai thành viên
-của mỗi pair nằm liền nhau và mọi question chỉ được chọn một lần. Joint quota
-là `729 YES-node`, `426 YES-relation`, `1,952 NO-node` và `3,720 NO-relation`.
-Có thể dùng `--target-rows` hoặc `--target-positive-ratio` để override các giá
-trị tự động.
+`selection_train.jsonl` và cập nhật manifest với policy lọc. Số selector row
+mặc định bằng số row trong `generation_train.jsonl`; command trên đặt `YES` ở
+mức 30% để ưu tiên recall và giảm nguy cơ selector bỏ thiếu schema unit. Với
+`6,827` generator, đầu ra có `2,048 YES`, `4,779 NO`: `2,048` contrast pair và
+`2,731` negative-only row. Hai thành viên của mỗi pair nằm liền nhau và mọi
+question chỉ được chọn một lần. Joint quota là `1,292 YES-node`, `756
+YES-relation`, `1,645 NO-node` và `3,134 NO-relation`; tỷ lệ node/relation trong
+mỗi label vẫn được weighted theo ba test set. Có thể dùng `--target-rows` hoặc
+`--target-positive-ratio` để override các giá trị tự động.
 
 ### Chuẩn bị prompt multitask
 
@@ -160,6 +162,10 @@ global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + se
 Với CypherBench final hiện tại (`6,827` generator, `6,827` selector) và
 `batch-size=2`, train có `6,827` mixed batch (`1 generator + 1 selector`), không
 còn batch generator-only; mọi mẫu nguồn chỉ xuất hiện một lần.
+
+Generative eval giữ nguyên metrics hỗn hợp hiện tại nhưng dùng decoding theo
+đúng task inference: selector chạy greedy, tối đa một token `YES/NO`; generator
+giữ sampling `temperature=0.5`, `top_p=0.95`, `top_k=0` và tối đa 256 token.
 
 ```powershell
 python scripts\prepare_multitask_prompts.py `
@@ -300,7 +306,8 @@ teacher:
 RUN_GPUS=0,1 bash scripts/train.sh configs/distillation/student_sft.yaml
 ```
 
-Output nằm tại `results/qwen3/student_sft`.
+Output nằm tại `results/qwen3/sft`, khớp với tên method mà inference dùng để
+tìm checkpoint.
 
 ### 5. Train student bằng KD
 
