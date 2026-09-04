@@ -38,8 +38,10 @@ from schema_grounding.inference.prompting import (
     PromptTemplates,
     chat_template_metadata,
     qwen_template_metadata,
+    render_llama3,
     render_qwen3_nothink,
 )
+from schema_grounding.selector_labels import format_selector_response
 from scripts.infer_two_stage import (
     DEFAULT_INFERENCE_SEEDS,
     build_seed_first_run_groups,
@@ -107,6 +109,16 @@ def test_all_methods_include_teacher() -> None:
 
 
 def test_selector_label_parser_is_strict() -> None:
+    assert format_selector_response("YES") == '{"label": "YES"}'
+    assert format_selector_response("NO") == '{"label": "NO"}'
+    with pytest.raises(ValueError, match="Unknown selector label"):
+        format_selector_response("RELATED")
+    assert parse_selector_label('{"label": "YES"}') == "YES"
+    assert parse_selector_label(' {"label": "NO"}\n') == "NO"
+    assert parse_selector_label('{"label": "yes"}') is None
+    assert parse_selector_label('{"label": "YES", "reason": "needed"}') is None
+    assert parse_selector_label('{"classification": "YES"}') is None
+    # Keep previously trained one-token checkpoints usable during migration.
     assert parse_selector_label(" YES\n") == "YES"
     assert parse_selector_label("NO") == "NO"
     assert parse_selector_label("no") is None
@@ -331,7 +343,8 @@ def test_prompt_messages_match_training_format() -> None:
         == (REPOSITORY_ROOT / "prompts/selector/system_prompt.txt").read_text(encoding="utf-8").strip()
     )
     assert "SCHEMA UNIT:\n(:Person)" in selector[1]["content"]
-    assert selector[1]["content"].endswith("LABEL (YES or NO):")
+    assert selector[1]["content"].endswith("Classify the schema unit and return only the required JSON object.")
+    assert '{"label": "YES"}' in selector[0]["content"]
     assert "`" not in selector[0]["content"]
 
 
@@ -370,6 +383,18 @@ def test_llama3_inference_records_the_llamafactory_template() -> None:
     assert LLAMA3_TEMPLATE_NAME == "llamafactory:llama3"
     assert len(LLAMA3_TEMPLATE_FINGERPRINT) == 64
 
+    assert render_llama3(
+        [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Question"},
+        ],
+        bos_token="<|begin_of_text|>",
+    ) == (
+        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+        "System<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+        "Question<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    )
+
 
 def test_model_runner_tokenizes_rendered_llamafactory_template() -> None:
     class RecordingTokenizer:
@@ -391,6 +416,30 @@ def test_model_runner_tokenizes_rendered_llamafactory_template() -> None:
         "add_generation_prompt": True,
         "enable_thinking": False,
     }
+
+
+def test_model_runner_uses_explicit_nothink_template_for_qwen3() -> None:
+    class RecordingTokenizer:
+        rendered = None
+
+        def encode(self, rendered, **kwargs) -> list[int]:
+            self.rendered = rendered
+            assert kwargs == {"add_special_tokens": False}
+            return [1, 2, 3]
+
+    tokenizer = RecordingTokenizer()
+    runner = ModelRunner(
+        model=None,
+        tokenizer=tokenizer,
+        device=torch.device("cpu"),
+        model_family="qwen3",
+    )
+
+    assert runner.prompt_length([{"role": "user", "content": "Question"}]) == 3
+    assert tokenizer.rendered == (
+        "<|im_start|>user\nQuestion<|im_end|>\n<|im_start|>assistant\n"
+    )
+    assert "<think>" not in tokenizer.rendered
 
 
 class FakeRunner:
@@ -419,13 +468,14 @@ class FakeRunner:
             }
         )
         assert generation_kwargs == expected_kwargs
-        assert max_new_tokens == (1 if is_selector else 256)
+        assert max_new_tokens == (16 if is_selector else 256)
         outputs = []
         for messages in conversations:
             system = messages[0]["content"]
             user = messages[1]["content"]
             if "relevance classifier" in system:
-                outputs.append("YES" if "(:A " in user or "[:LINKS]" in user else "NO")
+                label = "YES" if "(:A " in user or "[:LINKS]" in user else "NO"
+                outputs.append(json.dumps({"label": label}))
             else:
                 # Deliberately omit the closing JSON brace to exercise the
                 # inference-time recovery used for real model generations.
@@ -447,9 +497,9 @@ def test_inference_options_rejects_negative_top_k() -> None:
         InferenceOptions(top_k=-1).validate()
 
 
-def test_inference_options_enforces_one_token_selector_protocol() -> None:
-    with pytest.raises(ValueError, match="selector_max_new_tokens must be 1"):
-        InferenceOptions(selector_max_new_tokens=2).validate()
+def test_inference_options_requires_positive_selector_response_budget() -> None:
+    with pytest.raises(ValueError, match="selector_max_new_tokens must be a positive integer"):
+        InferenceOptions(selector_max_new_tokens=0).validate()
 
 
 def test_model_runner_honors_base_revision_and_ignores_incomplete_local_tokenizer(monkeypatch, tmp_path: Path) -> None:
@@ -693,6 +743,7 @@ def test_end_to_end_pipeline_with_fake_model(tmp_path: Path) -> None:
     assert run_config["selector_protocol"] == {
         "positive_label": "YES",
         "negative_label": "NO",
+        "output_format": {"label": "YES|NO"},
         "do_sample": False,
         "num_beams": 1,
     }

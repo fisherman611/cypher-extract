@@ -164,8 +164,9 @@ Với CypherBench final hiện tại (`6,827` generator, `6,827` selector) và
 còn batch generator-only; mọi mẫu nguồn chỉ xuất hiện một lần.
 
 Generative eval giữ nguyên metrics hỗn hợp hiện tại nhưng dùng decoding theo
-đúng task inference: selector chạy greedy, tối đa một token `YES/NO`; generator
-giữ sampling `temperature=0.5`, `top_p=0.95`, `top_k=0` và tối đa 256 token.
+đúng task inference: selector chạy greedy, tối đa 16 token để trả JSON
+`{"label": "YES"}` hoặc `{"label": "NO"}`; generator giữ sampling
+`temperature=0.5`, `top_p=0.95`, `top_k=0` và tối đa 256 token.
 
 ```powershell
 python scripts\prepare_multitask_prompts.py `
@@ -516,8 +517,9 @@ python -m pytest
 
 Pipeline inference thực hiện tuần tự hai task bằng cùng một full-model checkpoint:
 
-1. Chạy selector cho từng cặp `question + schema unit` để dự đoán `YES/NO`
-   bằng greedy decoding (`do_sample=False`, tối đa một token).
+1. Chạy selector cho từng cặp `question + schema unit` để dự đoán JSON
+   `{"label": "YES"}` hoặc `{"label": "NO"}` bằng greedy decoding
+   (`do_sample=False`, tối đa 16 token).
 2. Merge các unit `YES` thành predicted sub-schema, rồi đưa
    `question + predicted sub-schema` vào generator để sinh Cypher.
 
@@ -910,7 +912,8 @@ Generation mặc định dùng sampling theo CypherKD (`do_sample=True`,
 `qwen3_nothink` đúng format LlamaFactory, không chèn thẻ `<think>`. Pipeline chạy theo thứ tự
 `seed -> method -> dataset`: hoàn tất mọi method/dataset của một seed rồi mới chuyển sang seed tiếp theo.
 Các seed mặc định là `10,42,50,100,1234`, lưu vào folder `seed10`, `seed42`, ... Selector dùng greedy
-decoding với nhãn một-token `YES/NO`; generator dùng tối đa 256 new tokens. Có thể override:
+decoding với JSON `{"label": "YES|NO"}` và tối đa 16 new tokens; generator dùng tối đa 256 new tokens.
+Có thể override:
 
 ```bash
 python scripts/infer_two_stage.py \

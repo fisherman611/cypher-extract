@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from transformers import TrainerCallback
 from transformers.trainer_utils import seed_worker
 
-from schema_grounding.selector_labels import SELECTOR_LABELS
+from schema_grounding.selector_labels import parse_selector_label
 
 from .arguments import DistillationArguments
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
@@ -600,7 +600,7 @@ class KDTrainer(CustomSeq2SeqTrainer):
         for index, row_labels in enumerate(labels):
             response_ids = row_labels[row_labels.ne(-100)].tolist()
             response = self.processing_class.decode(response_ids, skip_special_tokens=True).strip()
-            target = selector_rows if response in SELECTOR_LABELS else generator_rows
+            target = selector_rows if parse_selector_label(response) is not None else generator_rows
             target.append(index)
 
         generated_parts: list[tuple[torch.Tensor, torch.Tensor]] = []

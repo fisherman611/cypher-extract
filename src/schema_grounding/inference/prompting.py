@@ -10,6 +10,8 @@ Message = dict[str, str]
 
 _QWEN3_NOTHINK_MESSAGE = "<|im_start|>{role}\n{content}<|im_end|>\n"
 _QWEN3_NOTHINK_GENERATION_PROMPT = "<|im_start|>assistant\n"
+_LLAMA3_MESSAGE = "<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+_LLAMA3_GENERATION_PROMPT = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 QWEN3_NOTHINK_TEMPLATE_NAME = "llamafactory:qwen3_nothink"
 QWEN2_5_TEMPLATE_NAME = "llamafactory:qwen"
 QWEN3_NOTHINK_TEMPLATE_FINGERPRINT = sha256(
@@ -18,8 +20,7 @@ QWEN3_NOTHINK_TEMPLATE_FINGERPRINT = sha256(
 QWEN2_5_TEMPLATE_FINGERPRINT = QWEN3_NOTHINK_TEMPLATE_FINGERPRINT
 LLAMA3_TEMPLATE_NAME = "llamafactory:llama3"
 LLAMA3_TEMPLATE_FINGERPRINT = sha256(
-    b"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
-    b"\0<|start_header_id|>assistant<|end_header_id|>\n\n"
+    f"{_LLAMA3_MESSAGE}\0{_LLAMA3_GENERATION_PROMPT}".encode()
 ).hexdigest()
 
 
@@ -56,6 +57,28 @@ def render_qwen3_nothink(
         rendered.append(_QWEN3_NOTHINK_MESSAGE.format(role=role, content=content))
     if add_generation_prompt:
         rendered.append(_QWEN3_NOTHINK_GENERATION_PROMPT)
+    return "".join(rendered)
+
+
+def render_llama3(
+    messages: list[Message],
+    *,
+    bos_token: str,
+    add_generation_prompt: bool = True,
+) -> str:
+    """Render the exact LlamaFactory llama3 format without native date injection."""
+
+    rendered = [bos_token]
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError(f"Unsupported llama3 message role: {role!r}")
+        if not isinstance(content, str):
+            raise TypeError("llama3 message content must be a string")
+        rendered.append(_LLAMA3_MESSAGE.format(role=role, content=content))
+    if add_generation_prompt:
+        rendered.append(_LLAMA3_GENERATION_PROMPT)
     return "".join(rendered)
 
 

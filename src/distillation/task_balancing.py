@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from schema_grounding.selector_labels import SELECTOR_LABELS
+from schema_grounding.selector_labels import parse_selector_label
 
 GENERATOR_TASK_ID = 0
 SELECTOR_TASK_ID = 1
@@ -30,12 +30,13 @@ def _explicit_task_id(feature: Mapping[str, Any]) -> int | None:
 
 
 def infer_task_id(feature: Mapping[str, Any], tokenizer: Any) -> int:
-    """Identify selector rows from their exact supervised YES/NO response.
+    """Identify selector rows from their supervised selector response.
 
     LlamaFactory removes source metadata during tokenization. The selector
-    protocol is nevertheless unambiguous: its complete decoded target is
-    exactly YES or NO, whereas generator targets are Cypher responses. An
-    explicit task_id takes precedence for generated/replayed DistiLLM rows.
+    protocol is nevertheless unambiguous: its complete decoded target parses
+    as the selector JSON contract (or a legacy bare YES/NO label), whereas
+    generator targets are Cypher responses. An explicit task_id takes
+    precedence for generated/replayed DistiLLM rows.
     """
 
     explicit = _explicit_task_id(feature)
@@ -53,7 +54,7 @@ def infer_task_id(feature: Mapping[str, Any], tokenizer: Any) -> int:
     if not target_ids:
         raise ValueError("Cannot infer a task from an example without supervised response tokens.")
     response = tokenizer.decode(target_ids, skip_special_tokens=True).strip()
-    return SELECTOR_TASK_ID if response in SELECTOR_LABELS else GENERATOR_TASK_ID
+    return SELECTOR_TASK_ID if parse_selector_label(response) is not None else GENERATOR_TASK_ID
 
 
 class TaskAwareDataCollator:

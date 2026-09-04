@@ -14,9 +14,11 @@ from distillation.task_balancing import (
 
 class _Tokenizer:
     _decoded = {
-        (1, 99): "YES",
-        (2, 99): "NO",
+        (1, 99): '{"label": "YES"}',
+        (2, 99): '{"label": "NO"}',
         (3, 4, 99): "MATCH (n) RETURN n",
+        (5, 99): "YES",
+        (6, 99): '{"label": "YES", "reason": "needed"}',
     }
 
     def decode(self, token_ids, *, skip_special_tokens):
@@ -29,6 +31,8 @@ def test_task_inference_uses_exact_selector_protocol() -> None:
     assert infer_task_id({"labels": [-100, 1, 99]}, tokenizer) == SELECTOR_TASK_ID
     assert infer_task_id({"labels": [-100, 2, 99]}, tokenizer) == SELECTOR_TASK_ID
     assert infer_task_id({"labels": [-100, 3, 4, 99]}, tokenizer) == GENERATOR_TASK_ID
+    assert infer_task_id({"labels": [-100, 5, 99]}, tokenizer) == SELECTOR_TASK_ID
+    assert infer_task_id({"labels": [-100, 6, 99]}, tokenizer) == GENERATOR_TASK_ID
 
 
 def test_explicit_rollout_task_id_takes_precedence_over_generated_text() -> None:

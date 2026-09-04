@@ -182,6 +182,7 @@ def main() -> None:
                 "seeds": seeds,
                 "selector_decoding": {
                     "labels": ["YES", "NO"],
+                    "output_format": {"label": "YES|NO"},
                     "do_sample": False,
                     "num_beams": 1,
                     "max_new_tokens": options.selector_max_new_tokens,
@@ -248,6 +249,7 @@ def main() -> None:
                     checkpoint_paths[method],
                     dtype=args.dtype,
                     device=args.device,
+                    model_family=args.model_family,
                 )
             else:
                 print(f"[seed{seed}/{method}] all model-backed stages are complete; skipping model load")
