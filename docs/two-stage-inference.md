@@ -103,10 +103,18 @@ Sub-schema luôn có đúng format:
 }
 ```
 
-Unit được deduplicate và giữ thứ tự canonical từ `selection_test.jsonl`. Khi
+Unit được deduplicate và giữ thứ tự canonical từ
+`selection_inference_test.jsonl`. Khi
 một relationship được chọn nhưng endpoint node chưa được chọn, node tương ứng
 được thêm từ schema unit của chính sample đó. Có thể tắt bằng
 `--no-relation-endpoint-closure`.
+
+Inference đọc `selection_inference_test.jsonl` và
+`generation_inference_test.jsonl`, nên example bị strict reject vì không trích
+được gold sub-schema vẫn chạy qua cả hai stage. Selector metrics chỉ tính các
+unit có gold `label`; Cypher metrics tính trên toàn bộ inference examples. Example
+không có gold sub-schema đáng tin cậy nhận 0 ở selector qua coverage adjustment;
+generator và execution metrics vẫn chấm predicted Cypher so với gold bình thường.
 
 Selector output không parse được thành JSON `{"label": "YES"}` hoặc
 `{"label": "NO"}` được ghi là `INVALID`, lưu nguyên raw output và không được

@@ -532,7 +532,11 @@ Cypher. Các trường gold chỉ được đọc sau generation để tính met
   data/neo4j_text2cypher_schema_grounding_full/
   ```
 
-Mỗi directory phải có `selection_test.jsonl` và `generation_test.jsonl`.
+Mỗi directory phải có `selection_inference_test.jsonl` và
+`generation_inference_test.jsonl`. Hai file này chứa mọi test example có question,
+gold Cypher và full schema hợp lệ, kể cả example không trích được gold sub-schema.
+Các file `selection_test.jsonl` và `generation_test.jsonl` vẫn là tập strict dùng
+cho supervision/eval có gold sub-schema đáng tin cậy.
 
 Từ repository root, tạo môi trường và cài dependency:
 
@@ -754,8 +758,13 @@ results/inference/qwen3/seed<seed>/<method>/<dataset>/
   closure tự động.
 - `generator_predictions.jsonl`: raw generator output, parsed Cypher, prompt
   length và reference dùng để đánh giá.
-- `metrics.json`: selector accuracy/precision/recall/F1, Cypher exact
-  match/ROUGE và schema diagnostics.
+- `metrics.json`: selector accuracy/precision/recall/F1 trên các unit có gold label
+  strict, Cypher exact match/ROUGE trên toàn bộ test example đi qua inference, và
+  schema diagnostics. `selector.inference_count` gồm cả unit không có gold label;
+  `selector.count` chỉ gồm unit thực sự có gold label. Example không có gold
+  sub-schema đáng tin cậy nhận 0 ở selector qua hệ số `selector.coverage`; các
+  metric chưa nhân coverage được giữ dưới tên `selector.strict_*`. Generator và
+  execution metrics vẫn chấm predicted Cypher bình thường trên mọi example.
 - `manifest.json`: checkpoint, options, thời gian và trạng thái từng stage.
 
 Xem metric của một run:

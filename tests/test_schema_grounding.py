@@ -80,6 +80,24 @@ The relationships:
         self.assertEqual(schema.relations[0].id, "relation:Person|ACTED_IN|Movie")
         self.assertEqual(schema.relations[0].properties, (("role", "STRING"),))
 
+    def test_neo4j_text_adapter_preserves_chained_relationships(self) -> None:
+        schema = from_neo4j_schema_text(
+            "(:Person)-[:ACTED_IN]->(:Movie)-[:IN_GENRE]->(:Genre)",
+            "movies",
+        )
+
+        self.assertEqual(
+            {node.label for node in schema.nodes},
+            {"Person", "Movie", "Genre"},
+        )
+        self.assertEqual(
+            {relation.id for relation in schema.relations},
+            {
+                "relation:Person|ACTED_IN|Movie",
+                "relation:Movie|IN_GENRE|Genre",
+            },
+        )
+
     def test_neo4j_relevant_text_adapter(self) -> None:
         schema = from_neo4j_schema_text(
             """Graph schema: Relevant node labels and their properties (with datatypes) are:
@@ -162,6 +180,89 @@ class SubSchemaExtractionTest(unittest.TestCase):
             set(result.node_unit_ids), {"node:Person", "node:Movie", "node:City"}
         )
 
+    def test_anonymous_shorthand_relationships_are_extracted(self) -> None:
+        cases = {
+            "MATCH (p:Person)-->(m:Movie) RETURN m": "relation:Person|ACTED_IN|Movie",
+            "MATCH (m:Movie)<--(p:Person) RETURN m": "relation:Person|ACTED_IN|Movie",
+            "MATCH (p:Person)--(m:Movie) RETURN m": "relation:Person|ACTED_IN|Movie",
+        }
+        for query, expected_relation in cases.items():
+            with self.subTest(query=query):
+                result = extract_subschema(query, self.schema)
+                self.assertTrue(result.complete)
+                self.assertEqual(result.relation_unit_ids, (expected_relation,))
+                self.assertEqual(set(result.node_unit_ids), {"node:Person", "node:Movie"})
+
+    def test_adjacent_anonymous_shorthand_relationships_are_all_extracted(self) -> None:
+        result = extract_subschema(
+            "MATCH (m:Movie)<--(p:Person)-->(c:City) RETURN p",
+            self.schema,
+        )
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {"relation:Person|ACTED_IN|Movie", "relation:Person|LIVES_IN|City"},
+        )
+
+    def test_anonymous_shorthand_reports_wrong_direction(self) -> None:
+        result = extract_subschema(
+            "MATCH (p:Person)<--(m:Movie) RETURN m",
+            self.schema,
+        )
+        self.assertFalse(result.complete)
+        self.assertEqual(result.relation_unit_ids, ())
+        self.assertEqual(
+            result.unmatched_relationship_patterns,
+            ("(:Movie)-[:?]->(:Person)",),
+        )
+
+    def test_anonymous_shorthand_keeps_all_matching_relations(self) -> None:
+        ambiguous_schema = canonical_schema(
+            "test",
+            "graph",
+            [("Person", {}), ("Movie", {})],
+            [
+                ("Person", "ACTED_IN", "Movie", {}),
+                ("Person", "DIRECTED", "Movie", {}),
+            ],
+        )
+        result = extract_subschema(
+            "MATCH (p:Person)-->(m:Movie) RETURN m",
+            ambiguous_schema,
+        )
+        self.assertTrue(result.complete)
+        self.assertEqual(result.ambiguous_relation_patterns, 1)
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {"relation:Person|ACTED_IN|Movie", "relation:Person|DIRECTED|Movie"},
+        )
+
+    def test_typed_relationship_without_endpoints_keeps_all_matching_relations(self) -> None:
+        schema = canonical_schema(
+            "test",
+            "graph",
+            [("Person", {}), ("Movie", {}), ("Actor", {}), ("Film", {})],
+            [
+                ("Person", "ACTED_IN", "Movie", {}),
+                ("Actor", "ACTED_IN", "Film", {}),
+            ],
+        )
+        result = extract_subschema("MATCH ()-[:ACTED_IN]->() RETURN count(*)", schema)
+
+        self.assertTrue(result.complete)
+        self.assertEqual(result.ambiguous_relation_patterns, 1)
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {
+                "relation:Person|ACTED_IN|Movie",
+                "relation:Actor|ACTED_IN|Film",
+            },
+        )
+        self.assertEqual(
+            set(result.node_unit_ids),
+            {"node:Person", "node:Movie", "node:Actor", "node:Film"},
+        )
+
     def test_label_predicate_resolves_unlabelled_node(self) -> None:
         result = extract_subschema(
             "MATCH (p) WHERE p:Person RETURN p.name", self.schema
@@ -210,8 +311,292 @@ class SubSchemaExtractionTest(unittest.TestCase):
         self.assertTrue(result.complete)
         self.assertEqual(result.node_unit_ids, ("node:Person",))
 
+    def test_line_comment_quote_does_not_mask_following_patterns(self) -> None:
+        result = extract_subschema(
+            "MATCH (p:Person) // find the person's movies\n"
+            "MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN m",
+            self.schema,
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(result.relation_unit_ids, ("relation:Person|ACTED_IN|Movie",))
+        self.assertEqual(set(result.node_unit_ids), {"node:Person", "node:Movie"})
+
+    def test_comments_cannot_inject_fake_schema_patterns(self) -> None:
+        result = extract_subschema(
+            "MATCH (p:Person) /* ' (:City)<-[:LIVES_IN]-(:Person) */ RETURN p",
+            self.schema,
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(result.node_unit_ids, ("node:Person",))
+        self.assertEqual(result.relation_unit_ids, ())
+
+    def test_standalone_wildcard_node_selects_all_node_units(self) -> None:
+        result = extract_subschema("MATCH (n) RETURN n", self.schema)
+
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.node_unit_ids),
+            {"node:Person", "node:Movie", "node:City"},
+        )
+        self.assertEqual(result.relation_unit_ids, ())
+
+    def test_wildcard_relationship_pattern_selects_all_matching_units(self) -> None:
+        result = extract_subschema("MATCH (n)-[r]->(m) RETURN n, r, m", self.schema)
+
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.node_unit_ids),
+            {"node:Person", "node:Movie", "node:City"},
+        )
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {"relation:Person|ACTED_IN|Movie", "relation:Person|LIVES_IN|City"},
+        )
+
+    def test_parenthesized_arithmetic_is_not_a_node_pattern(self) -> None:
+        result = extract_subschema(
+            "MATCH (p:Person) RETURN AVG((p.age + 2) / 2.0)",
+            self.schema,
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(result.node_unit_ids, ("node:Person",))
+
+    def test_grouped_relationship_types_are_parsed_without_fake_nodes(self) -> None:
+        result = extract_subschema(
+            "MATCH (p:Person)-[r:(ACTED_IN|LIVES_IN)]->(target) RETURN target",
+            self.schema,
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.relation_unit_ids),
+            {"relation:Person|ACTED_IN|Movie", "relation:Person|LIVES_IN|City"},
+        )
+        self.assertEqual(
+            set(result.node_unit_ids),
+            {"node:Person", "node:Movie", "node:City"},
+        )
+
 
 class PipelineAuditTest(unittest.TestCase):
+    def test_shorthand_relationship_is_preserved_in_generation_and_selection_data(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "benchmarks"
+            source_directory = root / "Cypherbench"
+            (source_directory / "graphs" / "schemas").mkdir(parents=True)
+            (source_directory / "graphs" / "schemas" / "demo_schema.json").write_text(
+                json.dumps(
+                    {
+                        "entities": [
+                            {"label": "Person", "properties": {}},
+                            {"label": "Movie", "properties": {}},
+                        ],
+                        "relations": [
+                            {
+                                "label": "ACTED_IN",
+                                "subj_label": "Person",
+                                "obj_label": "Movie",
+                                "properties": {},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (source_directory / "train.jsonl").write_text(
+                json.dumps(
+                    {
+                        "qid": "shorthand-relation",
+                        "graph": "demo",
+                        "nl_question": "List movies with a person connection.",
+                        "gold_cypher": "MATCH (p:Person)-->(m:Movie) RETURN m",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output_directory = Path(temporary_directory) / "output"
+            build_dataset(
+                benchmarks_root=root,
+                output_dir=output_directory,
+                sources=("cypherbench",),
+            )
+
+            generation = json.loads(
+                (output_directory / "generation_train.jsonl").read_text(encoding="utf-8")
+            )
+            selection = [
+                json.loads(line)
+                for line in (output_directory / "selection_train.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(
+                generation["sub_schema"]["relationships"],
+                [{"properties": {}, "source": "Person", "target": "Movie", "type": "ACTED_IN"}],
+            )
+            relationship_rows = [row for row in selection if row["unit_type"] == "relation"]
+            self.assertEqual(len(relationship_rows), 1)
+            self.assertEqual(relationship_rows[0]["label"], 1)
+
+    def test_multi_match_shorthand_relationship_is_kept_in_strict_mode(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "benchmarks"
+            source_directory = root / "Cypherbench"
+            (source_directory / "graphs" / "schemas").mkdir(parents=True)
+            (source_directory / "graphs" / "schemas" / "demo_schema.json").write_text(
+                json.dumps(
+                    {
+                        "entities": [
+                            {"label": "Person", "properties": {}},
+                            {"label": "Movie", "properties": {}},
+                        ],
+                        "relations": [
+                            {
+                                "label": relation_type,
+                                "subj_label": "Person",
+                                "obj_label": "Movie",
+                                "properties": {},
+                            }
+                            for relation_type in ("ACTED_IN", "DIRECTED")
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (source_directory / "train.jsonl").write_text(
+                json.dumps(
+                    {
+                        "qid": "ambiguous-shorthand",
+                        "graph": "demo",
+                        "nl_question": "List connected movies.",
+                        "gold_cypher": "MATCH (p:Person)-->(m:Movie) RETURN m",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output_directory = Path(temporary_directory) / "output"
+            manifest = build_dataset(
+                benchmarks_root=root,
+                output_dir=output_directory,
+                sources=("cypherbench",),
+            )
+
+            generation = json.loads(
+                (output_directory / "generation_train.jsonl").read_text(encoding="utf-8")
+            )
+            selection = [
+                json.loads(line)
+                for line in (output_directory / "selection_train.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(
+                {relation["type"] for relation in generation["sub_schema"]["relationships"]},
+                {"ACTED_IN", "DIRECTED"},
+            )
+            relation_rows = [row for row in selection if row["unit_type"] == "relation"]
+            self.assertEqual([row["label"] for row in relation_rows], [1, 1])
+            self.assertEqual(
+                (output_directory / "rejected_train.jsonl").read_text(encoding="utf-8"),
+                "",
+            )
+            counts = manifest["counts"]["cypherbench/train"]
+            self.assertEqual(counts.get("records_rejected", 0), 0)
+            self.assertEqual(counts["ambiguous_relation_patterns"], 1)
+
+    def test_test_inference_keeps_rejected_examples_without_unreliable_gold_labels(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "benchmarks"
+            source_directory = root / "Cypherbench"
+            (source_directory / "graphs" / "schemas").mkdir(parents=True)
+            (source_directory / "graphs" / "schemas" / "demo_schema.json").write_text(
+                json.dumps(
+                    {
+                        "entities": [
+                            {"label": "Person", "properties": {}},
+                            {"label": "Movie", "properties": {}},
+                        ],
+                        "relations": [
+                            {
+                                "label": relation_type,
+                                "subj_label": "Person",
+                                "obj_label": "Movie",
+                                "properties": {},
+                            }
+                            for relation_type in ("ACTED_IN", "DIRECTED")
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            examples = [
+                {
+                    "qid": "complete",
+                    "graph": "demo",
+                    "nl_question": "List acted-in movies.",
+                    "gold_cypher": "MATCH (:Person)-[:ACTED_IN]->(m:Movie) RETURN m",
+                },
+                {
+                    "qid": "unmatched",
+                    "graph": "demo",
+                    "nl_question": "List people reached from movies.",
+                    "gold_cypher": "MATCH (:Movie)-[:ACTED_IN]->(p:Person) RETURN p",
+                },
+            ]
+            (source_directory / "test.jsonl").write_text(
+                "".join(json.dumps(example) + "\n" for example in examples),
+                encoding="utf-8",
+            )
+
+            output_directory = Path(temporary_directory) / "output"
+            manifest = build_dataset(
+                benchmarks_root=root,
+                output_dir=output_directory,
+                sources=("cypherbench",),
+                splits=("test",),
+            )
+
+            strict_generation = [
+                json.loads(line)
+                for line in (output_directory / "generation_test.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            inference_generation = [
+                json.loads(line)
+                for line in (output_directory / "generation_inference_test.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            inference_selection = [
+                json.loads(line)
+                for line in (output_directory / "selection_inference_test.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+
+            self.assertEqual([row["id"] for row in strict_generation], ["cypherbench:test:demo:complete"])
+            self.assertEqual(len(inference_generation), 2)
+            self.assertTrue(inference_generation[0]["gold_subschema_available"])
+            self.assertIn("sub_schema", inference_generation[0])
+            self.assertFalse(inference_generation[1]["gold_subschema_available"])
+            self.assertNotIn("sub_schema", inference_generation[1])
+            by_example: dict[str, list[dict[str, object]]] = {}
+            for row in inference_selection:
+                by_example.setdefault(str(row["example_id"]), []).append(row)
+            self.assertTrue(all("label" in row for row in by_example["cypherbench:test:demo:complete"]))
+            self.assertTrue(all("label" not in row for row in by_example["cypherbench:test:demo:unmatched"]))
+            counts = manifest["counts"]["cypherbench/test"]
+            self.assertEqual(counts["generation_examples"], 1)
+            self.assertEqual(counts["inference_examples"], 2)
+            self.assertEqual(counts["inference_labeled_examples"], 1)
+            self.assertEqual(counts["inference_unlabeled_examples"], 1)
+
     def test_unrecognized_schema_is_written_to_normalization_audit(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "benchmarks"

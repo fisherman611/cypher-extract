@@ -317,17 +317,19 @@ def run_generator_stage(
             for row, raw_output, prompt_length in zip(batch, raw_outputs, prompt_lengths, strict=True):
                 # Gold data is attached only after generation and is never part of the prompt.
                 reference = generation_rows[str(row["id"])]
-                write_json_line(
-                    handle,
-                    {
-                        **row,
-                        "raw_output": raw_output,
-                        "predicted_cypher": extract_cypher(raw_output),
-                        "prompt_length": prompt_length,
-                        "reference_cypher": reference["cypher"],
-                        "reference_sub_schema": reference["sub_schema"],
-                    },
-                )
+                prediction = {
+                    **row,
+                    "raw_output": raw_output,
+                    "predicted_cypher": extract_cypher(raw_output),
+                    "prompt_length": prompt_length,
+                    "reference_cypher": reference["cypher"],
+                    "gold_subschema_available": bool(
+                        reference.get("gold_subschema_available", "sub_schema" in reference)
+                    ),
+                }
+                if "sub_schema" in reference:
+                    prediction["reference_sub_schema"] = reference["sub_schema"]
+                write_json_line(handle, prediction)
                 generated_rows += 1
             output.checkpoint_rng_progress(
                 handle,
@@ -357,16 +359,22 @@ def compute_inference_metrics(
 ) -> dict[str, Any]:
     true_positive = false_positive = false_negative = true_negative = invalid = 0
     selector_count = 0
+    selector_inference_count = 0
+    selector_inference_invalid = 0
     for source, prediction in paired_rows(spec.selection_test, selector_predictions):
         if source.get("id") != prediction.get("id"):
             raise ValueError(
                 f"Selector prediction misalignment: {source.get('id')!r} != {prediction.get('id')!r}"
             )
-        selector_count += 1
-        expected = selector_label_from_binary(source["label"])
         predicted = prediction["predicted_label"]
         if predicted not in {*SELECTOR_LABELS, "INVALID"}:
             raise ValueError(f"Unknown selector prediction label {predicted!r} for row {prediction.get('id')!r}")
+        selector_inference_count += 1
+        selector_inference_invalid += predicted == "INVALID"
+        if "label" not in source:
+            continue
+        selector_count += 1
+        expected = selector_label_from_binary(source["label"])
         if predicted == "INVALID":
             invalid += 1
             if expected == POSITIVE_SELECTOR_LABEL:
@@ -384,7 +392,7 @@ def compute_inference_metrics(
     recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
-    if selector_count == 0:
+    if selector_inference_count == 0:
         raise ValueError(f"No selector rows found in {spec.selection_test}")
 
     generation_order, generation_rows = load_generation_index(spec.generation_test)
@@ -411,18 +419,44 @@ def compute_inference_metrics(
     if missing_generator_ids:
         raise ValueError(f"Missing generator predictions for ids: {missing_generator_ids[:5]}")
     generator_metrics = compute_task_metrics(predicted_cypher, reference_cypher)
+    selector_labeled_examples = sum(
+        bool(row.get("gold_subschema_available", True))
+        for row in generation_rows.values()
+    )
+    selector_total_examples = len(generation_rows)
+    selector_coverage = selector_labeled_examples / selector_total_examples
+    strict_accuracy = (
+        100.0 * (true_positive + true_negative) / selector_count
+        if selector_count
+        else 0.0
+    )
+    strict_precision = 100.0 * precision
+    strict_recall = 100.0 * recall
+    strict_f1 = 100.0 * f1
     return {
         "selector": {
             "count": selector_count,
-            "accuracy": 100.0 * (true_positive + true_negative) / selector_count,
-            "precision": 100.0 * precision,
-            "recall": 100.0 * recall,
-            "f1": 100.0 * f1,
+            "inference_count": selector_inference_count,
+            "unlabeled_count": selector_inference_count - selector_count,
+            "example_count": selector_total_examples,
+            "labeled_example_count": selector_labeled_examples,
+            "zero_scored_example_count": selector_total_examples
+            - selector_labeled_examples,
+            "coverage": 100.0 * selector_coverage,
+            "accuracy": strict_accuracy * selector_coverage,
+            "precision": strict_precision * selector_coverage,
+            "recall": strict_recall * selector_coverage,
+            "f1": strict_f1 * selector_coverage,
+            "strict_accuracy": strict_accuracy,
+            "strict_precision": strict_precision,
+            "strict_recall": strict_recall,
+            "strict_f1": strict_f1,
             "true_positive": true_positive,
             "false_positive": false_positive,
             "false_negative": false_negative,
             "true_negative": true_negative,
             "invalid": invalid,
+            "inference_invalid": selector_inference_invalid,
         },
         "generator": generator_metrics,
         "pipeline": {

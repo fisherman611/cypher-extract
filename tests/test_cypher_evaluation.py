@@ -292,6 +292,24 @@ def test_score_records_matches_inference_output_fields():
     }
 
 
+def test_score_records_scores_rejected_inference_example_normally():
+    connector = FakeConnector({"RETURN 1": [{"value": 1}]})
+    rows = score_records(
+        [
+            {
+                "id": "rejected",
+                "predicted_cypher": "RETURN 1",
+                "reference_cypher": "RETURN 1",
+                "gold_subschema_available": False,
+            }
+        ],
+        connector,
+        metrics=("execution_accuracy", "executable"),
+    )
+
+    assert rows[0]["metrics"] == {"execution_accuracy": 1.0, "executable": 1.0}
+
+
 def test_score_records_does_not_recover_malformed_model_json_like_reference():
     connector = FakeConnector({"RETURN 1": [{"value": 1}]})
     rows = score_records(

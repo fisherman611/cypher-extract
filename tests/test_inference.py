@@ -15,7 +15,7 @@ from schema_grounding.inference.checkpoints import (
     resolve_last_checkpoint,
     select_last_checkpoint,
 )
-from schema_grounding.inference.data import DatasetSpec, iter_jsonl
+from schema_grounding.inference.data import DatasetSpec, default_dataset_specs, iter_jsonl
 from schema_grounding.inference.merge import merge_schema_units
 from schema_grounding.inference.model import ModelRunner
 from schema_grounding.inference.outputs import ResumableJsonl
@@ -243,6 +243,13 @@ def test_training_output_dirs_match_local_inference_layout() -> None:
         Path("configs/distillation/student_sft.yaml").read_text(encoding="utf-8")
     )
     assert legacy_qwen_sft["output_dir"] == "results/qwen3/sft"
+
+
+def test_default_datasets_use_full_test_inference_artifacts() -> None:
+    specs = default_dataset_specs(REPOSITORY_ROOT)
+    for spec in specs.values():
+        assert spec.generation_test.name == "generation_inference_test.jsonl"
+        assert spec.selection_test.name == "selection_inference_test.jsonl"
 
 
 def test_inference_validates_all_checkpoints_before_preparing_output_directories() -> None:
@@ -896,10 +903,12 @@ def test_invalid_selector_predictions_are_not_counted_as_true_negatives(tmp_path
     selection = [
         {"id": "negative", "label": 0},
         {"id": "positive", "label": 1},
+        {"id": "unlabeled"},
     ]
     predictions = [
         {"id": "negative", "predicted_label": "INVALID"},
         {"id": "positive", "predicted_label": "INVALID"},
+        {"id": "unlabeled", "predicted_label": "INVALID"},
     ]
     generator_predictions = [
         {
@@ -922,10 +931,13 @@ def test_invalid_selector_predictions_are_not_counted_as_true_negatives(tmp_path
     )
 
     assert metrics["selector"]["count"] == 2
+    assert metrics["selector"]["inference_count"] == 3
+    assert metrics["selector"]["unlabeled_count"] == 1
     assert metrics["selector"]["accuracy"] == 0.0
     assert metrics["selector"]["true_negative"] == 0
     assert metrics["selector"]["false_negative"] == 1
     assert metrics["selector"]["invalid"] == 2
+    assert metrics["selector"]["inference_invalid"] == 3
     assert metrics["generator"]["generator_exact_match"] == 100.0
 
 
@@ -952,6 +964,71 @@ def test_metrics_reject_misaligned_selector_prediction_ids(tmp_path: Path) -> No
             tmp_path / "selector_predictions.jsonl",
             tmp_path / "generator_predictions.jsonl",
         )
+
+
+def test_rejected_example_zeros_selector_but_generator_is_scored_normally(tmp_path: Path) -> None:
+    data = tmp_path / "benchmark"
+    write_jsonl(
+        data / "selection_test.jsonl",
+        [
+            {"id": "accepted-unit", "example_id": "accepted", "label": 1},
+            {"id": "rejected-unit", "example_id": "rejected"},
+        ],
+    )
+    write_jsonl(
+        data / "generation_test.jsonl",
+        [
+            {
+                "id": "accepted",
+                "cypher": "RETURN 1",
+                "gold_subschema_available": True,
+            },
+            {
+                "id": "rejected",
+                "cypher": "RETURN",
+                "gold_subschema_available": False,
+            },
+        ],
+    )
+    write_jsonl(
+        tmp_path / "selector_predictions.jsonl",
+        [
+            {"id": "accepted-unit", "predicted_label": "YES"},
+            {"id": "rejected-unit", "predicted_label": "YES"},
+        ],
+    )
+    write_jsonl(
+        tmp_path / "generator_predictions.jsonl",
+        [
+            {
+                "id": "accepted",
+                "predicted_cypher": "RETURN 1",
+                "closure_added_node_ids": [],
+                "predicted_sub_schema": {"nodes": [], "relationships": []},
+            },
+            {
+                "id": "rejected",
+                "predicted_cypher": "RETURN",
+                "closure_added_node_ids": [],
+                "predicted_sub_schema": {"nodes": [], "relationships": []},
+            },
+        ],
+    )
+
+    metrics = compute_inference_metrics(
+        DatasetSpec("fixture", data),
+        tmp_path / "selector_predictions.jsonl",
+        tmp_path / "generator_predictions.jsonl",
+    )
+
+    assert metrics["generator"]["generator_count"] == 2.0
+    assert metrics["selector"]["accuracy"] == 50.0
+    assert metrics["selector"]["strict_accuracy"] == 100.0
+    assert metrics["selector"]["zero_scored_example_count"] == 1
+    assert metrics["generator"]["generator_exact_match"] == 100.0
+    assert metrics["generator"]["generator_rouge1"] == 100.0
+    assert metrics["generator"]["generator_rouge2"] == 100.0
+    assert metrics["generator"]["generator_rougeL"] == 100.0
 
 
 def test_selector_stage_resumes_a_contiguous_partial_file(tmp_path: Path) -> None:

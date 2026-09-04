@@ -27,6 +27,7 @@ _RELATION_PATTERN_RE = re.compile(
     r"\((?P<left>[^()]*)\)\s*(?:(?P<left_arrow><-)|-)\s*"
     r"\[(?P<relation>[^\]]*)\]\s*(?:(?P<right_arrow>->)|-)\s*\((?P<right>[^()]*)\)"
 )
+_OVERLAPPING_RELATION_PATTERN_RE = re.compile(r"(?=" + _RELATION_PATTERN_RE.pattern + r")")
 _INLINE_GROUP_RE = re.compile(
     r"(?P<label>:?`[^`]+`|:?[A-Za-z_][A-Za-z0-9_]*)\s*\{(?P<properties>[^{}]*)\}"
 )
@@ -373,7 +374,9 @@ def _relationship_types(body: str) -> list[str]:
     colon = text.find(":")
     if colon < 0:
         return []
-    remainder = text[colon + 1 :].split("*", 1)[0]
+    remainder = text[colon + 1 :].split("*", 1)[0].strip()
+    if remainder.startswith("(") and remainder.endswith(")"):
+        remainder = remainder[1:-1].strip()
     types: list[str] = []
     for part in remainder.split("|"):
         candidate = clean_identifier(part.strip())
@@ -573,7 +576,7 @@ def from_neo4j_schema_text(schema_text: str, graph: str) -> CanonicalSchema:
             )
 
     relationships = list(parsed_edges)
-    for match in _RELATION_PATTERN_RE.finditer(schema_text):
+    for match in _OVERLAPPING_RELATION_PATTERN_RE.finditer(schema_text):
         left_labels = _labels_in_node_pattern(match.group("left"))
         right_labels = _labels_in_node_pattern(match.group("right"))
         relation_types = _relationship_types(match.group("relation"))

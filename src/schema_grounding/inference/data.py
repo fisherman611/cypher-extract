@@ -12,22 +12,36 @@ from typing import Any
 class DatasetSpec:
     name: str
     directory: Path
+    generation_filename: str = "generation_test.jsonl"
+    selection_filename: str = "selection_test.jsonl"
 
     @property
     def generation_test(self) -> Path:
-        return self.directory / "generation_test.jsonl"
+        return self.directory / self.generation_filename
 
     @property
     def selection_test(self) -> Path:
-        return self.directory / "selection_test.jsonl"
+        return self.directory / self.selection_filename
 
 
 def default_dataset_specs(repository_root: Path) -> dict[str, DatasetSpec]:
     data = repository_root / "data"
+    inference_files = {
+        "generation_filename": "generation_inference_test.jsonl",
+        "selection_filename": "selection_inference_test.jsonl",
+    }
     return {
-        "cypherbench": DatasetSpec("cypherbench", data / "cypherbench_schema_grounding_full_final"),
-        "mind_the_query": DatasetSpec("mind_the_query", data / "mind_the_query_schema_grounding_full"),
-        "neo4j_text2cypher": DatasetSpec("neo4j_text2cypher", data / "neo4j_text2cypher_schema_grounding_full"),
+        "cypherbench": DatasetSpec(
+            "cypherbench", data / "cypherbench_schema_grounding_full_final", **inference_files
+        ),
+        "mind_the_query": DatasetSpec(
+            "mind_the_query", data / "mind_the_query_schema_grounding_full", **inference_files
+        ),
+        "neo4j_text2cypher": DatasetSpec(
+            "neo4j_text2cypher",
+            data / "neo4j_text2cypher_schema_grounding_full",
+            **inference_files,
+        ),
     }
 
 

@@ -14,7 +14,7 @@ from typing import TextIO
 from .cypher import SubSchemaExtraction, extract_subschema
 from .datasets import SUPPORTED_SOURCES, BenchmarkExample, iter_benchmark_examples
 
-FORMAT_VERSION = "1.1"
+FORMAT_VERSION = "1.2"
 
 
 @dataclass
@@ -25,6 +25,8 @@ class SplitWriters:
     generation: TextIO
     rejected: TextIO
     normalization_issues: TextIO
+    inference_selection: TextIO | None = None
+    inference_generation: TextIO | None = None
 
     def close(self) -> None:
         for handle in (
@@ -32,8 +34,11 @@ class SplitWriters:
             self.generation,
             self.rejected,
             self.normalization_issues,
+            self.inference_selection,
+            self.inference_generation,
         ):
-            handle.close()
+            if handle is not None:
+                handle.close()
 
 
 def _write_jsonl(handle: TextIO, record: dict[str, object]) -> None:
@@ -41,27 +46,30 @@ def _write_jsonl(handle: TextIO, record: dict[str, object]) -> None:
 
 
 def _selection_units(
-    example: BenchmarkExample, extraction: SubSchemaExtraction
+    example: BenchmarkExample,
+    extraction: SubSchemaExtraction,
+    *,
+    include_labels: bool = True,
 ) -> list[dict[str, object]]:
     positive_ids = set(extraction.node_unit_ids) | set(extraction.relation_unit_ids)
     rows: list[dict[str, object]] = []
     for unit in example.schema.units:
         unit_dict = unit.to_unit_dict()
-        rows.append(
-            {
-                "id": f"{example.example_id}:{unit.id}",
-                "example_id": example.example_id,
-                "source": example.source,
-                "split": example.split,
-                "graph": example.graph,
-                "schema_id": example.schema.schema_id,
-                "question": example.question,
-                "unit_id": unit.id,
-                "unit_type": unit_dict["kind"],
-                "unit": unit_dict,
-                "label": int(unit.id in positive_ids),
-            }
-        )
+        row: dict[str, object] = {
+            "id": f"{example.example_id}:{unit.id}",
+            "example_id": example.example_id,
+            "source": example.source,
+            "split": example.split,
+            "graph": example.graph,
+            "schema_id": example.schema.schema_id,
+            "question": example.question,
+            "unit_id": unit.id,
+            "unit_type": unit_dict["kind"],
+            "unit": unit_dict,
+        }
+        if include_labels:
+            row["label"] = int(unit.id in positive_ids)
+        rows.append(row)
     return rows
 
 
@@ -126,6 +134,13 @@ def _validate_output_paths(output_dir: Path, splits: Iterable[str], overwrite: b
                 f"normalization_issues_{split}.jsonl",
             ]
         )
+        if split == "test":
+            names.extend(
+                [
+                    "selection_inference_test.jsonl",
+                    "generation_inference_test.jsonl",
+                ]
+            )
     existing = [output_dir / name for name in names if (output_dir / name).exists()]
     if existing and not overwrite:
         rendered = ", ".join(str(path) for path in existing)
@@ -146,9 +161,10 @@ def build_dataset(
 ) -> dict[str, object]:
     """Build JSONL training data and return the reproducibility manifest.
 
-    In strict mode the main corpora contain only examples for which every labelled
-    node/relation pattern maps unambiguously to the provided full schema. Rejected
-    records are retained with diagnostics for audit rather than being discarded.
+    In strict mode the main corpora contain only examples for which every required
+    node/relation pattern maps to the provided full schema. Broad relationship
+    patterns retain every matching relation unit. Rejected records are retained
+    with diagnostics for audit rather than being discarded.
     """
 
     sources = tuple(sources)
@@ -183,6 +199,20 @@ def build_dataset(
                     normalization_issues=(
                         output_dir / f"normalization_issues_{split}.jsonl"
                     ).open("w", encoding="utf-8"),
+                    inference_selection=(
+                        (output_dir / "selection_inference_test.jsonl").open(
+                            "w", encoding="utf-8"
+                        )
+                        if split == "test"
+                        else None
+                    ),
+                    inference_generation=(
+                        (output_dir / "generation_inference_test.jsonl").open(
+                            "w", encoding="utf-8"
+                        )
+                        if split == "test"
+                        else None
+                    ),
                 )
 
             for source in sources:
@@ -244,6 +274,53 @@ def build_dataset(
                         counts[key]["ambiguous_relation_patterns"] += extraction.ambiguous_relation_patterns
 
                         reason = _rejection_reason(extraction, strict)
+
+                        # Test inference must cover every example that has a usable
+                        # question, reference Cypher, and full schema. Gold extraction
+                        # completeness only controls whether selector labels and a
+                        # reference sub-schema are trustworthy; it must not decide
+                        # whether the end-to-end model gets evaluated.
+                        if writers.inference_generation is not None:
+                            gold_subschema_available = extraction.has_units and extraction.complete
+                            inference_generation: dict[str, object] = {
+                                "id": example.example_id,
+                                "source": example.source,
+                                "split": example.split,
+                                "graph": example.graph,
+                                "schema_id": example.schema.schema_id,
+                                "question": example.question,
+                                "cypher": example.cypher,
+                                "gold_subschema_available": gold_subschema_available,
+                            }
+                            if gold_subschema_available:
+                                inference_generation["sub_schema"] = example.schema.subset_dict(
+                                    extraction.node_unit_ids,
+                                    extraction.relation_unit_ids,
+                                )
+                            else:
+                                inference_generation["gold_subschema_diagnostics"] = (
+                                    extraction.diagnostics()
+                                )
+                            _write_jsonl(writers.inference_generation, inference_generation)
+
+                            inference_selection_rows = _selection_units(
+                                example,
+                                extraction,
+                                include_labels=gold_subschema_available,
+                            )
+                            assert writers.inference_selection is not None
+                            for row in inference_selection_rows:
+                                _write_jsonl(writers.inference_selection, row)
+                            counts[key]["inference_examples"] += 1
+                            counts[key]["inference_selection_examples"] += len(
+                                inference_selection_rows
+                            )
+                            label_status = "labeled" if gold_subschema_available else "unlabeled"
+                            counts[key][f"inference_{label_status}_examples"] += 1
+                            counts[key][f"inference_selection_{label_status}"] += len(
+                                inference_selection_rows
+                            )
+
                         if reason:
                             counts[key]["records_rejected"] += 1
                             _write_jsonl(
@@ -309,6 +386,12 @@ def build_dataset(
             "normalization_issues": {
                 split: f"normalization_issues_{split}.jsonl" for split in splits
             },
+            "inference_selection": (
+                "selection_inference_test.jsonl" if "test" in splits else None
+            ),
+            "inference_generation": (
+                "generation_inference_test.jsonl" if "test" in splits else None
+            ),
         },
     }
     with (output_dir / "manifest.json").open("w", encoding="utf-8") as handle:

@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-partial-coverage",
         action="store_true",
-        help="Keep examples with unmapped or ambiguous Cypher patterns; strict coverage is default.",
+        help="Keep examples with unmapped or unmatched Cypher patterns; strict coverage is default.",
     )
     parser.add_argument(
         "--negative-ratio",

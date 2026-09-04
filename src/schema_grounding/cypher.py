@@ -1,10 +1,10 @@
 """Schema-guided extraction of gold sub-schemas from Cypher queries.
 
-This is deliberately not a full Cypher grammar.  It recognizes labelled node and
+This is deliberately not a full Cypher grammar. It recognizes node and
 relationship patterns, resolves variables across the query, and then maps the
-observed patterns back to canonical schema units.  Ambiguities are surfaced in
-the result so the dataset builder can reject them in strict mode instead of
-silently producing incorrect supervision.
+observed patterns back to canonical schema units. Broad patterns retain every
+matching schema unit, while genuinely unmapped patterns are surfaced so strict
+dataset builds cannot silently produce incomplete supervision.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from .schema import CanonicalSchema, RelationUnit, clean_identifier
 _NODE_PATTERN_RE = re.compile(r"\((?P<body>[^()]*)\)")
 _RELATION_PATTERN_RE = re.compile(
     r"\((?P<left>[^()]*)\)\s*(?:(?P<left_arrow><-)|-)\s*"
-    r"\[(?P<relation>[^\]]*)\]\s*(?:(?P<right_arrow>->)|-)\s*\((?P<right>[^()]*)\)"
+    r"(?:\[(?P<relation>[^\]]*)\])?\s*(?:(?P<right_arrow>->)|-)\s*\((?P<right>[^()]*)\)"
 )
 # Relation patterns can share a node in a chain, for example
 # ``(a)-[:FIRST]->(b)-[:SECOND]->(c)``.  A regular ``finditer`` over the
@@ -30,6 +30,9 @@ _OVERLAPPING_RELATION_PATTERN_RE = re.compile(r"(?=" + _RELATION_PATTERN_RE.patt
 _IDENTIFIER = r"`[^`]+`|[A-Za-z_][A-Za-z0-9_]*"
 _VARIABLE_RE = re.compile(rf"^\s*(?P<variable>{_IDENTIFIER})\s*(?::|\{{|$)")
 _LABEL_RE = re.compile(rf":\s*(?P<label>{_IDENTIFIER})")
+_NODE_PREFIX_RE = re.compile(
+    rf"^\s*(?:{_IDENTIFIER})?(?:\s*:\s*(?:{_IDENTIFIER}))*\s*$"
+)
 _NODE_CONTEXT_KEYWORDS = {
     "MATCH",
     "MERGE",
@@ -72,12 +75,14 @@ class SubSchemaExtraction:
 
     @property
     def complete(self) -> bool:
+        # Multiple matching relation units are not a coverage failure: a Cypher
+        # pattern whose type or endpoints are broad can traverse every candidate.
+        # All candidates are retained; the ambiguity count remains audit metadata.
         return not (
             self.unmapped_node_labels
             or self.unmapped_relation_types
             or self.unmatched_relationship_patterns
             or self.unresolved_node_patterns
-            or self.ambiguous_relation_patterns
         )
 
     @property
@@ -100,7 +105,7 @@ def _previous_word(query: str, position: int) -> str | None:
     return match.group(1).upper() if match else None
 
 
-def _mask_string_literals(query: str) -> str:
+def _mask_quoted_contents(query: str) -> str:
     """Blank quoted literal contents while preserving character offsets.
 
     Cypher properties may contain parentheses, brackets, colons, or strings
@@ -130,9 +135,93 @@ def _mask_string_literals(query: str) -> str:
     return "".join(characters)
 
 
-def _is_likely_node_pattern(query: str, start: int) -> bool:
+def _mask_comments(query: str) -> str:
+    """Blank Cypher comments before quote masking while retaining offsets."""
+
+    characters = list(query)
+    quote: str | None = None
+    in_backtick = False
+    escaped = False
+    index = 0
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, end):
+            if characters[position] not in "\r\n":
+                characters[position] = " "
+
+    while index < len(query):
+        character = query[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            index += 1
+            continue
+        if in_backtick:
+            if character == "`":
+                if index + 1 < len(query) and query[index + 1] == "`":
+                    index += 2
+                    continue
+                in_backtick = False
+            index += 1
+            continue
+        if query.startswith("//", index):
+            line_end = query.find("\n", index + 2)
+            line_end = len(query) if line_end < 0 else line_end
+            blank(index, line_end)
+            index = line_end
+            continue
+        if query.startswith("/*", index):
+            close = query.find("*/", index + 2)
+            comment_end = len(query) if close < 0 else close + 2
+            blank(index, comment_end)
+            index = comment_end
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character == "`":
+            in_backtick = True
+        index += 1
+    return "".join(characters)
+
+
+def _mask_string_literals(query: str) -> str:
+    """Blank literals and comments without changing query offsets."""
+
+    return _mask_quoted_contents(_mask_comments(query))
+
+
+def _is_inside_square_brackets(query: str, position: int) -> bool:
+    depth = 0
+    for character in query[:position]:
+        if character == "[":
+            depth += 1
+        elif character == "]" and depth:
+            depth -= 1
+    return depth > 0
+
+
+def _is_nested_parenthesis(query: str, position: int) -> bool:
+    depth = 0
+    for character in query[:position]:
+        if character == "(":
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+    return depth > 0
+
+
+def _is_likely_node_pattern(query: str, start: int, body: str) -> bool:
     """Avoid treating function calls such as ``count(x)`` as node patterns."""
 
+    prefix = body.split("{", 1)[0]
+    if not _NODE_PREFIX_RE.fullmatch(prefix):
+        return False
+    if _is_inside_square_brackets(query, start) or _is_nested_parenthesis(query, start):
+        return False
     if start == 0:
         return True
     previous = query[start - 1]
@@ -170,7 +259,9 @@ def _parse_relation_types(body: str) -> tuple[str, ...]:
     colon = prefix.find(":")
     if colon < 0:
         return ()
-    type_part = prefix[colon + 1 :].split("*", 1)[0]
+    type_part = prefix[colon + 1 :].split("*", 1)[0].strip()
+    if type_part.startswith("(") and type_part.endswith(")"):
+        type_part = type_part[1:-1].strip()
     values: list[str] = []
     for raw_type in type_part.split("|"):
         candidate = clean_identifier(raw_type.strip())
@@ -183,7 +274,9 @@ def _find_node_patterns(query: str) -> list[NodePattern]:
     patterns: list[NodePattern] = []
     masked_query = _mask_string_literals(query)
     for match in _NODE_PATTERN_RE.finditer(masked_query):
-        if _is_likely_node_pattern(masked_query, match.start()):
+        if _is_likely_node_pattern(
+            masked_query, match.start(), match.group("body")
+        ):
             patterns.append(_parse_node_pattern(match.group("body"), match.start(), match.end()))
     return patterns
 
@@ -203,7 +296,7 @@ def _find_relation_patterns(query: str) -> list[RelationPattern]:
                 right=_parse_node_pattern(
                     match.group("right"), match.start("right") - 1, match.end("right") + 1
                 ),
-                relation_types=_parse_relation_types(match.group("relation")),
+                relation_types=_parse_relation_types(match.group("relation") or ""),
                 direction=direction,
             )
         )
@@ -373,7 +466,9 @@ def extract_subschema(query: str, schema: CanonicalSchema) -> SubSchemaExtractio
         if pattern.variable:
             labels.update(variable_labels[pattern.variable])
         if not labels and (pattern.start, pattern.end) not in relationship_node_spans:
-            unresolved_node_patterns += 1
+            # A standalone unlabeled node is a real wildcard graph pattern.
+            # Preserve its broad semantics by selecting every canonical node.
+            node_ids.update(node.id for node in schema.nodes)
 
     ambiguous_relation_patterns = 0
     for pattern in relation_patterns:

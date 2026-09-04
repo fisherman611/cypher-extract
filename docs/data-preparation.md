@@ -25,8 +25,11 @@ Pipeline chỉ dùng gold Cypher để tạo nhãn offline.  Gold Cypher tuyệt
    relation types, hướng cạnh và variable reuse trong Cypher rồi ánh xạ chúng về
    ID của unit trong full schema.
 4. **Kiểm soát chất lượng.** Mặc định strict: một query có type không có trong
-   schema, node không xác định được label, hoặc relation mơ hồ sẽ không được đưa
-   vào training data. Nó được ghi sang `rejected_<split>.jsonl` cùng diagnostics.
+   schema, node không xác định được label, hoặc relation không khớp schema sẽ
+   không được đưa vào training data. Nếu một pattern khớp nhiều relationship thì
+   toàn bộ candidate được giữ làm positive để phản ánh đúng phạm vi mà Cypher có
+   thể duyệt. Record không đủ coverage được ghi sang `rejected_<split>.jsonl`
+   cùng diagnostics.
    Nếu schema nguồn không chuẩn hóa được thành node/relation units, record được
    ghi riêng vào `normalization_issues_<split>.jsonl`; pipeline không tự suy
    đoán để sửa schema gốc.
@@ -75,6 +78,16 @@ relationship trùng type ở các vị trí khác nhau không bị gộp nhầm.
 `generation_<split>.jsonl`
 : Một dòng cho mỗi example hợp lệ, có `question`, `sub_schema` chỉ gồm
   `nodes` và `relationships`, và `cypher` vàng.
+
+`selection_inference_test.jsonl`
+: Input full schema cho selector của mọi test example có question, gold Cypher và
+  canonical schema hợp lệ. Các example strict có `label`; unit của example không
+  có gold sub-schema hoàn chỉnh sẽ không có `label` và chỉ dùng cho inference.
+
+`generation_inference_test.jsonl`
+: Gold Cypher của tập full-test, khớp với input selector inference. `sub_schema`
+  chỉ xuất hiện khi gold extraction hoàn chỉnh; nhờ đó example bị strict reject
+  vẫn được đánh giá Cypher end-to-end mà không tạo selector label thiếu tin cậy.
 
 `rejected_<split>.jsonl`
 : Các mẫu không đủ coverage, giữ lại để audit/cải thiện parser thay vì bị mất
