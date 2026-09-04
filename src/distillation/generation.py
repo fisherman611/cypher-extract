@@ -34,6 +34,19 @@ def generation_eos_value(eos_token_ids: list[int]) -> int | list[int]:
     return eos_token_ids[0] if len(eos_token_ids) == 1 else eos_token_ids
 
 
+def selector_generation_kwargs() -> dict[str, Any]:
+    """Return the deterministic one-token protocol shared by eval and inference."""
+
+    return {
+        "do_sample": False,
+        "top_k": 0,
+        "top_p": 1.0,
+        "temperature": 1.0,
+        "max_new_tokens": 1,
+        "num_beams": 1,
+    }
+
+
 def reference_eval_generation_kwargs(
     generating_args: Any,
     tokenizer: Any,

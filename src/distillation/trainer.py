@@ -18,10 +18,12 @@ from torch.utils.data import DataLoader, IterableDataset
 from transformers import TrainerCallback
 from transformers.trainer_utils import seed_worker
 
+from schema_grounding.selector_labels import SELECTOR_LABELS
+
 from .arguments import DistillationArguments
 from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, StudentRolloutGenerator
 from .fdd import causal_response_mask, fdd_loss
-from .generation import resolve_eos_token_ids
+from .generation import resolve_eos_token_ids, selector_generation_kwargs
 from .losses import compute_distillation_loss, compute_hpd_loss
 from .prepare_data import LAYOUT_FILE
 from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
@@ -562,13 +564,44 @@ class KDTrainer(CustomSeq2SeqTrainer):
             "input_ids": prompt_input_ids,
             "attention_mask": prompt_attention_mask,
         }
-        _, generated_tokens, _ = super().prediction_step(
-            model,
-            generation_inputs,
-            prediction_loss_only=False,
-            ignore_keys=ignore_keys,
-            **gen_kwargs,
+        selector_rows = []
+        generator_rows = []
+        for index, row_labels in enumerate(labels):
+            response_ids = row_labels[row_labels.ne(-100)].tolist()
+            response = self.processing_class.decode(response_ids, skip_special_tokens=True).strip()
+            target = selector_rows if response in SELECTOR_LABELS else generator_rows
+            target.append(index)
+
+        generated_parts: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for row_indices, task_gen_kwargs in (
+            (generator_rows, gen_kwargs),
+            (selector_rows, {**gen_kwargs, **selector_generation_kwargs()}),
+        ):
+            if not row_indices:
+                continue
+            indices = torch.tensor(row_indices, device=prompt_input_ids.device)
+            task_inputs = {
+                key: value.index_select(0, indices)
+                for key, value in generation_inputs.items()
+            }
+            _, task_tokens, _ = super().prediction_step(
+                model,
+                task_inputs,
+                prediction_loss_only=False,
+                ignore_keys=ignore_keys,
+                **task_gen_kwargs,
+            )
+            if task_tokens is None:
+                raise RuntimeError("Generative evaluation returned no generated tokens.")
+            generated_parts.append((indices, task_tokens))
+
+        generated_width = max(tokens.size(1) for _, tokens in generated_parts)
+        generated_tokens = labels.new_full(
+            (labels.size(0), generated_width),
+            pad_token_id,
         )
+        for indices, task_tokens in generated_parts:
+            generated_tokens[indices, : task_tokens.size(1)] = task_tokens
         with torch.no_grad(), self.compute_loss_context_manager():
             loss = self.compute_loss(model, prepared_inputs).detach().mean()
         return loss, generated_tokens, labels
