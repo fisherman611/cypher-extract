@@ -5,11 +5,20 @@ import torch
 
 from distillation.losses import (
     _masked_token_mean,
+    _sanitize_logits,
     compute_distillation_loss,
     compute_hpd_loss,
     forward_kl,
     reverse_kl,
 )
+
+
+def test_sanitize_logits_returns_finite_input_without_copying() -> None:
+    logits = torch.randn(2, 3, 5, requires_grad=True)
+
+    sanitized = _sanitize_logits(logits)
+
+    assert sanitized is logits
 
 
 @pytest.mark.parametrize(

@@ -12,7 +12,9 @@ IGNORE_INDEX = -100
 def _sanitize_logits(logits: torch.Tensor) -> torch.Tensor:
     """Replace non-finite logits before probability/logarithm operations."""
 
-    return logits.masked_fill(~torch.isfinite(logits), 0.0)
+    if torch.isfinite(logits).all():
+        return logits
+    return torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def align_causal_logits_and_labels(
