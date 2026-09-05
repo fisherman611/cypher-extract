@@ -22,11 +22,13 @@ def align_causal_logits_and_labels(
     teacher_logits: torch.Tensor,
     labels: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Align full-sequence outputs with next-token labels.
+    """Align causal outputs and retain only supervised response-token rows.
 
     The legacy dataset fed `tokens[:-1]` to the model and supplied
     `tokens[1:]` as labels. LlamaFactory supplies full sequences and relies on
     the model's internal shift, so KD must explicitly apply the same shift.
+    Compacting before sanitization and probability operations avoids building
+    vocabulary-sized intermediates for ignored prompt and padding positions.
     """
 
     if student_logits.ndim != 3 or teacher_logits.ndim != 3:
@@ -42,10 +44,11 @@ def align_causal_logits_and_labels(
     if shared_vocab_size <= 0:
         raise ValueError("Student and teacher vocabularies must be non-empty.")
     shifted_labels = labels[:, 1:].masked_fill(labels[:, 1:] >= shared_vocab_size, IGNORE_INDEX)
+    response_mask = shifted_labels.ne(IGNORE_INDEX)
     return (
-        _sanitize_logits(student_logits[:, :-1, :shared_vocab_size]),
-        _sanitize_logits(teacher_logits[:, :-1, :shared_vocab_size]),
-        shifted_labels,
+        _sanitize_logits(student_logits[:, :-1, :shared_vocab_size][response_mask]),
+        _sanitize_logits(teacher_logits[:, :-1, :shared_vocab_size][response_mask]),
+        shifted_labels[response_mask],
     )
 
 
@@ -241,9 +244,10 @@ def compute_hpd_loss(
 
     This follows the official HPD implementation: the offline expert token
     receives a hybrid forward/reverse-KL weight, while a token sampled from
-    the student receives a negative-only reverse-KL penalty.  The sampled
-    token is drawn at every teacher-forced prefix, so this remains a single
-    forward pass plus token-level sampling rather than a full rollout.
+    the student receives a negative-only reverse-KL penalty. Only supervised
+    response prefixes are retained before vocabulary-sized probability and
+    sampling operations, so ignored prompt and padding positions allocate no
+    HPD intermediates.
 
     Adapted from the Apache-2.0 implementation in:
     https://github.com/zwhong714/Hybrid-Policy-Distillation
@@ -256,27 +260,29 @@ def compute_hpd_loss(
     if labels.shape[1] < 2:
         raise ValueError("At least two tokens are required for HPD causal distillation.")
 
-    sample_logits = student_logits[..., :-1, :].contiguous()
-    teacher_logits = teacher_logits[..., :-1, :].contiguous()
-    labels = labels[..., 1:].contiguous()
+    sample_logits = student_logits[..., :-1, :]
+    teacher_logits = teacher_logits[..., :-1, :]
+    labels = labels[..., 1:]
     sample_logits, teacher_logits, labels = _hpd_align_shared_vocab(
         sample_logits,
         teacher_logits,
         labels,
         ignore_index,
     )
+    response_mask = labels.ne(ignore_index)
+    if not torch.any(response_mask):
+        raise ValueError("The HPD batch contains no response tokens.")
+    sample_logits = sample_logits[response_mask]
+    teacher_logits = teacher_logits[response_mask]
+    labels = labels[response_mask].unsqueeze(-1)
 
     student_logits_fp32 = _hpd_sanitize_logits(sample_logits)
     teacher_logits_fp32 = _hpd_sanitize_logits(teacher_logits)
     student_log_probs = F.log_softmax(student_logits_fp32, dim=-1)
     teacher_log_probs = F.log_softmax(teacher_logits_fp32, dim=-1)
 
-    labels = labels.unsqueeze(-1)
-    padding_mask = labels.eq(ignore_index)
-    active_mask = ~padding_mask
-    if not torch.any(active_mask):
-        raise ValueError("The HPD batch contains no response tokens.")
-    safe_labels = torch.clamp(labels, min=0)
+    active_mask = torch.ones_like(labels, dtype=torch.bool)
+    safe_labels = labels
 
     # Expert-token discrepancy: k1 > 0 means the student underestimates the
     # offline/expert token and should receive a forward-KL reinforcement.
@@ -298,11 +304,7 @@ def compute_hpd_loss(
     if not sample_in_fp32:
         sampling_logits = _sanitize_logits(sample_logits)
     student_probs = torch.softmax(sampling_logits, dim=-1)
-    batch_size, sequence_length, vocab_size = student_probs.shape
-    sampled_labels = torch.multinomial(
-        student_probs.view(-1, vocab_size),
-        num_samples=1,
-    ).view(batch_size, sequence_length, 1)
+    sampled_labels = torch.multinomial(student_probs, num_samples=1)
 
     student_log_prob_sampled = student_log_probs.gather(dim=-1, index=sampled_labels)
     teacher_log_prob_sampled = teacher_log_probs.gather(dim=-1, index=sampled_labels)
@@ -318,11 +320,9 @@ def compute_hpd_loss(
     reinforce_expert = expert_underestimated & sampled_overestimated
     expert_weight[reinforce_expert] += torch.exp(teacher_log_prob_expert)[reinforce_expert]
 
-    student_log_prob_expert = student_log_prob_expert.masked_fill(padding_mask, 0.0)
-    student_log_prob_sampled = student_log_prob_sampled.masked_fill(padding_mask, 0.0)
-    sampled_diff = active_mask & sampled_labels.ne(safe_labels)
+    sampled_diff = sampled_labels.ne(safe_labels)
     sampled_penalty_active = sampled_diff & sampled_overestimated
-    reinforce_expert_active = active_mask & reinforce_expert
+    reinforce_expert_active = reinforce_expert
 
     expert_weight = expert_weight.detach()
     sampled_weight = sampled_weight.detach()

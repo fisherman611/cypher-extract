@@ -46,13 +46,15 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 def soft_label_distillation_loss(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor | None,
     *,
     temperature: float = 2.0,
 ) -> torch.Tensor:
     student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
     teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
     token_loss = F.kl_div(student_log_probs, teacher_probs, reduction="none").sum(dim=-1)
+    if mask is None:
+        return token_loss.mean()
     return _masked_mean(token_loss, mask)
 
 
@@ -74,12 +76,22 @@ def fdd_loss(
     norm. Therefore block IDs ``n / 2 - 1`` and ``n - 1`` map to config values
     ``n / 2`` and ``n``. The reference prepended ``None`` to hooked student
     block outputs, producing the same one-position offset.
+
+    Hidden states are compacted to supervised response positions before the
+    vocabulary projection. This is mathematically equivalent to the reference
+    mask-after-projection formula while avoiding full-vocabulary intermediates
+    for prompt and padding tokens.
     """
 
     if len(student_layer_mapping) != len(teacher_layer_mapping):
         raise ValueError("Student and teacher layer mappings must have equal length.")
     if len(student_layer_mapping) < 2:
         raise ValueError("FDD requires at least two mapped layer pairs.")
+    if attention_mask.ndim != 2:
+        raise ValueError("FDD attention mask must have shape [batch, sequence].")
+    response_mask = attention_mask.bool()
+    if not torch.any(response_mask):
+        raise ValueError("FDD received an empty attention mask.")
 
     trajectory_loss: torch.Tensor | None = None
     derivative_loss: torch.Tensor | None = None
@@ -96,6 +108,11 @@ def fdd_loss(
                 f"({len(student_hidden_states)}, {len(teacher_hidden_states)})."
             ) from exc
 
+        if student_hidden.shape[:2] != response_mask.shape or teacher_hidden.shape[:2] != response_mask.shape:
+            raise ValueError("FDD hidden states and attention mask must share batch/sequence dimensions.")
+        student_hidden = student_hidden[response_mask]
+        teacher_hidden = teacher_hidden[response_mask]
+
         student_hidden_logits = student_lm_head(student_hidden)
         with torch.no_grad():
             teacher_hidden_logits = teacher_lm_head(teacher_hidden)
@@ -104,9 +121,7 @@ def fdd_loss(
             raise ValueError("Student and teacher vocabularies must be non-empty.")
         student_hidden_logits = student_hidden_logits[..., :shared_vocab_size]
         teacher_hidden_logits = teacher_hidden_logits[..., :shared_vocab_size]
-        current_trajectory_loss = soft_label_distillation_loss(
-            student_hidden_logits, teacher_hidden_logits, attention_mask
-        )
+        current_trajectory_loss = soft_label_distillation_loss(student_hidden_logits, teacher_hidden_logits, None)
         trajectory_loss = (
             current_trajectory_loss if trajectory_loss is None else trajectory_loss + current_trajectory_loss
         )
@@ -117,7 +132,7 @@ def fdd_loss(
             student_delta = student_logs - previous_student_logs
             teacher_delta = teacher_logs - previous_teacher_logs
             cosine_loss = 1.0 - F.cosine_similarity(student_delta, teacher_delta, dim=-1, eps=1e-5)
-            current_derivative_loss = _masked_mean(cosine_loss, attention_mask)
+            current_derivative_loss = cosine_loss.mean()
             derivative_loss = (
                 current_derivative_loss if derivative_loss is None else derivative_loss + current_derivative_loss
             )

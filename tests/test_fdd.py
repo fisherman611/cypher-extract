@@ -51,6 +51,35 @@ def test_fdd_is_finite_and_backpropagates_to_student() -> None:
     assert teacher_head.weight.grad is None
 
 
+def test_fdd_projects_only_response_hidden_states() -> None:
+    observed_shapes: list[tuple[int, ...]] = []
+
+    class RecordingLinear(torch.nn.Linear):
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            observed_shapes.append(tuple(inputs.shape))
+            return super().forward(inputs)
+
+    generator = torch.Generator().manual_seed(13)
+    student_hidden = tuple(torch.randn(2, 4, 5, generator=generator) for _ in range(3))
+    teacher_hidden = tuple(torch.randn(2, 4, 7, generator=generator) for _ in range(3))
+    student_head = RecordingLinear(5, 11, bias=False)
+    teacher_head = RecordingLinear(7, 11, bias=False)
+    response_mask = torch.tensor([[1, 0, 1, 0], [0, 1, 0, 0]])
+
+    loss = fdd_loss(
+        student_hidden,
+        teacher_hidden,
+        response_mask,
+        student_head,
+        teacher_head,
+        [1, 2],
+        [1, 2],
+    )
+
+    assert torch.isfinite(loss)
+    assert observed_shapes == [(3, 5), (3, 7), (3, 5), (3, 7)]
+
+
 @pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
 def test_masked_mean_neutralizes_ignored_non_finite_values(non_finite: float) -> None:
     values = torch.tensor([[non_finite, 2.0]], requires_grad=True)

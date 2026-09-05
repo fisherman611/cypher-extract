@@ -4,8 +4,10 @@ import pytest
 import torch
 
 from distillation.losses import (
+    LOSS_FUNCTIONS,
     _masked_token_mean,
     _sanitize_logits,
+    align_causal_logits_and_labels,
     compute_distillation_loss,
     compute_hpd_loss,
     forward_kl,
@@ -19,6 +21,49 @@ def test_sanitize_logits_returns_finite_input_without_copying() -> None:
     sanitized = _sanitize_logits(logits)
 
     assert sanitized is logits
+
+
+def test_causal_alignment_compacts_to_response_tokens_before_sanitizing() -> None:
+    student = torch.arange(2 * 4 * 5, dtype=torch.float32).reshape(2, 4, 5)
+    teacher = student + 1.0
+    student[0, 0, 0] = float("nan")
+    labels = torch.tensor([[-100, -100, 1, 2], [-100, 3, -100, 4]])
+
+    aligned_student, aligned_teacher, aligned_labels = align_causal_logits_and_labels(
+        student,
+        teacher,
+        labels,
+    )
+
+    assert aligned_student.shape == (4, 5)
+    assert aligned_teacher.shape == (4, 5)
+    assert aligned_labels.tolist() == [1, 2, 3, 4]
+    assert torch.isfinite(aligned_student).all()
+
+
+@pytest.mark.parametrize("method", ["fkl", "rkl", "sfkl", "srkl", "bdl", "csd", "amid"])
+def test_response_token_compaction_preserves_finite_loss_and_gradients(method: str) -> None:
+    generator = torch.Generator().manual_seed(67)
+    student_data = torch.randn(2, 5, 11, generator=generator)
+    teacher = torch.randn(2, 5, 11, generator=generator)
+    labels = torch.tensor([[-100, -100, 3, 4, 5], [-100, 6, 7, -100, 8]])
+    compact_student = student_data.clone().requires_grad_()
+    full_student = student_data.clone().requires_grad_()
+
+    compact_loss = compute_distillation_loss(method, compact_student, teacher, labels)
+    shifted_labels = labels[:, 1:]
+    if method in {"sfkl", "srkl"}:
+        full_loss = LOSS_FUNCTIONS[method](full_student[:, :-1], teacher[:, :-1], shifted_labels, alpha=0.1)
+    elif method == "bdl":
+        full_loss = LOSS_FUNCTIONS[method](full_student[:, :-1], teacher[:, :-1], shifted_labels, lam=0.9)
+    else:
+        full_loss = LOSS_FUNCTIONS[method](full_student[:, :-1], teacher[:, :-1], shifted_labels)
+
+    compact_loss.backward()
+    full_loss.backward()
+
+    torch.testing.assert_close(compact_loss, full_loss)
+    torch.testing.assert_close(compact_student.grad, full_student.grad)
 
 
 @pytest.mark.parametrize(
@@ -186,6 +231,28 @@ def test_hpd_loss_is_finite_and_returns_metrics() -> None:
     actual.backward()
     assert student.grad is not None
     assert torch.isfinite(student.grad).all()
+
+
+def test_hpd_samples_only_at_response_positions(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, tuple[int, ...]] = {}
+
+    def deterministic_multinomial(
+        probabilities: torch.Tensor,
+        num_samples: int,
+    ) -> torch.Tensor:
+        observed["shape"] = tuple(probabilities.shape)
+        return probabilities.argmax(dim=-1, keepdim=True)
+
+    monkeypatch.setattr(torch, "multinomial", deterministic_multinomial)
+    generator = torch.Generator().manual_seed(71)
+    student = torch.randn(2, 5, 9, generator=generator, requires_grad=True)
+    teacher = torch.randn(2, 5, 9, generator=generator)
+    labels = torch.tensor([[-100, -100, 1, 2, 3], [-100, 4, -100, -100, 5]])
+
+    loss, _ = compute_hpd_loss(student, teacher, labels)
+
+    assert torch.isfinite(loss)
+    assert observed["shape"] == (5, 9)
 
 
 def test_compute_distillation_loss_dispatches_to_hpd() -> None:

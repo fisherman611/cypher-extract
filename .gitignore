@@ -220,4 +220,5 @@ benchmarks/
 data/
 template/
 results/
-CypherKD_ref
+CypherKD_ref/
+distillation/
