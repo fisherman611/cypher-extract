@@ -64,20 +64,15 @@ class Neo4jConnector:
         if self.debug:
             logger.info("Running Cypher:\n%s", cypher)
 
-        def execute(tx: Any) -> Any:
-            result = tx.run(Query(cypher, timeout=timeout), **parameters)
-            if convert == "data":
-                return result.data()
-            if convert == "graph":
-                return result.graph()
-            raise ValueError(f"Unsupported result conversion: {convert!r}")
-
         try:
             with self.driver.session(database=self.database) as session:
-                # Evaluation executes untrusted model output. A managed read
-                # transaction makes Neo4j reject CREATE/MERGE/SET/DELETE rather
-                # than committing them through an auto-commit session.
-                output = session.execute_read(execute)
+                result = session.run(Query(cypher, timeout=timeout), **parameters)
+                if convert == "data":
+                    output = result.data()
+                elif convert == "graph":
+                    output = result.graph()
+                else:
+                    raise ValueError(f"Unsupported result conversion: {convert!r}")
         except Exception:
             logger.error("ERROR when executing Cypher: %s", cypher)
             raise
@@ -89,13 +84,8 @@ class Neo4jConnector:
         from neo4j import Query
 
         with self.driver.session(database=self.database) as session:
-            records = session.execute_read(
-                lambda tx: [
-                    dict(record)
-                    for record in tx.run(Query(cypher, timeout=timeout), **parameters)
-                ]
-            )
-        yield from records
+            for record in session.run(Query(cypher, timeout=timeout), **parameters):
+                yield dict(record)
 
     def get_num_entities(self) -> int:
         return int(self.run_query("MATCH (n) RETURN count(n) AS count")[0]["count"])

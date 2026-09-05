@@ -4,8 +4,6 @@
 The algorithm is intentionally kept behavior-compatible with
 ``CypherKD_ref/src/metrics/execution_accuracy.py``. Do not simplify or make the
 permutation search deterministic without re-baselining the published metrics.
-Operational database failures are intentionally re-raised so the scoring layer
-can distinguish them from invalid model queries.
 """
 
 import logging
@@ -83,10 +81,11 @@ def execution_accuracy(
         return 0.0
     except TypeError:
         return 0.0
-    except Exception:
-        # Non-query failures (for example a lost database connection) must be
-        # surfaced by safe_compute instead of becoming a model score of zero.
-        raise
+    except Exception as error:
+        logger.warning(
+            f"Exception {error} occurred while executing the predicted Cypher query: {pred_cypher}"
+        )
+        return 0.0
 
     target_executed = [
         {k: to_hashable(v) for k, v in record.items()} for record in target_executed

@@ -10,13 +10,7 @@ from dotenv import load_dotenv
 
 from .metrics import METRICS
 from .neo4j import Neo4jConnector
-from .scoring import (
-    aggregate_scores,
-    metric_error_counts,
-    read_records,
-    score_records,
-    write_jsonl,
-)
+from .scoring import aggregate_scores, read_records, score_records, write_jsonl
 
 
 @dataclass(frozen=True)
@@ -146,13 +140,9 @@ def main() -> None:
         )
     write_jsonl(output_path, scored)
     summary = aggregate_scores(scored, metrics=args.metrics)
-    errors = metric_error_counts(scored, metrics=args.metrics)
-    summary["errors"] = errors
     summary_path = output_path.with_name(f"{output_path.stem}_summary.json")
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(output_path), "summary": str(summary_path), **summary}, indent=2))
-    if any(errors.values()):
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

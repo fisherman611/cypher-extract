@@ -59,23 +59,6 @@ def _get_metrics(record: dict[str, Any]) -> dict[str, Any]:
     return record.get("metrics", record.get("cypher_metrics", {}))
 
 
-def metric_error_counts(
-    result: Iterable[dict[str, Any]],
-    metrics: Sequence[str] = DEFAULT_METRICS,
-) -> dict[str, int]:
-    """Count infrastructure/runtime errors separately from numeric scores."""
-
-    records = list(result)
-    return {
-        metric: sum(
-            isinstance(_get_metrics(record).get(metric), dict)
-            and "error" in _get_metrics(record)[metric]
-            for record in records
-        )
-        for metric in metrics
-    }
-
-
 def calculate_aggregates(
     result: Iterable[dict[str, Any]],
     metrics: Sequence[str] = DEFAULT_METRICS,
@@ -174,7 +157,6 @@ __all__ = [
     "avg_and_round",
     "calculate_aggregates",
     "clean_pred_cypher",
-    "metric_error_counts",
     "metric_value",
     "read_records",
     "safe_compute",

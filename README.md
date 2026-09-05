@@ -816,7 +816,7 @@ python -m pip install -e ".[evaluation]"
 
 Copy-Item .env.example .env
 # Sau đó sửa NEO4J_PASSWORD và các cấu hình Neo4j trong .env.
-# Connector cũng chạy mọi query trong managed read transaction.
+# Nên dùng tài khoản Neo4j read-only vì metric sẽ thực thi trực tiếp Cypher dự đoán.
 
 evaluate-cypher `
   --input results/inference/qwen3/seed10/sft/cypherbench/generator_predictions.jsonl `
@@ -825,9 +825,7 @@ evaluate-cypher `
 ```
 
 Logic của cả ba metric, preprocessing `<end_of_turn>` và cách aggregate được giữ
-theo `CypherKD_ref`. Project thêm hai guard vận hành: query chạy read-only và
-lỗi hạ tầng được đếm riêng, làm CLI thoát khác 0 thay vì im lặng
-xem chúng là prediction sai. Xem bảng đối chiếu tại
+theo `CypherKD_ref`; xem bảng đối chiếu tại
 [`docs/cypherkd-metric-parity.md`](docs/cypherkd-metric-parity.md).
 
 Chạy toàn bộ seed, method, dataset và graph bằng script có sẵn. Script hoàn tất
@@ -916,9 +914,6 @@ tên graph, đúng cấu hình reference. Graph chọn bằng `--graph`, mặc �
 `--database` để override database thực tế. Với command trên, CLI ghi kết quả từng
 mẫu vào `results/evaluation/qwen3/seed10/sft/cypherbench/nba/cypher_scores.jsonl` và
 trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng folder.
-Đầu ra summary có thêm `errors` theo từng metric. Query model sai về
-Cypher nhận `0.0`; lỗi kết nối/session hạ tầng được ghi thành error và
-làm command thoát với status 1 sau khi đã ghi artifact để audit.
 Đường dẫn output được suy ra tự động từ `--input` và `--graph`; vẫn có thể truyền
 `--output` nếu muốn ghi sang vị trí khác.
 

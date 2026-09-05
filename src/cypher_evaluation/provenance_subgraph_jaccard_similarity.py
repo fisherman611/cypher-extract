@@ -1,11 +1,9 @@
 # ruff: noqa
-"""CypherKD PSJS formula with infrastructure failures surfaced to scoring."""
+"""CypherKD PSJS implementation kept behavior-compatible with the reference."""
 
 import logging
 import re
 from typing import List, Optional
-
-from .execution_accuracy import _neo4j_query_errors
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +173,7 @@ def provenance_subgraph_jaccard_similarity(
         I = len(target_ps.intersection(pred_ps))
         U = len(target_ps.union(pred_ps))
         psjs = I / U if U > 0 else 0.0
-    except _neo4j_query_errors():
+    except Exception as error:
+        print(f"When evaluating PSJS encountered exception: {error}")
         return 0.0
-    except Exception:
-        raise
     return psjs
