@@ -93,13 +93,13 @@ def _split_file(root: Path, source_dir: str, split: str) -> Path:
         # metadata. The structured JSON files retain the schema needed for
         # canonicalization and gold sub-schema extraction.
         mapping = {
-            "train": ("train.json", "train.jsonl"),
-            "dev": ("dev.json", "dev.jsonl"),
-            "val": ("dev.json", "dev.jsonl"),
-            "test": ("test.json", "test.jsonl"),
+            "train": ("train.json",),
+            "dev": ("dev.json",),
+            "val": ("dev.json",),
+            "test": ("test.json",),
         }
     if source_dir == "Mind_the_query" and split == "train":
-        mapping["train"] = ("train.json", "train_val.json", "train.jsonl")
+        mapping["train"] = ("train.json", "train_val.json")
     if split not in mapping:
         raise ValueError(
             f"{source_dir} has no structured '{split}' split. Supported splits: train, dev (or val), test."

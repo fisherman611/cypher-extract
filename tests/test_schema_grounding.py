@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from schema_grounding.cypher import extract_subschema
+from schema_grounding.datasets import _split_file
 from schema_grounding.pipeline import build_dataset
 from schema_grounding.schema import (
     canonical_schema,
@@ -311,6 +312,20 @@ class SubSchemaExtractionTest(unittest.TestCase):
         self.assertTrue(result.complete)
         self.assertEqual(result.node_unit_ids, ("node:Person",))
 
+    def test_quote_inside_backticked_identifier_does_not_mask_later_patterns(self) -> None:
+        result = extract_subschema(
+            "MATCH (s:City) WHERE s.`owner's name` = 'x' "
+            "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m",
+            self.schema,
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            set(result.node_unit_ids),
+            {"node:City", "node:Person", "node:Movie"},
+        )
+        self.assertEqual(result.relation_unit_ids, ("relation:Person|ACTED_IN|Movie",))
+
     def test_line_comment_quote_does_not_mask_following_patterns(self) -> None:
         result = extract_subschema(
             "MATCH (p:Person) // find the person's movies\n"
@@ -341,6 +356,7 @@ class SubSchemaExtractionTest(unittest.TestCase):
             {"node:Person", "node:Movie", "node:City"},
         )
         self.assertEqual(result.relation_unit_ids, ())
+        self.assertEqual(result.unresolved_node_patterns, 1)
 
     def test_wildcard_relationship_pattern_selects_all_matching_units(self) -> None:
         result = extract_subschema("MATCH (n)-[r]->(m) RETURN n, r, m", self.schema)
@@ -611,6 +627,13 @@ class PipelineAuditTest(unittest.TestCase):
                             "nl_question": "List every item.",
                             "gold_cypher": "MATCH (item) RETURN item",
                             "schema": "CREATE TABLE items (id INTEGER);",
+                        },
+                        {
+                            "qid": "valid-schema",
+                            "graph": "valid-demo",
+                            "nl_question": "List every person.",
+                            "gold_cypher": "MATCH (person:Person) RETURN person",
+                            "schema": "Node properties:\n- **Person**\n  - `name`: STRING\n",
                         }
                     ]
                 ),
@@ -638,6 +661,35 @@ class PipelineAuditTest(unittest.TestCase):
                 manifest["files"]["normalization_issues"]["train"],
                 "normalization_issues_train.jsonl",
             )
+
+    def test_structured_sources_do_not_fall_back_to_prompt_export_dev_jsonl(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for source_name in ("Mind_the_query", "Neo4j_Text2Cypher"):
+                with self.subTest(source=source_name):
+                    source_directory = root / source_name
+                    source_directory.mkdir()
+                    (source_directory / "dev.jsonl").write_text("{}\n", encoding="utf-8")
+
+                    with self.assertRaises(FileNotFoundError):
+                        _split_file(root, source_name, "dev")
+
+    def test_all_rejected_source_split_fails_loudly(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "benchmarks"
+            source_directory = root / "Cypherbench"
+            source_directory.mkdir(parents=True)
+            (source_directory / "train.jsonl").write_text(
+                json.dumps({"qid": "empty", "graph": "demo"}) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "produced no usable generation examples"):
+                build_dataset(
+                    benchmarks_root=root,
+                    output_dir=Path(temporary_directory) / "output",
+                    sources=("cypherbench",),
+                )
 
     def test_dev_split_build(self) -> None:
         with TemporaryDirectory() as temporary_directory:

@@ -13,6 +13,7 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+from .data_cache import GROUNDING_FILENAMES, preparation_fingerprint
 from .prepare_data import LAYOUT_FILE, SPLIT_FILES
 
 MANAGED_TRAIN_DATASET = "cypher_prepared_train"
@@ -27,6 +28,8 @@ class AutoPreparePlan:
     prepared_dir: Path
     dataset_dir: Path
     dataset_dir_override: str
+    prompt_root: Path = PROJECT_ROOT / "prompts"
+    preparation_seed: int = 42
 
 
 def _load_merged_config(config_path: Path, overrides: Sequence[str]) -> dict[str, Any]:
@@ -53,6 +56,7 @@ def build_auto_prepare_plan(
     project_root: Path = PROJECT_ROOT,
     grounding_input: str = "data/cypherbench_schema_grounding_full_final",
     prepared_root: str = "data/prepared",
+    preparation_seed: int = 42,
 ) -> AutoPreparePlan | None:
     """Return a cache plan for the managed Cypher datasets, or ``None``."""
 
@@ -90,6 +94,8 @@ def build_auto_prepare_plan(
         prepared_dir=prepared_dir,
         dataset_dir=dataset_dir,
         dataset_dir_override=dataset_dir_override,
+        prompt_root=project_root / "prompts",
+        preparation_seed=preparation_seed,
     )
 
 
@@ -111,8 +117,19 @@ def cache_is_ready(plan: AutoPreparePlan) -> bool:
     if not isinstance(layout, dict):
         return False
     try:
-        return int(layout.get("batch_size", -1)) == plan.batch_size
-    except (TypeError, ValueError):
+        current_fingerprint = preparation_fingerprint(
+            plan.grounding_input_dir,
+            plan.prompt_root,
+            seed=plan.preparation_seed,
+        )
+        return (
+            int(layout.get("batch_size", -1)) == plan.batch_size
+            and Path(str(layout.get("input_directory", ""))).resolve()
+            == plan.grounding_input_dir.resolve()
+            and int(layout.get("preparation_seed", -1)) == plan.preparation_seed
+            and layout.get("preparation_fingerprint") == current_fingerprint
+        )
+    except (OSError, TypeError, ValueError):
         return False
 
 
@@ -136,11 +153,7 @@ def ensure_training_data(
 
     if not force and cache_is_ready(plan):
         return False
-    required_grounding = [
-        plan.grounding_input_dir / f"{task}_{split}.jsonl"
-        for task in ("generation", "selection")
-        for split in ("train", "dev", "test")
-    ]
+    required_grounding = [plan.grounding_input_dir / name for name in GROUNDING_FILENAMES]
     missing = [path for path in required_grounding if not path.is_file()]
     if missing:
         raise FileNotFoundError(
@@ -162,6 +175,8 @@ def ensure_training_data(
             str(plan.prepared_dir),
             "--batch-size",
             str(plan.batch_size),
+            "--seed",
+            str(plan.preparation_seed),
             "--overwrite",
         ],
         project_root,
@@ -198,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "data/cypherbench_schema_grounding_full_final",
         ),
         prepared_root=os.environ.get("CYPHER_PREPARED_ROOT", "data/prepared"),
+        preparation_seed=int(os.environ.get("CYPHER_PREPARE_SEED", "42")),
     )
     if plan is None:
         return

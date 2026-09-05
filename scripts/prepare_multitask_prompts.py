@@ -21,6 +21,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from distillation.data_cache import preparation_fingerprint  # noqa: E402
 from schema_grounding.selector_labels import (  # noqa: E402
     NEGATIVE_SELECTOR_LABEL,
     POSITIVE_SELECTOR_LABEL,
@@ -296,6 +297,11 @@ def main() -> None:
         "input_directory": str(input_dir),
         "seed": args.seed,
         "batch_size": args.batch_size,
+        "preparation_fingerprint": preparation_fingerprint(
+            input_dir,
+            ROOT / "prompts",
+            seed=args.seed,
+        ),
         "selector_output_format": {
             "type": "json",
             "field": "label",

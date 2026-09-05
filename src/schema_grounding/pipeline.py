@@ -363,6 +363,11 @@ def build_dataset(
                         counts[key]["selection_negative"] += sum(
                             1 - int(row["label"]) for row in selection_rows
                         )
+                    if counts[key]["records_seen"] and not counts[key]["generation_examples"]:
+                        raise ValueError(
+                            f"{key} produced no usable generation examples from "
+                            f"{counts[key]['records_seen']} input records."
+                        )
         finally:
             for writers in split_handles.values():
                 writers.close()

@@ -128,8 +128,19 @@ def convert_directory(input_dir: Path, output_dir: Path, *, overwrite: bool = Fa
         )
         if input_manifest.is_file():
             manifest = json.loads(input_manifest.read_text(encoding="utf-8"))
+            cache_metadata = {}
+            if all(
+                key in manifest
+                for key in ("input_directory", "seed", "preparation_fingerprint")
+            ):
+                cache_metadata = {
+                    "input_directory": str(manifest["input_directory"]),
+                    "preparation_seed": int(manifest["seed"]),
+                    "preparation_fingerprint": str(manifest["preparation_fingerprint"]),
+                }
             layout = {
                 "batch_size": int(manifest["batch_size"]),
+                **cache_metadata,
                 "train_rows": int(manifest["files"]["train"]["rows"]),
                 "train_selector_rows": int(manifest["files"]["train"]["selector"]),
                 "train_selector_contrast_pairs": int(manifest["train_selector_contrast_pairs"]),

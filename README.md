@@ -202,10 +202,12 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml \
   per_device_train_batch_size=8
 ```
 
-Cache có thể dùng lại khi chuyển qua lại giữa các batch size. Dùng
-`AUTO_PREPARE_FORCE=1` khi muốn build lại cache sau khi thay data/prompt;
-`AUTO_PREPARE_DATA=0` tắt cơ chế này cho dataset tự quản lý. Có thể đổi
-nguồn grounding bằng `CYPHER_GROUNDING_INPUT_DIR`.
+Cache có thể dùng lại khi chuyển qua lại giữa các batch size. Fingerprint
+của sáu file grounding, bốn file prompt và preparation seed được ghi trong
+layout; thay đổi bất kỳ input nào sẽ tự build lại cache. Dùng
+`AUTO_PREPARE_FORCE=1` để ép build lại, `AUTO_PREPARE_DATA=0` để tắt cơ
+chế này cho dataset tự quản lý. Có thể đổi nguồn grounding bằng
+`CYPHER_GROUNDING_INPUT_DIR` và seed bằng `CYPHER_PREPARE_SEED`.
 
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
@@ -814,7 +816,7 @@ python -m pip install -e ".[evaluation]"
 
 Copy-Item .env.example .env
 # Sau đó sửa NEO4J_PASSWORD và các cấu hình Neo4j trong .env.
-# Nên dùng tài khoản Neo4j read-only vì metric sẽ thực thi trực tiếp Cypher dự đoán.
+# Connector cũng chạy mọi query trong managed read transaction.
 
 evaluate-cypher `
   --input results/inference/qwen3/seed10/sft/cypherbench/generator_predictions.jsonl `
@@ -823,7 +825,9 @@ evaluate-cypher `
 ```
 
 Logic của cả ba metric, preprocessing `<end_of_turn>` và cách aggregate được giữ
-theo `CypherKD_ref`; xem bảng đối chiếu tại
+theo `CypherKD_ref`. Project thêm hai guard vận hành: query chạy read-only và
+lỗi hạ tầng được đếm riêng, làm CLI thoát khác 0 thay vì im lặng
+xem chúng là prediction sai. Xem bảng đối chiếu tại
 [`docs/cypherkd-metric-parity.md`](docs/cypherkd-metric-parity.md).
 
 Chạy toàn bộ seed, method, dataset và graph bằng script có sẵn. Script hoàn tất
@@ -912,6 +916,9 @@ tên graph, đúng cấu hình reference. Graph chọn bằng `--graph`, mặc �
 `--database` để override database thực tế. Với command trên, CLI ghi kết quả từng
 mẫu vào `results/evaluation/qwen3/seed10/sft/cypherbench/nba/cypher_scores.jsonl` và
 trung bình toàn bộ metric vào file `cypher_scores_summary.json` trong cùng folder.
+Đầu ra summary có thêm `errors` theo từng metric. Query model sai về
+Cypher nhận `0.0`; lỗi kết nối/session hạ tầng được ghi thành error và
+làm command thoát với status 1 sau khi đã ghi artifact để audit.
 Đường dẫn output được suy ra tự động từ `--input` và `--graph`; vẫn có thể truyền
 `--output` nếu muốn ghi sang vị trí khác.
 

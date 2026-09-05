@@ -1,7 +1,9 @@
 import json
 import math
 import sys
+from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +16,14 @@ from cypher_evaluation.metrics import (
     get_ps_cypher,
     provenance_subgraph_jaccard_similarity,
 )
-from cypher_evaluation.scoring import aggregate_scores, clean_pred_cypher, safe_compute, score_records
+from cypher_evaluation.neo4j import Neo4jConnector
+from cypher_evaluation.scoring import (
+    aggregate_scores,
+    clean_pred_cypher,
+    metric_error_counts,
+    safe_compute,
+    score_records,
+)
 
 
 class FakeConnector:
@@ -100,6 +109,55 @@ def test_cli_uses_configured_timeout_for_connectivity(monkeypatch, tmp_path: Pat
     evaluation_cli.main()
 
     assert observed["timeout"] == 45
+
+
+def test_connector_executes_queries_in_managed_read_transaction(monkeypatch):
+    observed = {"execute_read": 0, "auto_commit": 0}
+
+    class Result:
+        def data(self):
+            return [{"value": 1}]
+
+    class Transaction:
+        def run(self, query, **parameters):
+            observed["query"] = query
+            observed["parameters"] = parameters
+            return Result()
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute_read(self, callback):
+            observed["execute_read"] += 1
+            return callback(Transaction())
+
+        def run(self, *_args, **_kwargs):
+            observed["auto_commit"] += 1
+            raise AssertionError("Evaluation must not use an auto-commit session")
+
+    class Driver:
+        def session(self, **kwargs):
+            observed["session"] = kwargs
+            return Session()
+
+    monkeypatch.setitem(sys.modules, "neo4j", SimpleNamespace(Query=lambda text, timeout: (text, timeout)))
+    connector = Neo4jConnector.__new__(Neo4jConnector)
+    connector.database = "demo"
+    connector.debug = False
+    connector.driver = Driver()
+
+    assert connector.run_query("CREATE (:Unsafe)", timeout=17, value=3) == [{"value": 1}]
+    assert observed == {
+        "execute_read": 1,
+        "auto_commit": 0,
+        "session": {"database": "demo"},
+        "query": ("CREATE (:Unsafe)", 17),
+        "parameters": {"value": 3},
+    }
 
 
 def test_output_path_is_derived_from_input_and_graph():
@@ -273,9 +331,13 @@ def test_psjs_computes_node_set_jaccard():
     assert score == 1 / 3
 
 
-def test_bad_query_is_not_executable():
+def test_executable_preserves_infrastructure_error_for_safe_compute():
     connector = FakeConnector({"bad": RuntimeError("syntax error")})
-    assert executable("bad", "gold", connector) == 0.0
+    with pytest.raises(RuntimeError, match="syntax error"):
+        executable("bad", "gold", connector)
+    assert safe_compute("executable", "bad", "gold", connector) == {
+        "error": "executable failed: syntax error"
+    }
 
 
 def test_score_records_matches_inference_output_fields():
@@ -310,14 +372,20 @@ def test_score_records_scores_rejected_inference_example_normally():
     assert rows[0]["metrics"] == {"execution_accuracy": 1.0, "executable": 1.0}
 
 
-def test_score_records_does_not_recover_malformed_model_json_like_reference():
-    connector = FakeConnector({"RETURN 1": [{"value": 1}]})
+def test_score_records_does_not_recover_malformed_model_json_like_reference(monkeypatch):
+    class QueryError(Exception):
+        pass
+
+    malformed = '{"cypher": "RETURN 1"'
+    connector = FakeConnector({malformed: QueryError("syntax error")})
+    executable_module = import_module("cypher_evaluation.executable")
+    monkeypatch.setattr(executable_module, "_neo4j_query_errors", lambda: (QueryError,))
     rows = score_records(
-        [{"id": "one", "predicted_cypher": '{"cypher": "RETURN 1"', "reference_cypher": "RETURN 1"}],
+        [{"id": "one", "predicted_cypher": malformed, "reference_cypher": "RETURN 1"}],
         connector,
         metrics=("executable",),
     )
-    assert rows[0]["predicted_cypher"] == '{"cypher": "RETURN 1"'
+    assert rows[0]["predicted_cypher"] == malformed
     assert rows[0]["metrics"] == {"executable": 0.0}
 
 
@@ -340,6 +408,63 @@ def test_reference_aggregate_turns_metric_errors_into_zero_and_rounds():
     assert aggregate_scores(rows, metrics=("execution_accuracy",)) == {
         "overall": {"execution_accuracy": 0.6667}
     }
+    assert metric_error_counts(rows, metrics=("execution_accuracy", "executable")) == {
+        "execution_accuracy": 1,
+        "executable": 0,
+    }
+
+
+def test_cli_writes_error_tally_and_exits_nonzero(monkeypatch, tmp_path: Path):
+    class Connector:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def verify_connectivity(self, *, timeout):
+            pass
+
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "scores.jsonl"
+    input_path.write_text(
+        json.dumps({"graph": "nba", "predicted_cypher": "RETURN 1", "reference_cypher": "RETURN 1"})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evaluation_cli, "Neo4jConnector", Connector)
+    monkeypatch.setattr(
+        evaluation_cli,
+        "score_records",
+        lambda *_args, **_kwargs: [
+            {"metrics": {"execution_accuracy": {"error": "database unavailable"}}}
+        ],
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate-cypher",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--password",
+            "secret",
+            "--metrics",
+            "execution_accuracy",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        evaluation_cli.main()
+
+    assert error.value.code == 1
+    summary = json.loads((tmp_path / "scores_summary.json").read_text(encoding="utf-8"))
+    assert summary["errors"] == {"execution_accuracy": 1}
 
 
 def test_reference_target_execution_error_is_preserved_by_safe_compute():

@@ -9,6 +9,12 @@ import torch.nn.functional as F
 IGNORE_INDEX = -100
 
 
+def _sanitize_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Replace non-finite logits before probability/logarithm operations."""
+
+    return logits.masked_fill(~torch.isfinite(logits), 0.0)
+
+
 def align_causal_logits_and_labels(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -35,8 +41,8 @@ def align_causal_logits_and_labels(
         raise ValueError("Student and teacher vocabularies must be non-empty.")
     shifted_labels = labels[:, 1:].masked_fill(labels[:, 1:] >= shared_vocab_size, IGNORE_INDEX)
     return (
-        student_logits[:, :-1, :shared_vocab_size],
-        teacher_logits[:, :-1, :shared_vocab_size],
+        _sanitize_logits(student_logits[:, :-1, :shared_vocab_size]),
+        _sanitize_logits(teacher_logits[:, :-1, :shared_vocab_size]),
         shifted_labels,
     )
 
@@ -194,10 +200,7 @@ def _hpd_align_shared_vocab(
 
 
 def _hpd_sanitize_logits(logits: torch.Tensor) -> torch.Tensor:
-    inf_mask = torch.isinf(logits)
-    if inf_mask.any():
-        logits = logits.masked_fill(inf_mask, 0.0)
-    return logits.to(torch.float32)
+    return _sanitize_logits(logits).to(torch.float32)
 
 
 def _hpd_masked_ratio(mask: torch.Tensor, valid_mask: torch.Tensor) -> float:
@@ -291,10 +294,7 @@ def compute_hpd_loss(
     # at each offline prefix and only retain negative reverse-KL rewards.
     sampling_logits = student_logits_fp32
     if not sample_in_fp32:
-        sampling_logits = sample_logits
-        sampling_inf_mask = torch.isinf(sampling_logits)
-        if sampling_inf_mask.any():
-            sampling_logits = sampling_logits.masked_fill(sampling_inf_mask, 0.0)
+        sampling_logits = _sanitize_logits(sample_logits)
     student_probs = torch.softmax(sampling_logits, dim=-1)
     batch_size, sequence_length, vocab_size = student_probs.shape
     sampled_labels = torch.multinomial(

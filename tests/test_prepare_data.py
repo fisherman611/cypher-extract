@@ -41,6 +41,9 @@ def test_convert_directory_writes_all_splits_and_registry(tmp_path: Path) -> Non
         json.dumps(
             {
                 "batch_size": 2,
+                "input_directory": str(tmp_path / "grounding"),
+                "seed": 42,
+                "preparation_fingerprint": "abc123",
                 "files": {"train": {"rows": 1, "selector": 0}},
                 "train_selector_contrast_pairs": 0,
                 "train_selector_unpaired_negatives": 0,
@@ -59,6 +62,9 @@ def test_convert_directory_writes_all_splits_and_registry(tmp_path: Path) -> Non
     assert [message["role"] for message in train["messages"]] == ["system", "user", "assistant"]
     layout = json.loads((output_dir / LAYOUT_FILE).read_text(encoding="utf-8"))
     assert layout["batch_size"] == 2
+    assert layout["input_directory"] == str(tmp_path / "grounding")
+    assert layout["preparation_seed"] == 42
+    assert layout["preparation_fingerprint"] == "abc123"
     assert layout["train_rows"] == 1
 
     with pytest.raises(FileExistsError, match="--overwrite"):

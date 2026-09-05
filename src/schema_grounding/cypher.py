@@ -82,7 +82,6 @@ class SubSchemaExtraction:
             self.unmapped_node_labels
             or self.unmapped_relation_types
             or self.unmatched_relationship_patterns
-            or self.unresolved_node_patterns
         )
 
     @property
@@ -116,11 +115,23 @@ def _mask_quoted_contents(query: str) -> str:
 
     characters = list(query)
     quote: str | None = None
+    in_backtick = False
     escaped = False
-    for index, character in enumerate(characters):
+    index = 0
+    while index < len(characters):
+        character = characters[index]
         if quote is None:
-            if character in {"'", '\"'}:
+            if in_backtick:
+                if character == "`":
+                    if index + 1 < len(characters) and characters[index + 1] == "`":
+                        index += 2
+                        continue
+                    in_backtick = False
+            elif character == "`":
+                in_backtick = True
+            elif character in {"'", '\"'}:
                 quote = character
+            index += 1
             continue
         if escaped:
             characters[index] = " "
@@ -132,6 +143,7 @@ def _mask_quoted_contents(query: str) -> str:
             quote = None
         else:
             characters[index] = " "
+        index += 1
     return "".join(characters)
 
 
@@ -467,7 +479,9 @@ def extract_subschema(query: str, schema: CanonicalSchema) -> SubSchemaExtractio
             labels.update(variable_labels[pattern.variable])
         if not labels and (pattern.start, pattern.end) not in relationship_node_spans:
             # A standalone unlabeled node is a real wildcard graph pattern.
-            # Preserve its broad semantics by selecting every canonical node.
+            # Preserve its broad semantics by selecting every canonical node,
+            # while retaining an audit count of broad wildcard expansions.
+            unresolved_node_patterns += 1
             node_ids.update(node.id for node in schema.nodes)
 
     ambiguous_relation_patterns = 0

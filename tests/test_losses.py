@@ -81,6 +81,33 @@ def test_skewed_kl_is_finite_when_softmax_probability_underflows(method: str) ->
     assert torch.isfinite(student.grad).all()
 
 
+@pytest.mark.parametrize("method", ["fkl", "rkl", "sfkl", "srkl", "bdl", "csd", "amid", "hpd"])
+@pytest.mark.parametrize("owner", ["student", "teacher"])
+@pytest.mark.parametrize("non_finite", [float("-inf"), float("inf"), float("nan")])
+def test_distillation_sanitizes_non_finite_logits_before_probability_operations(
+    method: str,
+    owner: str,
+    non_finite: float,
+) -> None:
+    generator = torch.Generator().manual_seed(53)
+    student_data = torch.randn(1, 4, 7, generator=generator)
+    teacher = torch.randn(1, 4, 7, generator=generator)
+    if owner == "student":
+        student_data[0, 1, -1] = non_finite
+    else:
+        teacher[0, 1, -1] = non_finite
+    student = student_data.requires_grad_()
+    labels = torch.tensor([[-100, -100, 1, 2]])
+
+    torch.manual_seed(59)
+    loss = compute_distillation_loss(method, student, teacher, labels)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert student.grad is not None
+    assert torch.isfinite(student.grad).all()
+
+
 @pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
 def test_masked_token_mean_neutralizes_ignored_non_finite_values(non_finite: float) -> None:
     values = torch.tensor([[non_finite, 2.0]], requires_grad=True)

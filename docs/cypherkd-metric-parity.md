@@ -1,9 +1,10 @@
 # CypherKD metric parity
 
-Phần evaluation của project cố ý giữ nguyên hành vi của snapshot trong
-`CypherKD_ref`. Các thay đổi về cấu trúc chỉ gồm package import, type adapter cho
-JSONL của project và lazy import Neo4j để unit test có thể chạy khi chưa cài
-evaluation extra; thuật toán metric không được “cải tiến” riêng.
+Phần evaluation của project giữ nguyên công thức metric và aggregate của
+snapshot trong `CypherKD_ref`. Các adapter package/JSONL và lazy import Neo4j
+không thay đổi công thức. Hai guard của project cố ý khác reference:
+model-generated query chỉ chạy trong managed read transaction, và lỗi hạ tầng
+được surfacing trong summary thay vì bị trộn im lặng vào điểm 0.
 
 ## Nguồn chuẩn
 
@@ -22,8 +23,12 @@ evaluation extra; thuật toán metric không được “cải tiến” riêng
 - Execution accuracy giữ nguyên kiểm tra `ORDER BY`, multiset, hoán vị cột và 20
   lần lấy mẫu ngẫu nhiên cho output rộng hơn ba cột.
 - PSJS giữ nguyên parser regex case-sensitive và cách thêm biến `ntmp`/`rtmp`.
-- Metric exception do lớp `safe_compute` bắt được được lưu thành object `error`;
-  khi aggregate object này được tính là `0.0`.
+- Query-level `ClientError`/syntax/type error vẫn nhận `0.0`. Lỗi kết nối
+  hoặc session trong khi chấm từng record được `safe_compute` lưu thành object `error`;
+  aggregate vẫn tính object này là `0.0` để giữ parity, nhưng summary ghi
+  error count và CLI thoát status 1.
+- Tất cả query được chạy qua `session.execute_read`; write clause do model
+  sinh bị Neo4j từ chối và nhận `0.0` như query không executable.
 - Aggregate làm tròn bốn chữ số thập phân và trả về object `overall` giống
   reference.
 - CypherBench và Mind the Query dùng database name đổi `_` thành `.`. Neo4j
