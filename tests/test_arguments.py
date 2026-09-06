@@ -19,6 +19,11 @@ FULL_CONFIG_FAMILIES = {
     "qwen2.5_full_finetune": "qwen2.5_coder",
     "qwen3_full_finetune": "qwen3",
 }
+FULL_NORMALIZED_CONFIG_FAMILIES = {
+    "llama3_full_finetune_normalized_loss": "llama3",
+    "qwen2.5_full_finetune_normalized_loss": "qwen2.5_coder",
+    "qwen3_full_finetune_normalized_loss": "qwen3",
+}
 CONFIG_PATHS = sorted(
     path
     for family in MODEL_FAMILIES
@@ -31,6 +36,7 @@ ALL_TRAIN_CONFIG_PATHS = sorted(
         *MODEL_FAMILIES,
         *NORMALIZED_CONFIG_FAMILIES,
         *FULL_CONFIG_FAMILIES,
+        *FULL_NORMALIZED_CONFIG_FAMILIES,
     )
     for path in (Path("configs") / directory).glob("*.yaml")
 )
@@ -147,6 +153,41 @@ def test_full_finetune_configs_match_base_presets(full_directory: str, base_fami
         assert full_config == base_config
 
 
+@pytest.mark.parametrize(
+    ("normalized_directory", "base_family"),
+    FULL_NORMALIZED_CONFIG_FAMILIES.items(),
+)
+def test_full_normalized_configs_match_full_finetune_presets(
+    normalized_directory: str,
+    base_family: str,
+) -> None:
+    full_directory = normalized_directory.removesuffix("_normalized_loss")
+    full_paths = {path.name: path for path in (Path("configs") / full_directory).glob("*.yaml")}
+    normalized_paths = {
+        path.name: path for path in (Path("configs") / normalized_directory).glob("*.yaml")
+    }
+    assert set(normalized_paths) == BASELINE_CONFIG_NAMES
+
+    for name, normalized_path in normalized_paths.items():
+        full_config = yaml.safe_load(full_paths[name].read_text(encoding="utf-8"))
+        normalized_config = yaml.safe_load(normalized_path.read_text(encoding="utf-8"))
+        distillation_args, remaining_config = DistillationArguments.split_config(normalized_config)
+        assert distillation_args.uses_task_normalized_loss is True
+        assert distillation_args.selector_loss_weight == 0.5
+        assert "selector_loss_weight" not in remaining_config
+        assert normalized_config.pop("selector_loss_weight") == 0.5
+        assert normalized_config.pop("output_dir") == (
+            f"results/full_finetune_normalized_loss/{base_family}/{normalized_path.stem}"
+        )
+        full_config.pop("output_dir")
+        if "ref_model" in full_config:
+            assert normalized_config.pop("ref_model") == (
+                f"results/full_finetune_normalized_loss/{base_family}/teacher_full"
+            )
+            full_config.pop("ref_model")
+        assert normalized_config == full_config
+
+
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -174,7 +215,9 @@ def test_all_remote_base_models_are_pinned_to_immutable_commits(config_path: Pat
         if config["ref_model"] in PINNED_MODEL_REVISIONS:
             assert config["ref_model_revision"] == PINNED_MODEL_REVISIONS[config["ref_model"]]
         else:
-            assert config["ref_model"].startswith("results/full_finetune/")
+            assert config["ref_model"].startswith(
+                ("results/full_finetune/", "results/full_finetune_normalized_loss/")
+            )
             assert "ref_model_revision" not in config
 
 
@@ -221,19 +264,36 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
 
 
 @pytest.mark.parametrize(
-    ("teacher_path", "kd_path"),
+    ("teacher_path", "kd_path", "selector_weight"),
     [
-        ("configs/distillation/teacher_full_qwen3.yaml", "configs/qwen3_full_finetune/fkl.yaml"),
-        ("configs/distillation/teacher_full_llama3.yaml", "configs/llama3_full_finetune/fkl.yaml"),
+        ("configs/distillation/teacher_full_qwen3.yaml", "configs/qwen3_full_finetune/fkl.yaml", None),
+        ("configs/distillation/teacher_full_llama3.yaml", "configs/llama3_full_finetune/fkl.yaml", None),
         (
             "configs/distillation/teacher_full_qwen2.5_coder.yaml",
             "configs/qwen2.5_full_finetune/fkl.yaml",
+            None,
+        ),
+        (
+            "configs/distillation/teacher_full_qwen3_normalized_loss.yaml",
+            "configs/qwen3_full_finetune_normalized_loss/fkl.yaml",
+            0.5,
+        ),
+        (
+            "configs/distillation/teacher_full_llama3_normalized_loss.yaml",
+            "configs/llama3_full_finetune_normalized_loss/fkl.yaml",
+            0.5,
+        ),
+        (
+            "configs/distillation/teacher_full_qwen2.5_coder_normalized_loss.yaml",
+            "configs/qwen2.5_full_finetune_normalized_loss/fkl.yaml",
+            0.5,
         ),
     ],
 )
 def test_teacher_full_output_is_wired_into_full_finetune_configs(
     teacher_path: str,
     kd_path: str,
+    selector_weight: float | None,
 ) -> None:
     teacher = yaml.safe_load(Path(teacher_path).read_text(encoding="utf-8"))
     kd = yaml.safe_load(Path(kd_path).read_text(encoding="utf-8"))
@@ -250,6 +310,12 @@ def test_teacher_full_output_is_wired_into_full_finetune_configs(
     assert teacher["dataset"] == kd["dataset"]
     assert teacher["eval_dataset"] == kd["eval_dataset"]
     assert teacher["dataset_dir"] == kd["dataset_dir"]
+    if selector_weight is None:
+        assert "selector_loss_weight" not in teacher
+        assert "selector_loss_weight" not in kd
+    else:
+        assert teacher["selector_loss_weight"] == selector_weight
+        assert kd["selector_loss_weight"] == selector_weight
 
 
 @pytest.mark.parametrize(

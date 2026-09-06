@@ -963,3 +963,8 @@ Các preset full fine-tune không normalized nằm trong
 `configs/*_full_finetune` và ghi checkpoint sang `results/full_finetune`.
 Hướng dẫn train teacher/student và inference nằm tại
 [`docs/full-finetune.md`](docs/full-finetune.md).
+
+Preset kết hợp full fine-tune với task-normalized loss nằm trong
+`configs/*_full_finetune_normalized_loss`, ghi checkpoint sang
+`results/full_finetune_normalized_loss`; xem
+[`docs/full-finetune-normalized-loss.md`](docs/full-finetune-normalized-loss.md).

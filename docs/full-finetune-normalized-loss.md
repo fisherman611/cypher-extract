@@ -1,0 +1,43 @@
+# Full fine-tuning with task-normalized loss
+
+These presets combine full-parameter fine-tuning with the optional multitask
+loss normalization:
+
+- `configs/llama3_full_finetune_normalized_loss`
+- `configs/qwen2.5_full_finetune_normalized_loss`
+- `configs/qwen3_full_finetune_normalized_loss`
+
+Each folder mirrors all 12 student methods and sets both:
+
+```yaml
+finetuning_type: full
+selector_loss_weight: 0.5
+```
+
+Generator and selector losses are normalized separately and then combined with
+equal weight. Checkpoints are isolated from the other settings under:
+
+```text
+results/full_finetune_normalized_loss/<model-family>/<method>
+```
+
+Train the matching normalized full teacher before running a KD method:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train.sh \
+  configs/distillation/teacher_full_qwen3_normalized_loss.yaml
+RUN_GPUS=0,1 bash scripts/train.sh \
+  configs/qwen3_full_finetune_normalized_loss/fkl.yaml
+```
+
+Inference uses the same method name and the combined setting's checkpoint root:
+
+```bash
+python scripts/infer_two_stage.py \
+  --checkpoint-root results/full_finetune_normalized_loss \
+  --model-family qwen3 \
+  --methods fkl
+```
+
+Use `--methods teacher_full` explicitly to run the corresponding full teacher.
+The Qwen 2.5 checkpoint family remains `qwen2.5_coder`.
