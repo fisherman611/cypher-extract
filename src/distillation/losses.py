@@ -9,6 +9,24 @@ import torch.nn.functional as F
 IGNORE_INDEX = -100
 
 
+def causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Causal LM cross-entropy normalized over response tokens."""
+
+    if logits.ndim != 3 or labels.ndim != 2 or logits.shape[:2] != labels.shape:
+        raise ValueError("LM logits [batch, sequence, vocab] and labels [batch, sequence] must align.")
+    if labels.shape[1] < 2:
+        raise ValueError("At least two tokens are required for causal LM loss.")
+    shifted_logits = logits[:, :-1, :].float().contiguous()
+    shifted_labels = labels[:, 1:].contiguous()
+    if not torch.any(shifted_labels.ne(IGNORE_INDEX)):
+        raise ValueError("The LM batch contains no response tokens.")
+    return F.cross_entropy(
+        shifted_logits.view(-1, shifted_logits.shape[-1]),
+        shifted_labels.view(-1),
+        ignore_index=IGNORE_INDEX,
+    )
+
+
 def _sanitize_logits(logits: torch.Tensor) -> torch.Tensor:
     """Replace non-finite logits before probability/logarithm operations."""
 

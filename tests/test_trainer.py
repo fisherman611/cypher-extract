@@ -47,3 +47,13 @@ def test_eval_generation_splits_selector_and_generator_protocols() -> None:
     assert "(generator_rows, gen_kwargs)" in source
     assert "(selector_rows, {**gen_kwargs, **selector_generation_kwargs()})" in source
     assert "generated_tokens[indices, : task_tokens.size(1)] = task_tokens" in source
+
+
+def test_task_normalization_keeps_the_default_model_loss_path() -> None:
+    trainer_path = Path(__file__).parents[1] / "src" / "distillation" / "trainer.py"
+    source = trainer_path.read_text(encoding="utf-8")
+
+    assert "use_task_normalization = self.distillation_args.uses_task_normalized_loss" in source
+    assert "if use_task_normalization:" in source
+    assert "student_outputs = model(**inputs, output_hidden_states=output_hidden_states" in source
+    assert "lm_loss, _ = task_balanced_loss(" in source

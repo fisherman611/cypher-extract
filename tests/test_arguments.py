@@ -9,6 +9,11 @@ from distillation.cli import _validate_deepspeed_platform, _validate_required_pl
 from distillation.reference import create_reference_model_at_revision
 
 MODEL_FAMILIES = ("llama3", "qwen3", "qwen2.5_coder")
+NORMALIZED_CONFIG_FAMILIES = {
+    "llama3_normalized_loss": "llama3",
+    "qwen2.5_normalized_loss": "qwen2.5_coder",
+    "qwen3_normalized_loss": "qwen3",
+}
 CONFIG_PATHS = sorted(
     path
     for family in MODEL_FAMILIES
@@ -16,7 +21,7 @@ CONFIG_PATHS = sorted(
 )
 ALL_TRAIN_CONFIG_PATHS = sorted(
     path
-    for directory in ("distillation", *MODEL_FAMILIES)
+    for directory in ("distillation", *MODEL_FAMILIES, *NORMALIZED_CONFIG_FAMILIES)
     for path in (Path("configs") / directory).glob("*.yaml")
 )
 REDUNDANT_RUNTIME_DEFAULTS = {
@@ -72,6 +77,34 @@ def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     assert actual == BASELINE_CONFIG_NAMES
 
 
+@pytest.mark.parametrize(("normalized_directory", "base_family"), NORMALIZED_CONFIG_FAMILIES.items())
+def test_normalized_configs_match_base_presets(normalized_directory: str, base_family: str) -> None:
+    base_paths = {path.name: path for path in (Path("configs") / base_family).glob("*.yaml")}
+    normalized_paths = {
+        path.name: path for path in (Path("configs") / normalized_directory).glob("*.yaml")
+    }
+    assert set(normalized_paths) == BASELINE_CONFIG_NAMES
+
+    for name, normalized_path in normalized_paths.items():
+        base_config = yaml.safe_load(base_paths[name].read_text(encoding="utf-8"))
+        normalized_config = yaml.safe_load(normalized_path.read_text(encoding="utf-8"))
+        distillation_args, remaining_config = DistillationArguments.split_config(normalized_config)
+        assert distillation_args.uses_task_normalized_loss is True
+        assert distillation_args.selector_loss_weight == 0.5
+        assert "selector_loss_weight" not in remaining_config
+        assert normalized_config.pop("selector_loss_weight") == 0.5
+        assert normalized_config.pop("output_dir") == (
+            f"results/normalized_loss/{base_family}/{normalized_path.stem}"
+        )
+        base_config.pop("output_dir")
+        if "ref_model_adapters" in base_config:
+            assert normalized_config.pop("ref_model_adapters") == (
+                f"results/normalized_loss/{base_family}/teacher_lora"
+            )
+            base_config.pop("ref_model_adapters")
+        assert normalized_config == base_config
+
+
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -105,6 +138,18 @@ def test_all_remote_base_models_are_pinned_to_immutable_commits(config_path: Pat
         ("configs/distillation/teacher_lora_qwen3.yaml", "configs/qwen3/fkl.yaml"),
         ("configs/distillation/teacher_lora_llama3.yaml", "configs/llama3/fkl.yaml"),
         ("configs/distillation/teacher_lora_qwen2.5_coder.yaml", "configs/qwen2.5_coder/fkl.yaml"),
+        (
+            "configs/distillation/teacher_lora_qwen3_normalized_loss.yaml",
+            "configs/qwen3_normalized_loss/fkl.yaml",
+        ),
+        (
+            "configs/distillation/teacher_lora_llama3_normalized_loss.yaml",
+            "configs/llama3_normalized_loss/fkl.yaml",
+        ),
+        (
+            "configs/distillation/teacher_lora_qwen2.5_coder_normalized_loss.yaml",
+            "configs/qwen2.5_normalized_loss/fkl.yaml",
+        ),
     ],
 )
 def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, kd_path: str) -> None:
@@ -290,6 +335,19 @@ def test_explicit_sft_rejects_nonzero_kd_ratio() -> None:
         DistillationArguments(distill_method="sft", kd_ratio=0.5)
 
 
+def test_task_normalized_loss_is_opt_in() -> None:
+    default_args = DistillationArguments()
+    normalized_args = DistillationArguments(selector_loss_weight=0.5)
+    assert default_args.uses_task_normalized_loss is False
+    assert normalized_args.uses_task_normalized_loss is True
+
+
+@pytest.mark.parametrize("weight", [0.0, 1.0, -0.1, 1.1])
+def test_selector_loss_weight_must_keep_both_tasks_active(weight: float) -> None:
+    with pytest.raises(ValueError, match="selector_loss_weight"):
+        DistillationArguments(selector_loss_weight=weight)
+
+
 @pytest.mark.parametrize("field, value", [("amid_div_name", "js"), ("amid_div_order", "pp")])
 def test_amid_arguments_validate_choices(field: str, value: str) -> None:
     with pytest.raises(ValueError, match="amid"):
@@ -300,6 +358,7 @@ def test_amid_arguments_validate_choices(field: str, value: str) -> None:
 def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     distillation_args, _ = DistillationArguments.split_config(config)
+    assert distillation_args.uses_task_normalized_loss is False
     if distillation_args.uses_kd:
         expected_adapter = {
             "qwen3": "results/qwen3/teacher_lora",

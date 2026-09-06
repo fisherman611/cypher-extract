@@ -45,7 +45,7 @@ class StudentRolloutGenerator:
             output_scores=False,
         )
 
-    def extract_prompts(self, inputs: dict[str, torch.Tensor]) -> list[torch.Tensor]:
+    def _extract_prompts_with_rows(self, inputs: dict[str, torch.Tensor]) -> list[tuple[torch.Tensor, int]]:
         """Extract a rollout prompt before every contiguous assistant target.
 
         LlamaFactory labels all assistant and function-call turns while
@@ -58,9 +58,11 @@ class StudentRolloutGenerator:
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"].bool()
         labels = inputs["labels"]
-        prompts: list[torch.Tensor] = []
+        prompts: list[tuple[torch.Tensor, int]] = []
 
-        for row_ids, row_mask, row_labels in zip(input_ids, attention_mask, labels, strict=True):
+        for row_index, (row_ids, row_mask, row_labels) in enumerate(
+            zip(input_ids, attention_mask, labels, strict=True)
+        ):
             valid_ids = row_ids[row_mask]
             valid_labels = row_labels[row_mask]
             response_positions = torch.nonzero(valid_labels.ne(IGNORE_INDEX), as_tuple=False).flatten()
@@ -78,8 +80,11 @@ class StudentRolloutGenerator:
                 if span_start == 0:
                     raise ValueError("Cannot create a student rollout from an empty prompt.")
                 context_start = max(0, span_start - self.rollout_context_length)
-                prompts.append(valid_ids[context_start:span_start])
+                prompts.append((valid_ids[context_start:span_start], row_index))
         return prompts
+
+    def extract_prompts(self, inputs: dict[str, torch.Tensor]) -> list[torch.Tensor]:
+        return [prompt for prompt, _ in self._extract_prompts_with_rows(inputs)]
 
     def _left_pad_prompts(self, prompts: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size = len(prompts)
@@ -108,7 +113,8 @@ class StudentRolloutGenerator:
 
     @torch.no_grad()
     def generate(self, model: torch.nn.Module, inputs: dict[str, torch.Tensor]) -> list[dict[str, torch.Tensor]]:
-        prompts = self.extract_prompts(inputs)
+        prompt_records = self._extract_prompts_with_rows(inputs)
+        prompts = [prompt for prompt, _ in prompt_records]
         generation_input_ids, generation_attention_mask = self._left_pad_prompts(prompts)
         input_width = generation_input_ids.shape[1]
         max_new_tokens = self.cutoff_len - self.rollout_context_length
@@ -128,7 +134,10 @@ class StudentRolloutGenerator:
 
         sequences = generated.sequences if hasattr(generated, "sequences") else generated
         features: list[dict[str, torch.Tensor]] = []
-        for prompt, sequence in zip(prompts, sequences, strict=True):
+        task_ids = inputs.get("task_ids")
+        if task_ids is not None and (task_ids.ndim != 1 or task_ids.shape[0] != inputs["input_ids"].shape[0]):
+            raise ValueError("task_ids must contain one value per rollout input row.")
+        for (prompt, row_index), sequence in zip(prompt_records, sequences, strict=True):
             # `prompt` is unpadded. Keep all of its tokens: some chat
             # templates deliberately use the EOS token between messages, so
             # removing values equal to pad_token_id would corrupt context.
@@ -143,11 +152,12 @@ class StudentRolloutGenerator:
             response = response[:available_response_length]
             full_ids = torch.cat((stored_prompt, response), dim=0)
             labels = torch.cat((torch.full_like(stored_prompt, IGNORE_INDEX), response), dim=0)
-            features.append(
-                {
-                    "input_ids": full_ids.detach().cpu(),
-                    "attention_mask": torch.ones_like(full_ids, device="cpu"),
-                    "labels": labels.detach().cpu(),
-                }
-            )
+            feature = {
+                "input_ids": full_ids.detach().cpu(),
+                "attention_mask": torch.ones_like(full_ids, device="cpu"),
+                "labels": labels.detach().cpu(),
+            }
+            if task_ids is not None:
+                feature["task_id"] = task_ids[row_index].detach().cpu()
+            features.append(feature)
         return features

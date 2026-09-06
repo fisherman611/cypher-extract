@@ -953,3 +953,8 @@ python scripts/infer_two_stage.py \
 
 Tài liệu chi tiết về merge policy và output schema nằm tại
 [`docs/two-stage-inference.md`](docs/two-stage-inference.md).
+
+Các preset task-normalized loss được đặt trong `configs/*_normalized_loss` và
+ghi checkpoint sang cây `results/normalized_loss`. Cách train teacher, student
+và inference được mô tả tại
+[`docs/normalized-loss.md`](docs/normalized-loss.md).

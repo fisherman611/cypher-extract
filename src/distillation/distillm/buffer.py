@@ -28,10 +28,12 @@ class ReplayBuffer:
         if missing:
             raise KeyError(f"Replay feature is missing: {', '.join(sorted(missing))}.")
         item: TensorFeature = {}
-        for key in required:
+        stored_fields = required | ({"task_id"} if "task_id" in feature else set())
+        for key in stored_fields:
             value = feature[key]
-            if not isinstance(value, torch.Tensor) or value.ndim != 1:
-                raise ValueError(f"Replay field {key!r} must be a one-dimensional tensor.")
+            expected_ndim = 0 if key == "task_id" else 1
+            if not isinstance(value, torch.Tensor) or value.ndim != expected_ndim:
+                raise ValueError(f"Replay field {key!r} must be a {expected_ndim}-dimensional tensor.")
             item[key] = value.detach().to(device="cpu").clone()
         if not (item["input_ids"].shape == item["attention_mask"].shape == item["labels"].shape):
             raise ValueError("Replay input_ids, attention_mask, and labels must have equal length.")
