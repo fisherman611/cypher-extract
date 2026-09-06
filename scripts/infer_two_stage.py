@@ -20,6 +20,7 @@ from schema_grounding.inference.checkpoints import (  # noqa: E402
     DEFAULT_CHECKPOINT_ROOT,
     DEFAULT_METHODS,
     DEFAULT_MODEL_FAMILY,
+    SUPPORTED_METHODS,
     resolve_checkpoint_directory,
     resolve_last_checkpoint,
 )
@@ -68,7 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         default="all",
-        help="Comma-separated methods or 'all'. 'all' includes teacher_lora.",
+        help=(
+            "Comma-separated methods or 'all'. 'all' preserves the default LoRA matrix; "
+            "teacher_full can be requested explicitly."
+        ),
     )
     parser.add_argument(
         "--datasets",
@@ -115,7 +119,7 @@ def validate_choices(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     methods = list(DEFAULT_METHODS) if args.methods == "all" else comma_separated(args.methods)
     if not methods:
         raise ValueError("--methods must contain at least one method")
-    unknown_methods = sorted(set(methods).difference(DEFAULT_METHODS))
+    unknown_methods = sorted(set(methods).difference(SUPPORTED_METHODS))
     if unknown_methods:
         raise ValueError(f"Unknown methods: {', '.join(unknown_methods)}")
     if len(methods) != len(set(methods)):

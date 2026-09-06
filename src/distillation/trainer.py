@@ -26,7 +26,12 @@ from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids, selector_generation_kwargs
 from .losses import causal_lm_loss, compute_distillation_loss, compute_hpd_loss
 from .prepare_data import LAYOUT_FILE
-from .resume import validate_fresh_output_dir, validate_resume_checkpoint, write_resume_manifest
+from .resume import (
+    full_model_checkpoint_identity,
+    validate_fresh_output_dir,
+    validate_resume_checkpoint,
+    write_resume_manifest,
+)
 from .sampling import TemplateDistributedBatchSampler, selector_droppable_batch_range
 from .task_balancing import task_balanced_loss
 from .utils import print_rank
@@ -217,6 +222,9 @@ class KDTrainer(CustomSeq2SeqTrainer):
             "eval_dataset": _dataset_identity(self.eval_dataset),
             "student_model": _model_identity(self.model, self.accelerator),
             "teacher_model": _model_identity(self.ref_model, self.accelerator),
+            "teacher_checkpoint": full_model_checkpoint_identity(
+                getattr(self.finetuning_args, "ref_model", None)
+            ),
             "teacher_adapters": _adapter_identity(getattr(self.finetuning_args, "ref_model_adapters", None)),
             "tokenizer": _tokenizer_identity(self.processing_class),
             "deepspeed_config": _config_file_identity(self.args.deepspeed),

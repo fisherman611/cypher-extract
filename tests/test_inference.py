@@ -10,6 +10,7 @@ from distillation.utils import seed_everything
 from schema_grounding.inference import model as inference_model
 from schema_grounding.inference.checkpoints import (
     DEFAULT_METHODS,
+    SUPPORTED_METHODS,
     LastCheckpoint,
     resolve_checkpoint_directory,
     resolve_last_checkpoint,
@@ -106,6 +107,13 @@ def relation(source: str, relation_type: str, target: str) -> dict:
 def test_all_methods_include_teacher() -> None:
     assert "teacher_lora" in DEFAULT_METHODS
     assert len(DEFAULT_METHODS) == 13
+    assert "teacher_full" in SUPPORTED_METHODS
+
+
+def test_full_teacher_can_be_requested_explicitly() -> None:
+    methods, datasets = validate_choices(SimpleNamespace(methods="teacher_full", datasets="cypherbench"))
+    assert methods == ["teacher_full"]
+    assert datasets == ["cypherbench"]
 
 
 def test_selector_label_parser_is_strict() -> None:

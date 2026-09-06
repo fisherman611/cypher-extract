@@ -25,6 +25,7 @@ DEFAULT_METHODS = (
     "distillm_adaptive_sfkl",
     "distillm_adaptive_srkl",
 )
+SUPPORTED_METHODS = (*DEFAULT_METHODS, "teacher_full")
 _CHECKPOINT_RE = re.compile(r"(?:^|/)checkpoint-(?P<step>\d+)$")
 _FULL_HASH_FILES = frozenset(
     {
@@ -157,8 +158,8 @@ def resolve_last_checkpoint(
     checkpoint_root: str | Path = DEFAULT_CHECKPOINT_ROOT,
     model_family: str = DEFAULT_MODEL_FAMILY,
 ) -> LastCheckpoint:
-    if method not in DEFAULT_METHODS:
-        raise ValueError(f"Unsupported method {method!r}; expected one of {', '.join(DEFAULT_METHODS)}")
+    if method not in SUPPORTED_METHODS:
+        raise ValueError(f"Unsupported method {method!r}; expected one of {', '.join(SUPPORTED_METHODS)}")
     if model_family not in SUPPORTED_MODEL_FAMILIES:
         raise ValueError(
             f"Unsupported model family {model_family!r}; expected one of {', '.join(SUPPORTED_MODEL_FAMILIES)}"

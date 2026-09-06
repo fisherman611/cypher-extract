@@ -958,3 +958,8 @@ Các preset task-normalized loss được đặt trong `configs/*_normalized_los
 ghi checkpoint sang cây `results/normalized_loss`. Cách train teacher, student
 và inference được mô tả tại
 [`docs/normalized-loss.md`](docs/normalized-loss.md).
+
+Các preset full fine-tune không normalized nằm trong
+`configs/*_full_finetune` và ghi checkpoint sang `results/full_finetune`.
+Hướng dẫn train teacher/student và inference nằm tại
+[`docs/full-finetune.md`](docs/full-finetune.md).

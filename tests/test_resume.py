@@ -6,6 +6,7 @@ import pytest
 from distillation.resume import (
     ResumeCheckpointError,
     canonical_resume_config,
+    full_model_checkpoint_identity,
     validate_fresh_output_dir,
     validate_resume_checkpoint,
     write_resume_manifest,
@@ -251,3 +252,15 @@ def test_resume_manifest_rejects_changed_runtime_content(tmp_path: Path) -> None
                 "teacher_adapters": [{"sha256": "new"}],
             },
         )
+
+
+def test_full_teacher_checkpoint_identity_changes_with_weights(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher_full"
+    _write(teacher / "config.json", "{}")
+    _write(teacher / "model.safetensors", "first")
+    first = full_model_checkpoint_identity(str(teacher))
+
+    _write(teacher / "model.safetensors", "second")
+    second = full_model_checkpoint_identity(str(teacher))
+
+    assert first != second

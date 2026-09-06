@@ -14,6 +14,11 @@ NORMALIZED_CONFIG_FAMILIES = {
     "qwen2.5_normalized_loss": "qwen2.5_coder",
     "qwen3_normalized_loss": "qwen3",
 }
+FULL_CONFIG_FAMILIES = {
+    "llama3_full_finetune": "llama3",
+    "qwen2.5_full_finetune": "qwen2.5_coder",
+    "qwen3_full_finetune": "qwen3",
+}
 CONFIG_PATHS = sorted(
     path
     for family in MODEL_FAMILIES
@@ -21,7 +26,12 @@ CONFIG_PATHS = sorted(
 )
 ALL_TRAIN_CONFIG_PATHS = sorted(
     path
-    for directory in ("distillation", *MODEL_FAMILIES, *NORMALIZED_CONFIG_FAMILIES)
+    for directory in (
+        "distillation",
+        *MODEL_FAMILIES,
+        *NORMALIZED_CONFIG_FAMILIES,
+        *FULL_CONFIG_FAMILIES,
+    )
     for path in (Path("configs") / directory).glob("*.yaml")
 )
 REDUNDANT_RUNTIME_DEFAULTS = {
@@ -105,6 +115,38 @@ def test_normalized_configs_match_base_presets(normalized_directory: str, base_f
         assert normalized_config == base_config
 
 
+@pytest.mark.parametrize(("full_directory", "base_family"), FULL_CONFIG_FAMILIES.items())
+def test_full_finetune_configs_match_base_presets(full_directory: str, base_family: str) -> None:
+    base_paths = {path.name: path for path in (Path("configs") / base_family).glob("*.yaml")}
+    full_paths = {path.name: path for path in (Path("configs") / full_directory).glob("*.yaml")}
+    assert set(full_paths) == BASELINE_CONFIG_NAMES
+
+    for name, full_path in full_paths.items():
+        base_config = yaml.safe_load(base_paths[name].read_text(encoding="utf-8"))
+        full_config = yaml.safe_load(full_path.read_text(encoding="utf-8"))
+        distillation_args, _ = DistillationArguments.split_config(full_config)
+        assert distillation_args.uses_task_normalized_loss is False
+        assert full_config.pop("output_dir") == f"results/full_finetune/{base_family}/{full_path.stem}"
+        base_config.pop("output_dir")
+
+        assert full_config.pop("finetuning_type") == "full"
+        base_config.pop("finetuning_type")
+        for key in ("lora_target", "lora_rank", "lora_alpha", "lora_dropout"):
+            base_config.pop(key, None)
+            assert key not in full_config
+
+        assert full_config.pop("learning_rate") == 2e-5
+        base_config.pop("learning_rate")
+        if "ref_model_adapters" in base_config:
+            assert full_config.pop("ref_model") == f"results/full_finetune/{base_family}/teacher_full"
+            base_config.pop("ref_model")
+            base_config.pop("ref_model_revision")
+            base_config.pop("ref_model_adapters")
+            assert "ref_model_revision" not in full_config
+            assert "ref_model_adapters" not in full_config
+        assert full_config == base_config
+
+
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -129,7 +171,11 @@ def test_all_remote_base_models_are_pinned_to_immutable_commits(config_path: Pat
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["model_revision"] == PINNED_MODEL_REVISIONS[config["model_name_or_path"]]
     if "ref_model" in config:
-        assert config["ref_model_revision"] == PINNED_MODEL_REVISIONS[config["ref_model"]]
+        if config["ref_model"] in PINNED_MODEL_REVISIONS:
+            assert config["ref_model_revision"] == PINNED_MODEL_REVISIONS[config["ref_model"]]
+        else:
+            assert config["ref_model"].startswith("results/full_finetune/")
+            assert "ref_model_revision" not in config
 
 
 @pytest.mark.parametrize(
@@ -172,6 +218,38 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert teacher["warmup_ratio"] == 0.1
     assert "warmup_steps" not in teacher
     assert "lr_scheduler_kwargs" not in teacher
+
+
+@pytest.mark.parametrize(
+    ("teacher_path", "kd_path"),
+    [
+        ("configs/distillation/teacher_full_qwen3.yaml", "configs/qwen3_full_finetune/fkl.yaml"),
+        ("configs/distillation/teacher_full_llama3.yaml", "configs/llama3_full_finetune/fkl.yaml"),
+        (
+            "configs/distillation/teacher_full_qwen2.5_coder.yaml",
+            "configs/qwen2.5_full_finetune/fkl.yaml",
+        ),
+    ],
+)
+def test_teacher_full_output_is_wired_into_full_finetune_configs(
+    teacher_path: str,
+    kd_path: str,
+) -> None:
+    teacher = yaml.safe_load(Path(teacher_path).read_text(encoding="utf-8"))
+    kd = yaml.safe_load(Path(kd_path).read_text(encoding="utf-8"))
+
+    assert teacher["distill_method"] == "sft"
+    assert teacher["kd_ratio"] == 0.0
+    assert teacher["finetuning_type"] == "full"
+    assert not any(key.startswith("lora_") for key in teacher)
+    assert "ref_model" not in teacher
+    assert "ref_model_adapters" not in teacher
+    assert teacher["output_dir"] == kd["ref_model"]
+    assert "ref_model_revision" not in kd
+    assert "ref_model_adapters" not in kd
+    assert teacher["dataset"] == kd["dataset"]
+    assert teacher["eval_dataset"] == kd["eval_dataset"]
+    assert teacher["dataset_dir"] == kd["dataset_dir"]
 
 
 @pytest.mark.parametrize(
@@ -313,6 +391,22 @@ def test_reference_model_uses_its_own_revision_and_restores_student_revision() -
 
     assert result == "teacher"
     assert observed == {"revision": "teacher-commit", "finetuning_args": finetuning_args}
+    assert model_args.model_revision == "student-commit"
+
+
+def test_local_reference_model_does_not_inherit_student_revision(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher_full"
+    teacher.mkdir()
+    model_args = SimpleNamespace(model_revision="student-commit")
+    finetuning_args = SimpleNamespace(ref_model=str(teacher))
+    observed = {}
+
+    def factory(received_model_args, _finetuning_args):
+        observed["revision"] = received_model_args.model_revision
+        return "teacher"
+
+    assert create_reference_model_at_revision(model_args, finetuning_args, None, factory) == "teacher"
+    assert observed["revision"] is None
     assert model_args.model_revision == "student-commit"
 
 
