@@ -90,6 +90,11 @@ def test_scheduler_fills_buffer_with_fresh_rollouts_before_replay() -> None:
     assert scheduler.choose(progress=0.5, replay_size=3, capacity=10, batch_size=2) is RolloutSource.FRESH
 
 
+def test_rollout_source_string_form_is_its_serialized_value() -> None:
+    assert str(RolloutSource.FRESH) == "fresh"
+    assert RolloutSource.FRESH.value == "fresh"
+
+
 class _Tokenizer:
     pad_token_id = 0
     eos_token_id = 2

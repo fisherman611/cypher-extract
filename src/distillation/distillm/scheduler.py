@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import numpy as np
 
 
-class RolloutSource(str, Enum):
+class RolloutSource(StrEnum):
     DATASET = "dataset"
     FRESH = "fresh"
     REPLAY = "replay"
