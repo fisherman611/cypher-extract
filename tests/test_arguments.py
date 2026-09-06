@@ -86,6 +86,16 @@ PINNED_MODEL_REVISIONS = {
 }
 
 
+def test_yaml_configs_do_not_have_utf8_bom() -> None:
+    bom = b"\xef\xbb\xbf"
+    offenders = [
+        str(path)
+        for path in sorted(Path("configs").rglob("*.yaml"))
+        if path.read_bytes().startswith(bom)
+    ]
+    assert offenders == []
+
+
 @pytest.mark.parametrize("family", MODEL_FAMILIES)
 def test_each_model_family_has_all_baseline_configs(family: str) -> None:
     config_paths = list((Path("configs") / family).glob("*.yaml"))
@@ -567,9 +577,10 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
 
 
 def test_unresolved_required_placeholders_are_rejected() -> None:
-    with pytest.raises(ValueError, match="ref_model_adapters, dataset, eval_dataset"):
+    with pytest.raises(ValueError, match="ref_model, ref_model_adapters, dataset, eval_dataset"):
         _validate_required_placeholders(
             {
+                "ref_model": "REPLACE_WITH_TEACHER_MODEL",
                 "ref_model_adapters": "REPLACE_WITH_TEACHER_ADAPTER",
                 "dataset": "REPLACE_WITH_TRAIN_DATASET",
                 "eval_dataset": "REPLACE_WITH_EVAL_DATASET",
@@ -580,6 +591,7 @@ def test_unresolved_required_placeholders_are_rejected() -> None:
 def test_overridden_required_placeholders_are_accepted() -> None:
     _validate_required_placeholders(
         {
+            "ref_model": "Qwen/Qwen3-4B-Instruct-2507",
             "ref_model_adapters": "hf://owner/repo/adapter",
             "dataset": "my_train",
             "eval_dataset": "my_eval",
@@ -592,6 +604,8 @@ def test_sft_does_not_require_teacher_placeholder() -> None:
         {
             "distill_method": "sft",
             "kd_ratio": 0.0,
+            "ref_model": "REPLACE_WITH_TEACHER_MODEL",
+            "ref_model_adapters": "REPLACE_WITH_TEACHER_ADAPTER",
             "dataset": "my_train",
             "eval_dataset": "my_val",
         }
