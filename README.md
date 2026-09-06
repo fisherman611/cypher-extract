@@ -437,7 +437,7 @@ RUN_GPUS=0,1 bash scripts/train_all_llama3_lora.sh
 Chạy inference cho model family Llama 3:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_llama3.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_llama3_lora.sh \
   --checkpoint-root results
 ```
 
@@ -467,7 +467,7 @@ RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder_lora.sh
 Chạy inference cho các checkpoint local dưới model family `qwen2.5_coder`:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen2_5_coder.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen2_5_coder_lora.sh \
   --checkpoint-root results
 ```
 
@@ -635,7 +635,7 @@ Chạy đủ 13 model trên cả ba benchmark bằng GPU 0:
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3_lora.sh \
   --selector-batch-size 128 \
   --generator-batch-size 16 \
   --dtype bfloat16 \
@@ -650,7 +650,7 @@ sample, sau đó ghi nhớ batch size an toàn cho các batch có cùng token bu
 Để dùng checkpoint root local khác:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3.sh \
+CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3_lora.sh \
   --checkpoint-root /mnt/checkpoints/cypher-extract/results \
   --selector-batch-size 128 \
   --generator-batch-size 16
@@ -973,3 +973,7 @@ Các script chạy toàn bộ tuân theo mẫu
 `scripts/train_all_<family>_<setting>.sh`, với `family` là `qwen3`, `llama3`
 hoặc `qwen2_5_coder`; `setting` là `lora`, `lora_normalized`,
 `full_finetune` hoặc `full_finetune_normalized`.
+
+Inference dùng convention tương ứng
+`scripts/infer_all_<family>_<setting>.sh`. Mỗi setting tự chọn đúng checkpoint
+root, output root và loại teacher (`teacher_lora` hoặc `teacher_full`).

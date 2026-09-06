@@ -47,11 +47,10 @@ Inference can reuse the existing model-family and method names by changing
 only the checkpoint root:
 
 ```bash
-python scripts/infer_two_stage.py \
-  --checkpoint-root results/normalized_loss \
-  --model-family qwen3 \
-  --methods fkl
+bash scripts/infer_all_qwen3_lora_normalized.sh
 ```
+
+Pass `--methods fkl` to run only one method.
 
 The Qwen 2.5 config directory is named `qwen2.5_normalized_loss`, while its
 checkpoint model-family remains `qwen2.5_coder` for inference compatibility.

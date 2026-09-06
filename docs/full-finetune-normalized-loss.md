@@ -39,11 +39,9 @@ RUN_GPUS=0,1 bash scripts/train_all_qwen3_full_finetune_normalized.sh
 Inference uses the same method name and the combined setting's checkpoint root:
 
 ```bash
-python scripts/infer_two_stage.py \
-  --checkpoint-root results/full_finetune_normalized_loss \
-  --model-family qwen3 \
-  --methods fkl
+bash scripts/infer_all_qwen3_full_finetune_normalized.sh
 ```
 
-Use `--methods teacher_full` explicitly to run the corresponding full teacher.
+This wrapper includes `teacher_full` and all 12 student methods. Pass
+`--methods fkl` to run only one method.
 The Qwen 2.5 checkpoint family remains `qwen2.5_coder`.

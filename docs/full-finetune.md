@@ -37,12 +37,10 @@ Student inference uses the existing method names with a different checkpoint
 root:
 
 ```bash
-python scripts/infer_two_stage.py \
-  --checkpoint-root results/full_finetune \
-  --model-family qwen3 \
-  --methods fkl
+bash scripts/infer_all_qwen3_full_finetune.sh
 ```
 
-To infer with the full teacher itself, use `--methods teacher_full` explicitly.
+This wrapper includes `teacher_full` and all 12 student methods. Pass
+`--methods fkl` to run only one method.
 The Qwen 2.5 config directory omits `_coder` for consistency with the normalized
 presets, while its checkpoint model-family remains `qwen2.5_coder`.
