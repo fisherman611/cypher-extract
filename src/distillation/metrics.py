@@ -188,6 +188,28 @@ def compute_task_metrics(predictions: Sequence[str], references: Sequence[str]) 
     return metrics
 
 
+def decode_task_outputs(tokenizer: Any, predictions: Any, label_ids: Any) -> tuple[list[str], list[str]]:
+    """Decode gathered generation outputs and labels using the training metric convention."""
+
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]
+    if isinstance(label_ids, tuple):
+        label_ids = label_ids[0]
+    predictions = np.asarray(predictions)
+    labels = np.asarray(label_ids)
+    if predictions.ndim != 2 or labels.ndim != 2:
+        raise ValueError("Task outputs require 2-D generated token IDs and labels.")
+
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = tokenizer.eos_token_id
+    labels = np.where(labels != IGNORE_INDEX, labels, pad_token_id)
+    predictions = np.where(predictions != IGNORE_INDEX, predictions, pad_token_id)
+    decoded_predictions = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    return decoded_predictions, decoded_labels
+
+
 @dataclass
 class ComputeTaskMetrics:
     """Decode generated token IDs and dispatch rows to their task metric."""
@@ -195,19 +217,9 @@ class ComputeTaskMetrics:
     tokenizer: Any
 
     def __call__(self, eval_prediction: Any) -> dict[str, float]:
-        predictions = eval_prediction.predictions
-        if isinstance(predictions, tuple):
-            predictions = predictions[0]
-        predictions = np.asarray(predictions)
-        if predictions.ndim != 2:
-            raise ValueError("Task metrics require predict_with_generate=true (2-D generated token IDs).")
-
-        labels = np.asarray(eval_prediction.label_ids)
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id
-        labels = np.where(labels != IGNORE_INDEX, labels, pad_token_id)
-        predictions = np.where(predictions != IGNORE_INDEX, predictions, pad_token_id)
-        decoded_predictions = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
-        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_predictions, decoded_labels = decode_task_outputs(
+            self.tokenizer,
+            eval_prediction.predictions,
+            eval_prediction.label_ids,
+        )
         return compute_task_metrics(decoded_predictions, decoded_labels)

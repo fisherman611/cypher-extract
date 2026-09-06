@@ -977,3 +977,22 @@ hoặc `qwen2_5_coder`; `setting` là `lora`, `lora_normalized`,
 Inference dùng convention tương ứng
 `scripts/infer_all_<family>_<setting>.sh`. Mỗi setting tự chọn đúng checkpoint
 root, output root và loại teacher (`teacher_lora` hoặc `teacher_full`).
+
+### Training logs and per-epoch evaluation artifacts
+
+Training prints the aggregate `loss` at `logging_steps` and also reports
+`train_lm_loss` plus `train_distill_loss` for KD runs. FDD runs additionally
+report `train_token_kd_loss` and `train_feature_loss`. The `train_all_*` launchers
+mirror this console output into a separate log file for each method.
+
+With `eval_strategy: epoch` and `predict_with_generate: true`, each validation
+pass reuses its generated outputs to write:
+
+- `<output_dir>/eval/epoch-<epoch>-step-<step>/predictions.jsonl`
+- `<output_dir>/eval/epoch-<epoch>-step-<step>/metrics.json`
+
+The explicit final evaluation is stored separately under
+`<output_dir>/eval/final-step-<step>/`. Set `save_eval_predictions=false` on the
+training command line to disable these artifacts. These are validation-set
+generation artifacts; full two-stage inference over benchmark test sets remains
+an explicit `infer_all_*` operation.

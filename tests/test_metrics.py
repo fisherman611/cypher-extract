@@ -1,4 +1,6 @@
-from distillation.metrics import compute_task_metrics, extract_cypher
+import numpy as np
+
+from distillation.metrics import compute_task_metrics, decode_task_outputs, extract_cypher
 
 
 def test_extract_cypher_from_json_and_fence() -> None:
@@ -44,3 +46,23 @@ def test_selector_training_metric_uses_strict_inference_parser() -> None:
 
     assert metrics["selector_count"] == 1
     assert metrics["selector_accuracy"] == 0.0
+
+
+def test_decode_task_outputs_replaces_ignored_ids_before_decoding() -> None:
+    class Tokenizer:
+        pad_token_id = 0
+        eos_token_id = 2
+
+        @staticmethod
+        def batch_decode(rows, skip_special_tokens):
+            assert skip_special_tokens is True
+            return [" ".join(str(token) for token in row if token != 0) for row in rows]
+
+    predictions, references = decode_task_outputs(
+        Tokenizer(),
+        np.array([[4, 5, -100]]),
+        np.array([[-100, 6, 7]]),
+    )
+
+    assert predictions == ["4 5"]
+    assert references == ["6 7"]

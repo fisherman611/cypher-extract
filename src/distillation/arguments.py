@@ -47,6 +47,9 @@ class DistillationArguments:
     amid_lam: float = 0.5
     hpd_sample_in_fp32: bool = True
     bdl_lambda: float = 0.9
+    # Persist decoded predictions/references and metrics from every generative
+    # validation pass under output_dir/eval/ without running generation twice.
+    save_eval_predictions: bool = True
 
     # DistiLLM student rollout controls.
     student_gen: bool = False

@@ -25,6 +25,7 @@ from .distillm import AdaptiveRolloutScheduler, ReplayBuffer, RolloutSource, Stu
 from .fdd import causal_response_mask, fdd_loss
 from .generation import resolve_eos_token_ids, selector_generation_kwargs
 from .losses import causal_lm_loss, compute_distillation_loss, compute_hpd_loss
+from .metrics import decode_task_outputs
 from .prepare_data import LAYOUT_FILE
 from .resume import (
     full_model_checkpoint_identity,
@@ -188,7 +189,9 @@ class KDTrainer(CustomSeq2SeqTrainer):
         self.rollout_scheduler: AdaptiveRolloutScheduler | None = None
         self.rollout_generator: StudentRolloutGenerator | None = None
         self._stored_hpd_metrics: defaultdict[str, list[float]] = defaultdict(list)
+        self._stored_loss_metrics: defaultdict[str, list[torch.Tensor]] = defaultdict(list)
         self._rollout_counts = {source.value: 0 for source in RolloutSource}
+        self._last_eval_artifact_dir: Path | None = None
         if self.distillation_args.is_adaptive:
             rank_seed = int(self.args.seed) + int(self.args.process_index)
             self.replay_buffer = ReplayBuffer(self.distillation_args.capacity, seed=rank_seed)
@@ -377,16 +380,26 @@ class KDTrainer(CustomSeq2SeqTrainer):
         for key, value in metrics.items():
             self._stored_hpd_metrics[key].append(float(value))
 
+    def _store_loss_metrics(self, metrics: dict[str, torch.Tensor]) -> None:
+        for key, value in metrics.items():
+            self._stored_loss_metrics[key].append(value.detach().float())
+
     def log(self, logs: dict[str, float], *args, **kwargs) -> None:
-        if self._stored_hpd_metrics:
+        # Trainer calls log() for train, eval, and summary records. Only attach
+        # micro-batch loss components to the matching periodic train record.
+        if "loss" in logs and (self._stored_loss_metrics or self._stored_hpd_metrics):
             logs = dict(logs)
             metric_values = []
             metric_keys = []
+            for key, values in self._stored_loss_metrics.items():
+                metric_keys.append(key)
+                metric_values.append(torch.stack(values).mean().to(self.accelerator.device))
             for key, values in self._stored_hpd_metrics.items():
                 metric_keys.append(key)
                 metric_values.append(torch.tensor(values, dtype=torch.float32, device=self.accelerator.device).mean())
             reduced_values = self.accelerator.reduce(torch.stack(metric_values), "mean").tolist()
             logs.update(dict(zip(metric_keys, reduced_values, strict=True)))
+            self._stored_loss_metrics.clear()
             self._stored_hpd_metrics.clear()
         super().log(logs, *args, **kwargs)
 
@@ -451,6 +464,9 @@ class KDTrainer(CustomSeq2SeqTrainer):
             if student_outputs.loss is None:
                 raise ValueError("The student model did not return an LM loss.")
             lm_loss = student_outputs.loss
+
+        if model.training:
+            self._store_loss_metrics({"train_lm_loss": lm_loss})
 
         # SFT is deliberately teacher-free.  This also makes every existing
         # KD method with kd_ratio=0 a true SFT run: no teacher forward, no KD
@@ -558,10 +574,71 @@ class KDTrainer(CustomSeq2SeqTrainer):
         else:
             kd_component = kd_loss
 
+        loss_metrics = {"train_distill_loss": kd_component}
+        if self.distillation_args.uses_fdd:
+            loss_metrics.update(
+                train_token_kd_loss=kd_loss,
+                train_feature_loss=feature_loss,
+            )
+        self._store_loss_metrics(loss_metrics)
+
         loss = (1.0 - self.distillation_args.kd_ratio) * lm_loss + self.distillation_args.kd_ratio * kd_component
         return (loss, student_outputs) if return_outputs else loss
 
+    def _eval_artifact_directory(self) -> Path:
+        step = int(self.state.global_step)
+        if self.is_in_train:
+            epoch = float(self.state.epoch or 0.0)
+            epoch_label = f"{epoch:.4f}".rstrip("0").rstrip(".")
+            run_name = f"epoch-{epoch_label}-step-{step}"
+        else:
+            run_name = f"final-step-{step}"
+        return Path(self.args.output_dir, "eval", run_name)
+
+    def evaluation_loop(
+        self,
+        dataloader: DataLoader,
+        description: str,
+        prediction_loss_only: bool | None = None,
+        ignore_keys: list[str] | None = None,
+        metric_key_prefix: str = "eval",
+    ):
+        output = super().evaluation_loop(
+            dataloader,
+            description,
+            prediction_loss_only=prediction_loss_only,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+        self._last_eval_artifact_dir = None
+        if (
+            self.distillation_args.save_eval_predictions
+            and self.args.should_save
+            and output.predictions is not None
+            and output.label_ids is not None
+        ):
+            predictions, references = decode_task_outputs(
+                self.processing_class,
+                output.predictions,
+                output.label_ids,
+            )
+            artifact_dir = self._eval_artifact_directory()
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            with (artifact_dir / "predictions.jsonl").open("w", encoding="utf-8") as handle:
+                for index, (prediction, reference) in enumerate(zip(predictions, references, strict=True)):
+                    handle.write(
+                        json.dumps(
+                            {"index": index, "prediction": prediction, "reference": reference},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            self._last_eval_artifact_dir = artifact_dir
+            print_rank(f"Saved eval predictions to {artifact_dir}")
+        return output
+
     def evaluate(self, *args, **kwargs):
+        self._last_eval_artifact_dir = None
         original_padding_side = self.processing_class.padding_side
         if self.args.predict_with_generate:
             self.processing_class.padding_side = "left"
@@ -578,6 +655,11 @@ class KDTrainer(CustomSeq2SeqTrainer):
             metrics.update({f"eval_rollout_{key}_steps": value for key, value in self._rollout_counts.items()})
             print_rank(
                 f"DistiLLM threshold={self.rollout_scheduler.threshold:.2f} after eval_loss={metrics['eval_loss']:.6f}"
+            )
+        if self._last_eval_artifact_dir is not None:
+            (self._last_eval_artifact_dir / "metrics.json").write_text(
+                json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
             )
         return metrics
 

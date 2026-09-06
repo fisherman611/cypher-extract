@@ -218,6 +218,16 @@ def test_all_train_configs_keep_all_checkpoints(config_path: Path) -> None:
 
 
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
+def test_all_train_configs_log_and_run_generative_eval_each_epoch(config_path: Path) -> None:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["logging_steps"] == 20
+    assert config["do_eval"] is True
+    assert config["predict_with_generate"] is True
+    assert config["save_strategy"] == "epoch"
+    assert config["eval_strategy"] == "epoch"
+
+
+@pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_all_remote_base_models_are_pinned_to_immutable_commits(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["model_revision"] == PINNED_MODEL_REVISIONS[config["model_name_or_path"]]
@@ -510,6 +520,10 @@ def test_task_normalized_loss_is_opt_in() -> None:
     normalized_args = DistillationArguments(selector_loss_weight=0.5)
     assert default_args.uses_task_normalized_loss is False
     assert normalized_args.uses_task_normalized_loss is True
+
+
+def test_eval_prediction_artifacts_are_enabled_by_default() -> None:
+    assert DistillationArguments().save_eval_predictions is True
 
 
 @pytest.mark.parametrize("weight", [0.0, 1.0, -0.1, 1.1])

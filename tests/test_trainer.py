@@ -57,3 +57,14 @@ def test_task_normalization_keeps_the_default_model_loss_path() -> None:
     assert "if use_task_normalization:" in source
     assert "student_outputs = model(**inputs, output_hidden_states=output_hidden_states" in source
     assert "lm_loss, _ = task_balanced_loss(" in source
+
+
+def test_kd_trainer_logs_loss_components_and_saves_each_eval_generation() -> None:
+    trainer_path = Path(__file__).parents[1] / "src" / "distillation" / "trainer.py"
+    source = trainer_path.read_text(encoding="utf-8")
+
+    assert 'self._store_loss_metrics({"train_lm_loss": lm_loss})' in source
+    assert 'loss_metrics = {"train_distill_loss": kd_component}' in source
+    assert 'Path(self.args.output_dir, "eval", run_name)' in source
+    assert 'artifact_dir / "predictions.jsonl"' in source
+    assert 'self._last_eval_artifact_dir / "metrics.json"' in source
