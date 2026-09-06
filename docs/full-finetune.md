@@ -24,6 +24,12 @@ RUN_GPUS=0,1 bash scripts/train.sh \
 RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3_full_finetune/fkl.yaml
 ```
 
+To train the teacher and all 12 Qwen3 methods in sequence:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_qwen3_full_finetune.sh
+```
+
 The KD presets load the local teacher checkpoint through `ref_model`; they do
 not use `ref_model_adapters`. LoRA and normalized-loss presets remain unchanged.
 

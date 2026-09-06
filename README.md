@@ -369,14 +369,14 @@ Train teacher trước, sau đó chạy tuần tự toàn bộ preset Qwen (SFT 
 tất cả KD baseline):
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
+RUN_GPUS=0,1 bash scripts/train_all_qwen3_lora.sh
 ```
 
 Mọi override phía sau script, trừ `output_dir` và `ref_model_adapters` do script
 quản lý, được chuyển cho từng run. Ví dụ smoke-test một epoch:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh num_train_epochs=1
+RUN_GPUS=0,1 bash scripts/train_all_qwen3_lora.sh num_train_epochs=1
 ```
 
 Để train lại vào một cây output mới mà vẫn giữ đúng đường dẫn riêng cho teacher
@@ -384,7 +384,7 @@ và từng method, đặt `RESULTS_ROOT`:
 
 ```bash
 RESULTS_ROOT=results_run2 \
-RUN_GPUS=0,1 bash scripts/train_all_qwen3.sh
+RUN_GPUS=0,1 bash scripts/train_all_qwen3_lora.sh
 ```
 
 Output tương ứng là `results_run2/qwen3/teacher_lora`,
@@ -416,7 +416,7 @@ RUN_GPUS=0,1 bash scripts/train.sh configs/llama3/amid.yaml
 Train teacher trước, sau đó chạy tuần tự toàn bộ preset Llama 3:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_llama3.sh
+RUN_GPUS=0,1 bash scripts/train_all_llama3_lora.sh
 ```
 
 Có thể truyền override cho mọi run, đổi cả cây output qua `RESULTS_ROOT`, và
@@ -424,14 +424,14 @@ Có thể truyền override cho mọi run, đổi cả cây output qua `RESULTS_
 
 ```bash
 LLAMA3_LOG_DIR=results/llama3/custom_logs \
-RUN_GPUS=0,1 bash scripts/train_all_llama3.sh num_train_epochs=1
+RUN_GPUS=0,1 bash scripts/train_all_llama3_lora.sh num_train_epochs=1
 ```
 
 Ví dụ train vào root mới:
 
 ```bash
 RESULTS_ROOT=results_run2 \
-RUN_GPUS=0,1 bash scripts/train_all_llama3.sh
+RUN_GPUS=0,1 bash scripts/train_all_llama3_lora.sh
 ```
 
 Chạy inference cho model family Llama 3:
@@ -454,14 +454,14 @@ EOS generation được lấy từ generation config của model để hỗ tr�
 Train teacher LoRA rồi chạy toàn bộ SFT/KD preset:
 
 ```bash
-RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
+RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder_lora.sh
 ```
 
 Có thể đổi toàn bộ output sang root khác mà không sửa config:
 
 ```bash
 RESULTS_ROOT=results_run2 \
-RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder.sh
+RUN_GPUS=0,1 bash scripts/train_all_qwen2_5_coder_lora.sh
 ```
 
 Chạy inference cho các checkpoint local dưới model family `qwen2.5_coder`:
@@ -968,3 +968,8 @@ Preset kết hợp full fine-tune với task-normalized loss nằm trong
 `configs/*_full_finetune_normalized_loss`, ghi checkpoint sang
 `results/full_finetune_normalized_loss`; xem
 [`docs/full-finetune-normalized-loss.md`](docs/full-finetune-normalized-loss.md).
+
+Các script chạy toàn bộ tuân theo mẫu
+`scripts/train_all_<family>_<setting>.sh`, với `family` là `qwen3`, `llama3`
+hoặc `qwen2_5_coder`; `setting` là `lora`, `lora_normalized`,
+`full_finetune` hoặc `full_finetune_normalized`.

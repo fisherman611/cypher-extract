@@ -30,6 +30,12 @@ RUN_GPUS=0,1 bash scripts/train.sh \
   configs/qwen3_full_finetune_normalized_loss/fkl.yaml
 ```
 
+To train the teacher and all 12 Qwen3 methods in sequence:
+
+```bash
+RUN_GPUS=0,1 bash scripts/train_all_qwen3_full_finetune_normalized.sh
+```
+
 Inference uses the same method name and the combined setting's checkpoint root:
 
 ```bash
