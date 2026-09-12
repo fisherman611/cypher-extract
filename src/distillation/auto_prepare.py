@@ -29,6 +29,10 @@ MANAGED_DATA_SOURCES = {
         "data/cypherbench_schema_grounding_distractor_v1",
         "data/prepared_distractor_v1",
     ),
+    "data/llamafactory_distractor_v2": (
+        "data/cypherbench_schema_grounding_distractor_v2",
+        "data/prepared_distractor_v2",
+    ),
 }
 
 
