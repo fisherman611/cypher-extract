@@ -19,6 +19,17 @@ from .prepare_data import LAYOUT_FILE, SPLIT_FILES
 MANAGED_TRAIN_DATASET = "cypher_prepared_train"
 MANAGED_EVAL_DATASET = "cypher_prepared_eval"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_GROUNDING_INPUT = "data/cypherbench_schema_grounding_full_final"
+DEFAULT_PREPARED_ROOT = "data/prepared"
+# Each managed LlamaFactory root is built from exactly one grounding source, so
+# selecting a dataset_dir also selects its source unless an override is given.
+MANAGED_DATA_SOURCES = {
+    "data/llamafactory": (DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT),
+    "data/llamafactory_distractor_v1": (
+        "data/cypherbench_schema_grounding_distractor_v1",
+        "data/prepared_distractor_v1",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -54,8 +65,8 @@ def build_auto_prepare_plan(
     overrides: Sequence[str] = (),
     *,
     project_root: Path = PROJECT_ROOT,
-    grounding_input: str = "data/cypherbench_schema_grounding_full_final",
-    prepared_root: str = "data/prepared",
+    grounding_input: str | None = None,
+    prepared_root: str | None = None,
     preparation_seed: int = 42,
 ) -> AutoPreparePlan | None:
     """Return a cache plan for the managed Cypher datasets, or ``None``."""
@@ -76,6 +87,11 @@ def build_auto_prepare_plan(
     if not isinstance(raw_dataset_dir, str) or not raw_dataset_dir:
         raise ValueError("Managed multitask data requires a local dataset_dir.")
     dataset_root, dataset_root_override = _resolve_local_path(raw_dataset_dir, project_root)
+    default_grounding, default_prepared = MANAGED_DATA_SOURCES.get(
+        dataset_root_override.rstrip("/"), (DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT)
+    )
+    grounding_input = grounding_input or default_grounding
+    prepared_root = prepared_root or default_prepared
     grounding_dir, _ = _resolve_local_path(grounding_input, project_root)
     prepared_base, prepared_base_override = _resolve_local_path(prepared_root, project_root)
 
@@ -133,6 +149,18 @@ def cache_is_ready(plan: AutoPreparePlan) -> bool:
         return False
 
 
+def _cached_input_directory(plan: AutoPreparePlan) -> Path | None:
+    """Return the grounding source recorded by an existing cache, if any."""
+
+    try:
+        layout = json.loads((plan.dataset_dir / LAYOUT_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(layout, dict) or not isinstance(layout.get("input_directory"), str):
+        return None
+    return Path(layout["input_directory"]).resolve()
+
+
 def _run_command(command: list[str], project_root: Path) -> None:
     subprocess.run(
         command,
@@ -153,6 +181,13 @@ def ensure_training_data(
 
     if not force and cache_is_ready(plan):
         return False
+    cached_source = _cached_input_directory(plan)
+    if not force and cached_source is not None and cached_source != plan.grounding_input_dir.resolve():
+        raise RuntimeError(
+            f"Refusing to rebuild {plan.dataset_dir}: it was prepared from {cached_source}, not "
+            f"{plan.grounding_input_dir.resolve()}. Use a separate dataset_dir per grounding source, "
+            "or set AUTO_PREPARE_FORCE=1 to replace it."
+        )
     required_grounding = [plan.grounding_input_dir / name for name in GROUNDING_FILENAMES]
     missing = [path for path in required_grounding if not path.is_file()]
     if missing:
@@ -208,11 +243,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         config_path,
         arguments[1:],
         project_root=project_root,
-        grounding_input=os.environ.get(
-            "CYPHER_GROUNDING_INPUT_DIR",
-            "data/cypherbench_schema_grounding_full_final",
-        ),
-        prepared_root=os.environ.get("CYPHER_PREPARED_ROOT", "data/prepared"),
+        # Unset overrides follow the source paired with the config's dataset_dir.
+        grounding_input=os.environ.get("CYPHER_GROUNDING_INPUT_DIR") or None,
+        prepared_root=os.environ.get("CYPHER_PREPARED_ROOT") or None,
         preparation_seed=int(os.environ.get("CYPHER_PREPARE_SEED", "42")),
     )
     if plan is None:

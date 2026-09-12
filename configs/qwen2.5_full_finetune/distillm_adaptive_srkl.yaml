@@ -7,7 +7,7 @@ model_revision: 488639f1ff808d1d3d0ba301aef8c11461451ec5
 ref_model: results/full_finetune/qwen2.5_coder/teacher_full
 dataset: cypher_prepared_train
 eval_dataset: cypher_prepared_eval
-dataset_dir: data/llamafactory
+dataset_dir: data/llamafactory_distractor_v1
 template: qwen
 cutoff_len: 892
 packing: false
@@ -29,9 +29,9 @@ capacity: 1000
 replay_ratio: decreasing
 output_dir: results/full_finetune/qwen2.5_coder/distillm_adaptive_srkl
 overwrite_output_dir: true
-per_device_train_batch_size: 2
+per_device_train_batch_size: 8
 per_device_eval_batch_size: 8
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 2
 learning_rate: 0.00002
 num_train_epochs: 5
 optim: adamw_torch

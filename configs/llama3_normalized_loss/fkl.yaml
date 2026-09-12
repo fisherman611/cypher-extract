@@ -10,7 +10,7 @@ ref_model_revision: 8afb486c1db24fe5011ec46dfbe5b5dccdb575c2
 ref_model_adapters: results/lora_normalized/llama3/teacher_lora
 dataset: cypher_prepared_train
 eval_dataset: cypher_prepared_eval
-dataset_dir: data/llamafactory
+dataset_dir: data/llamafactory_distractor_v1
 template: llama3
 cutoff_len: 899
 packing: false
@@ -32,9 +32,9 @@ selector_loss_weight: 0.5
 
 output_dir: results/lora_normalized/llama3/fkl
 overwrite_output_dir: true
-per_device_train_batch_size: 2
+per_device_train_batch_size: 8
 per_device_eval_batch_size: 32
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 2
 learning_rate: 0.0001
 num_train_epochs: 5
 optim: adamw_torch
