@@ -169,10 +169,12 @@ Generative eval giữ nguyên metrics hỗn hợp hiện tại nhưng dùng deco
 `{"label": "YES"}` hoặc `{"label": "NO"`; generator giữ sampling
 `temperature=0.5`, `top_p=0.95`, `top_k=0` và tối đa 256 token.
 
+Mặc định code đọc dataset trong thư mục `data/` của repo. Có thể đặt
+`CYPHER_DATA_ROOT` nếu cần chạy từ vị trí khác; khi đó các đường dẫn `data/...`
+bên dưới tương ứng với `$CYPHER_DATA_ROOT/...`.
+
 ```powershell
 python scripts\prepare_multitask_prompts.py `
-  --input-dir data\cypherbench_schema_grounding_full_final `
-  --output-dir data\prepared `
   --batch-size 2 `
   --overwrite
 ```
@@ -182,8 +184,6 @@ dataset local cho LlamaFactory:
 
 ```powershell
 python scripts\prepare_llamafactory_data.py `
-  --input-dir data\prepared `
-  --output-dir data\llamafactory `
   --overwrite
 ```
 
@@ -210,8 +210,10 @@ chế này cho dataset tự quản lý. Có thể đổi nguồn grounding bằn
 `CYPHER_GROUNDING_INPUT_DIR` và seed bằng `CYPHER_PREPARE_SEED`.
 
 Mỗi `dataset_dir` được quản lý gắn với đúng một nguồn grounding
-(`MANAGED_DATA_SOURCES` trong `src/distillation/auto_prepare.py`). Các config
-mặc định dùng `data/llamafactory_distractor_v2`, được build từ
+(`MANAGED_DATA_SOURCES` trong `src/distillation/auto_prepare.py`, tra theo tên
+thư mục; nguồn grounding/prepared là thư mục cùng cấp). Các config mặc định
+dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2`, tức
+`data/llamafactory_distractor_v2` khi không đặt `CYPHER_DATA_ROOT`, được build từ
 `data/cypherbench_schema_grounding_distractor_v2` (tạo bởi
 `scripts/augment_generator_schema.py` với
 `--hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3`).
@@ -302,10 +304,7 @@ và BF16.
 Nếu `data/prepared` đã tồn tại, chuyển nó sang OpenAI chat JSONL bằng:
 
 ```bash
-python scripts/prepare_llamafactory_data.py \
-  --input-dir data/prepared \
-  --output-dir data/llamafactory \
-  --overwrite
+python scripts/prepare_llamafactory_data.py --overwrite
 ```
 
 Lệnh tạo bốn dataset `cypher_prepared_train`, `cypher_prepared_eval`,
@@ -564,6 +563,8 @@ Cypher. Các trường gold chỉ được đọc sau generation để tính met
   data/neo4j_text2cypher_schema_grounding_full/
   ```
 
+  (hoặc cùng các thư mục đó bên dưới `$CYPHER_DATA_ROOT` nếu đã đặt biến này).
+
 Mỗi directory phải có `selection_inference_test.jsonl` và
 `generation_inference_test.jsonl`. Hai file này chứa mọi test example có question,
 gold Cypher và full schema hợp lệ, kể cả example không trích được gold sub-schema.
@@ -620,7 +621,8 @@ distillm_adaptive_srkl
 ```
 
 Với mỗi model, script đọc checkpoint local tại
-`results/<setting>/<model-family>/<method>/checkpoint-N`. Tên `<model-family>/<method>`
+`results/<setting>/<model-family>/<method>/checkpoint-N`. Tên
+`<model-family>/<method>` bên dưới checkpoint root của setting
 khớp trực tiếp với `output_dir` trong config training; inference không tải
 checkpoint từ một Hugging Face result repository. Trong một method directory,
 inference ưu tiên các checkpoint hoàn tất có `resume_manifest.json`, xác nhận tất

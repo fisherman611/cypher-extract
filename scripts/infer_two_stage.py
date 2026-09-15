@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -28,6 +29,7 @@ from schema_grounding.inference.data import default_dataset_specs  # noqa: E402
 from schema_grounding.inference.model import ModelRunner  # noqa: E402
 from schema_grounding.inference.pipeline import (  # noqa: E402
     InferenceOptions,
+    inference_run_complete,
     model_runner_required,
     prepare_run_directory,
     run_dataset_pipeline,
@@ -87,8 +89,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="bfloat16")
-    parser.add_argument("--selector-batch-size", type=int, default=128)
-    parser.add_argument("--generator-batch-size", type=int, default=16)
+    parser.add_argument("--selector-batch-size", type=int, default=100)
+    parser.add_argument("--generator-batch-size", type=int, default=100)
     parser.add_argument("--generator-max-new-tokens", type=int, default=256)
     parser.add_argument(
         "--seeds",
@@ -108,6 +110,14 @@ def parse_args() -> argparse.Namespace:
         "--no-relation-endpoint-closure",
         action="store_true",
         help="Do not add endpoint nodes for selected relationships.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Delete existing outputs of the selected seeds/methods/datasets and run them again "
+            "instead of skipping completed runs."
+        ),
     )
     args = parser.parse_args()
     if args.output_dir is None:
@@ -161,6 +171,18 @@ def build_seed_first_run_groups(
             ]
             groups.append((seed, method, runs))
     return groups
+
+
+def clear_planned_run_outputs(
+    run_groups: list[tuple[int, str, list[tuple[str, Path, InferenceOptions]]]],
+) -> None:
+    """Remove every planned dataset run directory so it is inferred from scratch."""
+
+    for seed, method, planned_runs in run_groups:
+        for dataset_name, output_directory, _ in planned_runs:
+            if output_directory.exists():
+                print(f"[seed{seed}/{method}/{dataset_name}] --overwrite: removing {output_directory}")
+                shutil.rmtree(output_directory)
 
 
 def main() -> None:
@@ -234,6 +256,10 @@ def main() -> None:
         output_root=args.output_dir.resolve(),
         options=options,
     )
+    if args.overwrite:
+        # Checkpoints were validated above, so old outputs are only removed
+        # once the replacement run is known to be loadable.
+        clear_planned_run_outputs(run_groups)
     for _seed, method, planned_runs in run_groups:
         checkpoint = checkpoints[method]
         for dataset_name, output_directory, seed_options in planned_runs:
@@ -252,8 +278,16 @@ def main() -> None:
             if group_seed != seed:
                 continue
             checkpoint = checkpoints[method]
+            pending_runs = [
+                planned_run
+                for planned_run in planned_runs
+                if not inference_run_complete(planned_run[1])
+            ]
+            if not pending_runs:
+                print(f"[seed{seed}/{method}] inference already completed; skipping")
+                continue
             runner = None
-            if any(model_runner_required(output_directory) for _, output_directory, _ in planned_runs):
+            if any(model_runner_required(output_directory) for _, output_directory, _ in pending_runs):
                 runner = ModelRunner.from_checkpoint(
                     checkpoint_paths[method],
                     dtype=args.dtype,
@@ -264,7 +298,7 @@ def main() -> None:
             else:
                 print(f"[seed{seed}/{method}] all model-backed stages are complete; skipping model load")
             try:
-                for dataset_name, output_directory, seed_options in planned_runs:
+                for dataset_name, output_directory, seed_options in pending_runs:
                     seed_everything(seed, rank_offset=False)
                     print(f"[seed{seed}/{method}/{dataset_name}] starting")
                     run_dataset_pipeline(

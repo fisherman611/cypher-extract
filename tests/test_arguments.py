@@ -207,9 +207,9 @@ def test_train_configs_omit_redundant_runtime_defaults(config_path: Path) -> Non
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
 def test_all_train_configs_use_the_same_effective_batch_settings(config_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    # Batch 8 keeps complete same-question selector contrast pairs in each micro-batch.
-    assert config["per_device_train_batch_size"] == 8
-    assert config["gradient_accumulation_steps"] == 2
+    # An even batch keeps complete same-question selector contrast pairs in each micro-batch.
+    assert config["per_device_train_batch_size"] == 2
+    assert config["gradient_accumulation_steps"] == 8
 
 
 @pytest.mark.parametrize("config_path", ALL_TRAIN_CONFIG_PATHS)
@@ -383,9 +383,9 @@ def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
         assert config["ref_model_revision"] == MODEL_REVISIONS["qwen3"]["teacher"]
     assert config["template"] == "qwen3_nothink"
     assert config["cutoff_len"] == 892
-    assert config["per_device_train_batch_size"] == 8
+    assert config["per_device_train_batch_size"] == 2
     assert config["per_device_eval_batch_size"] == 16
-    assert config["gradient_accumulation_steps"] == 2
+    assert config["gradient_accumulation_steps"] == 8
     if config["distill_method"].startswith("fdd_"):
         assert config["student_layer_mapping"] == [14, 28]
         assert config["teacher_layer_mapping"] == [18, 36]
@@ -401,9 +401,9 @@ def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -
         assert config["ref_model_revision"] == MODEL_REVISIONS["qwen2.5_coder"]["teacher"]
     assert config["template"] == "qwen"
     assert config["cutoff_len"] == 892
-    assert config["per_device_train_batch_size"] == 8
-    assert config["per_device_eval_batch_size"] == 8
-    assert config["gradient_accumulation_steps"] == 2
+    assert config["per_device_train_batch_size"] == 2
+    assert config["per_device_eval_batch_size"] == 16
+    assert config["gradient_accumulation_steps"] == 8
     if config["distill_method"].startswith("fdd_"):
         assert config["student_layer_mapping"] == [18, 36]
         assert config["teacher_layer_mapping"] == [14, 28]
@@ -556,7 +556,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
         assert "ref_model_adapters" not in config
     assert config["dataset"] == "cypher_prepared_train"
     assert config["eval_dataset"] == "cypher_prepared_eval"
-    assert config["dataset_dir"] == "data/llamafactory_distractor_v2"
+    assert config["dataset_dir"] == "${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2"
     expected_template = {
         "qwen3": "qwen3_nothink",
         "llama3": "llama3",

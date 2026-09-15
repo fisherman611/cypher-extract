@@ -24,6 +24,7 @@ from schema_grounding.inference.parsing import parse_selector_label
 from schema_grounding.inference.pipeline import (
     InferenceOptions,
     compute_inference_metrics,
+    inference_run_complete,
     model_runner_required,
     prepare_run_directory,
     run_dataset_pipeline,
@@ -46,6 +47,7 @@ from schema_grounding.selector_labels import format_selector_response
 from scripts.infer_two_stage import (
     DEFAULT_INFERENCE_SEEDS,
     build_seed_first_run_groups,
+    clear_planned_run_outputs,
     parse_seeds,
     validate_choices,
 )
@@ -59,6 +61,46 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def test_inference_run_complete_requires_every_final_artifact(tmp_path: Path) -> None:
+    required_files = (
+        "run_config.json",
+        "selector_predictions.jsonl",
+        "predicted_subschemas.jsonl",
+        "generator_predictions.jsonl",
+        "metrics.json",
+        "manifest.json",
+    )
+    for filename in required_files:
+        (tmp_path / filename).write_text("{}\n", encoding="utf-8")
+
+    assert inference_run_complete(tmp_path)
+
+    (tmp_path / "metrics.json").unlink()
+    assert not inference_run_complete(tmp_path)
+
+
+def test_overwrite_clears_only_planned_run_directories(tmp_path: Path) -> None:
+    run_groups = build_seed_first_run_groups(
+        methods=["sft"],
+        dataset_names=["cypherbench"],
+        seeds=[42],
+        output_root=tmp_path,
+        options=InferenceOptions(),
+    )
+    planned = tmp_path / "seed42" / "sft" / "cypherbench"
+    other_dataset = tmp_path / "seed42" / "sft" / "mind_the_query"
+    other_seed = tmp_path / "seed10" / "sft" / "cypherbench"
+    for directory in (planned, other_dataset, other_seed):
+        directory.mkdir(parents=True)
+        (directory / "metrics.json").write_text("{}\n", encoding="utf-8")
+
+    clear_planned_run_outputs(run_groups)
+
+    assert not planned.exists()
+    assert (other_dataset / "metrics.json").is_file()
+    assert (other_seed / "metrics.json").is_file()
 
 
 def write_resume_manifest(
@@ -254,8 +296,10 @@ def test_training_output_dirs_match_local_inference_layout() -> None:
 
 
 def test_default_datasets_use_full_test_inference_artifacts() -> None:
-    specs = default_dataset_specs(REPOSITORY_ROOT)
+    data_root = Path("/mnt/local/test-cypher-data")
+    specs = default_dataset_specs(REPOSITORY_ROOT, data_root=data_root)
     for spec in specs.values():
+        assert spec.directory.parent == data_root
         assert spec.generation_test.name == "generation_inference_test.jsonl"
         assert spec.selection_test.name == "selection_inference_test.jsonl"
 

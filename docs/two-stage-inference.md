@@ -19,9 +19,10 @@ results/lora
 ```
 
 Với mỗi method, script đọc
-`results/<setting>/<model-family>/<method>/checkpoint-N`. Tên family/method khớp với
-`output_dir` của config training. Inference không tải checkpoint từ Hugging
-Face result repository và chọn checkpoint có `N` lớn nhất trong method directory.
+`results/<setting>/<model-family>/<method>/checkpoint-N`. Mỗi wrapper setting
+chọn đúng checkpoint root; tên family/method bên dưới root đó khớp với
+`output_dir` của config training. Inference không tải checkpoint từ Hugging Face
+result repository và chọn checkpoint có `N` lớn nhất trong method directory.
 
 Checkpoint được fingerprint từ các inference assets. Vì vậy nếu weight files
 bị thay tại cùng path và cùng step, `run_config.json` không còn khớp và pipeline

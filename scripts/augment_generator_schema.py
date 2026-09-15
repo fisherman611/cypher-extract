@@ -22,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from cypher_extract.paths import get_data_root  # noqa: E402
 from schema_grounding.augmentation import AugmentationConfig, augment_generation_row  # noqa: E402
 
 TRAIN_FILE = "generation_train.jsonl"
@@ -31,15 +32,16 @@ AUGMENTATION_MANIFEST = "augmentation_manifest.json"
 def parse_args() -> argparse.Namespace:
     defaults = AugmentationConfig()
     parser = argparse.ArgumentParser(description=__doc__)
+    data_root = get_data_root()
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("data/cypherbench_schema_grounding_full_final"),
+        default=data_root / "cypherbench_schema_grounding_full_final",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/cypherbench_schema_grounding_distractor_v1"),
+        default=data_root / "cypherbench_schema_grounding_distractor_v1",
     )
     parser.add_argument("--gold-ratio", type=float, default=defaults.gold_ratio)
     parser.add_argument("--full-ratio", type=float, default=defaults.full_ratio)

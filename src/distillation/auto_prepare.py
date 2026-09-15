@@ -13,25 +13,29 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+from cypher_extract.paths import get_data_root
+
 from .data_cache import GROUNDING_FILENAMES, preparation_fingerprint
 from .prepare_data import LAYOUT_FILE, SPLIT_FILES
 
 MANAGED_TRAIN_DATASET = "cypher_prepared_train"
 MANAGED_EVAL_DATASET = "cypher_prepared_eval"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_GROUNDING_INPUT = "data/cypherbench_schema_grounding_full_final"
-DEFAULT_PREPARED_ROOT = "data/prepared"
+DEFAULT_GROUNDING_INPUT = "cypherbench_schema_grounding_full_final"
+DEFAULT_PREPARED_ROOT = "prepared"
 # Each managed LlamaFactory root is built from exactly one grounding source, so
 # selecting a dataset_dir also selects its source unless an override is given.
+# Keys are dataset_dir folder names; sources are sibling folders in the same
+# data root, so the pairing holds for both CYPHER_DATA_ROOT and data/ layouts.
 MANAGED_DATA_SOURCES = {
-    "data/llamafactory": (DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT),
-    "data/llamafactory_distractor_v1": (
-        "data/cypherbench_schema_grounding_distractor_v1",
-        "data/prepared_distractor_v1",
+    "llamafactory": (DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT),
+    "llamafactory_distractor_v1": (
+        "cypherbench_schema_grounding_distractor_v1",
+        "prepared_distractor_v1",
     ),
-    "data/llamafactory_distractor_v2": (
-        "data/cypherbench_schema_grounding_distractor_v2",
-        "data/prepared_distractor_v2",
+    "llamafactory_distractor_v2": (
+        "cypherbench_schema_grounding_distractor_v2",
+        "prepared_distractor_v2",
     ),
 }
 
@@ -91,11 +95,15 @@ def build_auto_prepare_plan(
     if not isinstance(raw_dataset_dir, str) or not raw_dataset_dir:
         raise ValueError("Managed multitask data requires a local dataset_dir.")
     dataset_root, dataset_root_override = _resolve_local_path(raw_dataset_dir, project_root)
-    default_grounding, default_prepared = MANAGED_DATA_SOURCES.get(
-        dataset_root_override.rstrip("/"), (DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT)
-    )
-    grounding_input = grounding_input or default_grounding
-    prepared_root = prepared_root or default_prepared
+    managed_sources = MANAGED_DATA_SOURCES.get(dataset_root.name)
+    if managed_sources is None:
+        source_root = get_data_root()
+        default_grounding, default_prepared = DEFAULT_GROUNDING_INPUT, DEFAULT_PREPARED_ROOT
+    else:
+        source_root = dataset_root.parent
+        default_grounding, default_prepared = managed_sources
+    grounding_input = grounding_input or str(source_root / default_grounding)
+    prepared_root = prepared_root or str(source_root / default_prepared)
     grounding_dir, _ = _resolve_local_path(grounding_input, project_root)
     prepared_base, prepared_base_override = _resolve_local_path(prepared_root, project_root)
 
@@ -137,17 +145,34 @@ def cache_is_ready(plan: AutoPreparePlan) -> bool:
     if not isinstance(layout, dict):
         return False
     try:
+        if int(layout.get("batch_size", -1)) != plan.batch_size:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    fingerprint_keys = {
+        "input_directory",
+        "preparation_seed",
+        "preparation_fingerprint",
+    }
+    if fingerprint_keys.isdisjoint(layout):
+        # Published dataset snapshots are portable and intentionally omit the
+        # machine-specific source path and fingerprint. Their complete file
+        # set plus matching batch layout is sufficient for direct reuse.
+        return True
+    if not fingerprint_keys.issubset(layout):
+        return False
+    try:
         current_fingerprint = preparation_fingerprint(
             plan.grounding_input_dir,
             plan.prompt_root,
             seed=plan.preparation_seed,
         )
         return (
-            int(layout.get("batch_size", -1)) == plan.batch_size
-            and Path(str(layout.get("input_directory", ""))).resolve()
+            Path(str(layout["input_directory"])).resolve()
             == plan.grounding_input_dir.resolve()
-            and int(layout.get("preparation_seed", -1)) == plan.preparation_seed
-            and layout.get("preparation_fingerprint") == current_fingerprint
+            and int(layout["preparation_seed"]) == plan.preparation_seed
+            and layout["preparation_fingerprint"] == current_fingerprint
         )
     except (OSError, TypeError, ValueError):
         return False

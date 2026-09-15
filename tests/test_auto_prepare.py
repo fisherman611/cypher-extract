@@ -74,6 +74,20 @@ def test_plan_pairs_distractor_dataset_dir_with_its_grounding_source(tmp_path: P
     assert plan.dataset_dir_override == f"data/llamafactory_distractor_{version}/batch_8"
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_plan_pairs_absolute_data_root_dataset_dir_with_sibling_sources(tmp_path: Path, version: str) -> None:
+    data_root = tmp_path / "cypher-extract-data"
+    config = tmp_path / "train.yaml"
+    _write_config(config, batch_size=8, dataset_dir=f"{data_root.as_posix()}/llamafactory_distractor_{version}")
+
+    plan = build_auto_prepare_plan(config, project_root=tmp_path / "project")
+
+    assert plan is not None
+    assert plan.grounding_input_dir == data_root / f"cypherbench_schema_grounding_distractor_{version}"
+    assert plan.prepared_dir == data_root / f"prepared_distractor_{version}" / "batch_8"
+    assert plan.dataset_dir == data_root / f"llamafactory_distractor_{version}" / "batch_8"
+
+
 def test_explicit_grounding_and_prepared_overrides_win(tmp_path: Path) -> None:
     config = tmp_path / "train.yaml"
     _write_config(config, batch_size=8, dataset_dir="data/llamafactory_distractor_v1")
@@ -156,6 +170,28 @@ def test_cache_readiness_requires_matching_layout_and_all_files(tmp_path: Path) 
 
     (plan.dataset_dir / LAYOUT_FILE).write_text('{"batch_size": null}\n', encoding="utf-8")
     assert not cache_is_ready(plan)
+
+
+def test_portable_downloaded_cache_needs_only_complete_files_and_matching_batch_size(
+    tmp_path: Path,
+) -> None:
+    plan = AutoPreparePlan(
+        batch_size=2,
+        grounding_input_dir=tmp_path / "grounding",
+        prepared_dir=tmp_path / "prepared",
+        dataset_dir=tmp_path / "llamafactory",
+        dataset_dir_override="llamafactory",
+        prompt_root=tmp_path / "prompts",
+    )
+    plan.dataset_dir.mkdir(parents=True)
+    (plan.dataset_dir / "dataset_info.json").write_text("{}\n", encoding="utf-8")
+    (plan.dataset_dir / LAYOUT_FILE).write_text('{"batch_size": 2}\n', encoding="utf-8")
+    for split in SPLIT_FILES:
+        (plan.dataset_dir / f"cypher_prepared_{split}.jsonl").write_text(
+            "{}\n", encoding="utf-8"
+        )
+
+    assert cache_is_ready(plan)
 
 
 def test_cache_is_invalidated_by_source_content_directory_prompt_and_seed(tmp_path: Path) -> None:

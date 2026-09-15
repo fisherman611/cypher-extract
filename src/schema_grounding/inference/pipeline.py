@@ -54,8 +54,8 @@ class GenerationRunner(Protocol):
 
 @dataclass(frozen=True)
 class InferenceOptions:
-    selector_batch_size: int = 128
-    generator_batch_size: int = 16
+    selector_batch_size: int = 100
+    generator_batch_size: int = 100
     selector_max_new_tokens: int = 16
     generator_max_new_tokens: int = 256
     close_relation_endpoints: bool = True
@@ -561,6 +561,20 @@ def model_runner_required(output_directory: Path) -> bool:
     return not (output_directory / "selector_predictions.jsonl").is_file() or not (
         output_directory / "generator_predictions.jsonl"
     ).is_file()
+
+
+def inference_run_complete(output_directory: Path) -> bool:
+    """Return whether a dataset run atomically published all final artifacts."""
+
+    required_files = (
+        "run_config.json",
+        "selector_predictions.jsonl",
+        "predicted_subschemas.jsonl",
+        "generator_predictions.jsonl",
+        "metrics.json",
+        "manifest.json",
+    )
+    return all((output_directory / filename).is_file() for filename in required_files)
 
 
 def run_dataset_pipeline(

@@ -60,6 +60,7 @@ def test_shared_train_all_runner_maps_every_config_family_and_teacher_type() -> 
     assert 'TEACHER_KIND="teacher_full"' in script
     assert 'TEACHER_OVERRIDE_KEY="ref_model_adapters"' in script
     assert 'TEACHER_OVERRIDE_KEY="ref_model"' in script
+    assert 'DEFAULT_RESULTS_SUBDIR="results/lora"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/lora_normalized"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/full_finetune"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/full_finetune_normalized"' in script
