@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import multiprocessing as mp
 import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeAlias
 
 import torch
 
@@ -22,10 +24,11 @@ from schema_grounding.inference.checkpoints import (  # noqa: E402
     DEFAULT_METHODS,
     DEFAULT_MODEL_FAMILY,
     SUPPORTED_METHODS,
+    LastCheckpoint,
     resolve_checkpoint_directory,
     resolve_last_checkpoint,
 )
-from schema_grounding.inference.data import default_dataset_specs  # noqa: E402
+from schema_grounding.inference.data import DatasetSpec, default_dataset_specs  # noqa: E402
 from schema_grounding.inference.model import ModelRunner  # noqa: E402
 from schema_grounding.inference.pipeline import (  # noqa: E402
     InferenceOptions,
@@ -37,6 +40,8 @@ from schema_grounding.inference.pipeline import (  # noqa: E402
 from schema_grounding.inference.prompting import PromptTemplates, chat_template_metadata  # noqa: E402
 
 DEFAULT_INFERENCE_SEEDS = (10, 42, 50, 100, 1234)
+PlannedRun: TypeAlias = tuple[str, Path, InferenceOptions]
+RunGroup: TypeAlias = tuple[int, str, list[PlannedRun]]
 
 
 def comma_separated(value: str) -> list[str]:
@@ -88,6 +93,15 @@ def parse_args() -> argparse.Namespace:
         help="Inference output root. Defaults to results/inference/lora/<model-family>.",
     )
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        default=1,
+        help=(
+            "Number of visible CUDA devices used by parallel inference workers. "
+            "Use CUDA_VISIBLE_DEVICES to select the physical GPUs."
+        ),
+    )
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="bfloat16")
     parser.add_argument("--selector-batch-size", type=int, default=100)
     parser.add_argument("--generator-batch-size", type=int, default=100)
@@ -154,7 +168,7 @@ def build_seed_first_run_groups(
     seeds: list[int],
     output_root: Path,
     options: InferenceOptions,
-) -> list[tuple[int, str, list[tuple[str, Path, InferenceOptions]]]]:
+) -> list[RunGroup]:
     """Plan every dataset run, completing one seed before moving to the next."""
 
     groups = []
@@ -174,7 +188,7 @@ def build_seed_first_run_groups(
 
 
 def clear_planned_run_outputs(
-    run_groups: list[tuple[int, str, list[tuple[str, Path, InferenceOptions]]]],
+    run_groups: list[RunGroup],
 ) -> None:
     """Remove every planned dataset run directory so it is inferred from scratch."""
 
@@ -185,10 +199,172 @@ def clear_planned_run_outputs(
                 shutil.rmtree(output_directory)
 
 
+def resolve_worker_devices(device: str, num_gpus: int, *, cuda_device_count: int | None = None) -> list[str]:
+    """Resolve one logical CUDA device per inference worker."""
+
+    if num_gpus <= 0:
+        raise ValueError("--num-gpus must be a positive integer")
+    if num_gpus == 1:
+        return [device]
+
+    target_device = torch.device(device)
+    if target_device.type != "cuda" or target_device.index is not None:
+        raise ValueError("--num-gpus greater than 1 requires --device cuda")
+    available_devices = torch.cuda.device_count() if cuda_device_count is None else cuda_device_count
+    if available_devices < num_gpus:
+        raise RuntimeError(
+            f"--num-gpus={num_gpus} requested, but only {available_devices} CUDA device(s) are visible"
+        )
+    return [f"cuda:{index}" for index in range(num_gpus)]
+
+
+def distribute_run_groups(run_groups: list[RunGroup], num_workers: int) -> list[list[RunGroup]]:
+    """Distribute work across workers, splitting datasets only when necessary."""
+
+    if num_workers <= 0:
+        raise ValueError("num_workers must be positive")
+    if not run_groups:
+        return []
+
+    worker_count = min(num_workers, sum(len(planned_runs) for _, _, planned_runs in run_groups))
+    expanded_groups = [(seed, method, list(planned_runs)) for seed, method, planned_runs in run_groups]
+    while len(expanded_groups) < worker_count:
+        split_index = max(range(len(expanded_groups)), key=lambda index: len(expanded_groups[index][2]))
+        seed, method, planned_runs = expanded_groups[split_index]
+        if len(planned_runs) < 2:
+            break
+        expanded_groups[split_index] = (seed, method, planned_runs[::2])
+        expanded_groups.append((seed, method, planned_runs[1::2]))
+
+    worker_count = min(worker_count, len(expanded_groups))
+    return [expanded_groups[worker_index::worker_count] for worker_index in range(worker_count)]
+
+
+def run_inference_groups(
+    run_groups: list[RunGroup],
+    *,
+    device: str,
+    checkpoints: dict[str, LastCheckpoint],
+    checkpoint_paths: dict[str, Path],
+    specs: dict[str, DatasetSpec],
+    templates: PromptTemplates,
+    dtype: str,
+    merge_adapter: bool,
+    model_family: str,
+    worker_index: int = 0,
+) -> None:
+    """Run assigned seed/method groups on one device."""
+
+    target_device = torch.device(device)
+    if target_device.type == "cuda" and target_device.index is not None:
+        torch.cuda.set_device(target_device)
+    print(f"[worker{worker_index}/{device}] started with {len(run_groups)} group(s)", flush=True)
+    for seed, method, planned_runs in run_groups:
+        checkpoint = checkpoints[method]
+        pending_runs = [
+            planned_run
+            for planned_run in planned_runs
+            if not inference_run_complete(planned_run[1])
+        ]
+        if not pending_runs:
+            print(f"[worker{worker_index}/{device}/seed{seed}/{method}] already completed; skipping", flush=True)
+            continue
+        runner = None
+        if any(model_runner_required(output_directory) for _, output_directory, _ in pending_runs):
+            runner = ModelRunner.from_checkpoint(
+                checkpoint_paths[method],
+                dtype=dtype,
+                device=device,
+                merge_adapter=merge_adapter,
+                model_family=model_family,
+            )
+        else:
+            print(
+                f"[worker{worker_index}/{device}/seed{seed}/{method}] "
+                "all model-backed stages are complete; skipping model load",
+                flush=True,
+            )
+        try:
+            for dataset_name, output_directory, seed_options in pending_runs:
+                seed_everything(seed, rank_offset=False)
+                prefix = f"[worker{worker_index}/{device}/seed{seed}/{method}/{dataset_name}]"
+                print(f"{prefix} starting", flush=True)
+                run_dataset_pipeline(
+                    method=method,
+                    checkpoint=checkpoint,
+                    spec=specs[dataset_name],
+                    runner=runner,
+                    templates=templates,
+                    output_directory=output_directory,
+                    options=seed_options,
+                )
+                print(f"{prefix} completed", flush=True)
+        finally:
+            if runner is not None:
+                del runner
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+    print(f"[worker{worker_index}/{device}] completed", flush=True)
+
+
+def run_parallel_inference(
+    worker_run_groups: list[list[RunGroup]],
+    *,
+    devices: list[str],
+    checkpoints: dict[str, LastCheckpoint],
+    checkpoint_paths: dict[str, Path],
+    specs: dict[str, DatasetSpec],
+    templates: PromptTemplates,
+    dtype: str,
+    merge_adapter: bool,
+    model_family: str,
+) -> None:
+    """Launch one spawn-based process per CUDA device and propagate failures."""
+
+    context = mp.get_context("spawn")
+    processes = []
+    for worker_index, (device, assigned_groups) in enumerate(zip(devices, worker_run_groups, strict=True)):
+        process = context.Process(
+            target=run_inference_groups,
+            kwargs={
+                "run_groups": assigned_groups,
+                "device": device,
+                "checkpoints": checkpoints,
+                "checkpoint_paths": checkpoint_paths,
+                "specs": specs,
+                "templates": templates,
+                "dtype": dtype,
+                "merge_adapter": merge_adapter,
+                "model_family": model_family,
+                "worker_index": worker_index,
+            },
+            name=f"inference-worker-{worker_index}",
+        )
+        process.start()
+        processes.append(process)
+    try:
+        for process in processes:
+            process.join()
+    except BaseException:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join()
+        raise
+
+    failed_workers = [process for process in processes if process.exitcode != 0]
+    if failed_workers:
+        failures = ", ".join(f"{process.name} (exit code {process.exitcode})" for process in failed_workers)
+        raise RuntimeError(f"Parallel inference failed: {failures}")
+
+
 def main() -> None:
     args = parse_args()
     methods, dataset_names = validate_choices(args)
     seeds = parse_seeds(args.seeds)
+    devices = resolve_worker_devices(args.device, args.num_gpus)
     specs = default_dataset_specs(REPOSITORY_ROOT)
     templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
     options = InferenceOptions(
@@ -211,6 +387,7 @@ def main() -> None:
                 "methods": methods,
                 "datasets": dataset_names,
                 "seeds": seeds,
+                "devices": devices,
                 "selector_decoding": {
                     "labels": ["YES", "NO"],
                     "output_format": {"label": "YES|NO"},
@@ -272,52 +449,42 @@ def main() -> None:
                 options=seed_options,
             )
 
-    for seed in seeds:
-        print(f"[seed{seed}] starting all methods and datasets")
-        for group_seed, method, planned_runs in run_groups:
-            if group_seed != seed:
-                continue
-            checkpoint = checkpoints[method]
-            pending_runs = [
-                planned_run
-                for planned_run in planned_runs
-                if not inference_run_complete(planned_run[1])
-            ]
-            if not pending_runs:
-                print(f"[seed{seed}/{method}] inference already completed; skipping")
-                continue
-            runner = None
-            if any(model_runner_required(output_directory) for _, output_directory, _ in pending_runs):
-                runner = ModelRunner.from_checkpoint(
-                    checkpoint_paths[method],
-                    dtype=args.dtype,
-                    device=args.device,
-                    merge_adapter=not args.no_merge_adapter,
-                    model_family=args.model_family,
-                )
-            else:
-                print(f"[seed{seed}/{method}] all model-backed stages are complete; skipping model load")
-            try:
-                for dataset_name, output_directory, seed_options in pending_runs:
-                    seed_everything(seed, rank_offset=False)
-                    print(f"[seed{seed}/{method}/{dataset_name}] starting")
-                    run_dataset_pipeline(
-                        method=method,
-                        checkpoint=checkpoint,
-                        spec=specs[dataset_name],
-                        runner=runner,
-                        templates=templates,
-                        output_directory=output_directory,
-                        options=seed_options,
-                    )
-                    print(f"[seed{seed}/{method}/{dataset_name}] completed")
-            finally:
-                if runner is not None:
-                    del runner
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-        print(f"[seed{seed}] completed all methods and datasets")
+    pending_run_groups = [
+        group
+        for group in run_groups
+        if any(not inference_run_complete(output_directory) for _, output_directory, _ in group[2])
+    ]
+    if not pending_run_groups:
+        print("Inference already completed; skipping")
+        return
+
+    worker_run_groups = distribute_run_groups(pending_run_groups, len(devices))
+    active_devices = devices[: len(worker_run_groups)]
+    if len(active_devices) == 1:
+        run_inference_groups(
+            worker_run_groups[0],
+            device=active_devices[0],
+            checkpoints=checkpoints,
+            checkpoint_paths=checkpoint_paths,
+            specs=specs,
+            templates=templates,
+            dtype=args.dtype,
+            merge_adapter=not args.no_merge_adapter,
+            model_family=args.model_family,
+        )
+        return
+
+    run_parallel_inference(
+        worker_run_groups,
+        devices=active_devices,
+        checkpoints=checkpoints,
+        checkpoint_paths=checkpoint_paths,
+        specs=specs,
+        templates=templates,
+        dtype=args.dtype,
+        merge_adapter=not args.no_merge_adapter,
+        model_family=args.model_family,
+    )
 
 
 if __name__ == "__main__":

@@ -48,7 +48,9 @@ from scripts.infer_two_stage import (
     DEFAULT_INFERENCE_SEEDS,
     build_seed_first_run_groups,
     clear_planned_run_outputs,
+    distribute_run_groups,
     parse_seeds,
+    resolve_worker_devices,
     validate_choices,
 )
 
@@ -360,6 +362,49 @@ def test_inference_plan_completes_each_seed_before_the_next(tmp_path: Path) -> N
         42,
         42,
         42,
+    ]
+
+
+def test_two_gpu_inference_uses_visible_cuda_devices() -> None:
+    assert resolve_worker_devices("cuda", 2, cuda_device_count=2) == ["cuda:0", "cuda:1"]
+
+    with pytest.raises(RuntimeError, match="only 1 CUDA device"):
+        resolve_worker_devices("cuda", 2, cuda_device_count=1)
+    with pytest.raises(ValueError, match="requires --device cuda"):
+        resolve_worker_devices("cuda:1", 2, cuda_device_count=2)
+
+
+def test_inference_groups_are_split_between_two_gpu_workers(tmp_path: Path) -> None:
+    groups = build_seed_first_run_groups(
+        methods=["sft", "fkl"],
+        dataset_names=["cypherbench"],
+        seeds=[10, 42],
+        output_root=tmp_path,
+        options=InferenceOptions(),
+    )
+
+    worker_groups = distribute_run_groups(groups, 2)
+
+    assert [[(seed, method) for seed, method, _runs in assigned] for assigned in worker_groups] == [
+        [(10, "sft"), (42, "sft")],
+        [(10, "fkl"), (42, "fkl")],
+    ]
+
+
+def test_single_method_group_splits_datasets_between_two_gpu_workers(tmp_path: Path) -> None:
+    groups = build_seed_first_run_groups(
+        methods=["sft"],
+        dataset_names=["cypherbench", "mind_the_query", "neo4j_text2cypher"],
+        seeds=[42],
+        output_root=tmp_path,
+        options=InferenceOptions(),
+    )
+
+    worker_groups = distribute_run_groups(groups, 2)
+
+    assert [[run[0] for _seed, _method, runs in assigned for run in runs] for assigned in worker_groups] == [
+        ["cypherbench", "neo4j_text2cypher"],
+        ["mind_the_query"],
     ]
 
 

@@ -57,6 +57,12 @@ Chạy toàn bộ model và cả ba benchmark:
 bash scripts/infer_all_qwen3_lora.sh
 ```
 
+Chạy hai GPU song song bằng hai worker, mỗi worker giữ một model trên GPU riêng:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh --num-gpus 2
+```
+
 Hoặc chạy trực tiếp trên Linux:
 
 ```bash
@@ -82,9 +88,10 @@ CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
   --methods teacher_lora,sft,fkl
 ```
 
-Trên nhiều GPU, chạy nhiều process với danh sách method không giao nhau. Mỗi
-process batch song song các schema unit trên GPU của nó; không nên load nhiều
-adapter vào cùng một GPU.
+Trên nhiều GPU, truyền `--num-gpus N`. Script dùng multiprocessing `spawn`, tạo
+một worker cho mỗi CUDA device visible và chia các nhóm `seed + method` giữa
+các worker. Mỗi worker batch song song các schema unit trên GPU của nó và chỉ
+load một model tại một thời điểm.
 
 Nếu base model trên Hugging Face cần authentication, đặt một trong hai biến:
 

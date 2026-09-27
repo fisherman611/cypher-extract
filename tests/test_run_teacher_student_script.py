@@ -27,3 +27,11 @@ def test_teacher_student_runner_can_force_retraining_and_reinference() -> None:
     # Old inference outputs belong to the deleted checkpoints, so retrain implies reinfer.
     assert 'if [[ "${RETRAIN}" == "1" ]]; then\n  REINFER=1\nfi' in script
     assert "inference_args+=(--overwrite)" in script
+
+
+def test_teacher_student_runner_uses_two_inference_gpus_by_default() -> None:
+    script = Path("scripts/run_teacher_student.sh").read_text(encoding="utf-8")
+
+    assert 'INFERENCE_NUM_GPUS="${INFERENCE_NUM_GPUS:-2}"' in script
+    assert "--inference-gpus N" in script
+    assert '--num-gpus "${INFERENCE_NUM_GPUS}"' in script

@@ -642,28 +642,34 @@ Base model được lấy từ `adapter_config.json`:
 - `teacher_lora`: `Qwen/Qwen3-4B-Instruct-2507`;
 - 12 student methods: `Qwen/Qwen3-0.6B`.
 
-### 3. Chạy toàn bộ trên một GPU
+### 3. Chạy toàn bộ trên hai GPU
 
-Chạy đủ 13 model trên cả ba benchmark bằng GPU 0:
+Chạy đủ 13 model trên cả ba benchmark bằng hai GPU:
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3_lora.sh \
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
+  --num-gpus 2 \
   --selector-batch-size 128 \
   --generator-batch-size 16 \
   --dtype bfloat16 \
   --device cuda
 ```
 
-Lệnh trên chạy model tuần tự để không giữ nhiều model trong VRAM. Trong mỗi
+Script tạo một worker cho mỗi GPU và chia các nhóm `seed + method` giữa hai
+worker. Mỗi worker chỉ giữ một model trong VRAM tại một thời điểm. Trong mỗi
 model, selector units và generator samples được infer theo batch. Nếu một batch
 gây CUDA OOM, runner tự chia đôi batch cho đến khi chạy được hoặc chỉ còn một
 sample, sau đó ghi nhớ batch size an toàn cho các batch có cùng token budget.
 
+Để chạy như trước trên một GPU, bỏ `--num-gpus 2` và chỉ expose một GPU bằng
+`CUDA_VISIBLE_DEVICES=0`.
+
 Để dùng checkpoint root local khác:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/infer_all_qwen3_lora.sh \
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
+  --num-gpus 2 \
   --checkpoint-root /mnt/checkpoints/cypher-extract/results/lora \
   --selector-batch-size 128 \
   --generator-batch-size 16
@@ -701,44 +707,19 @@ CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
 
 ### 5. Chạy song song trên nhiều GPU
 
-Pipeline song song schema units bằng batching trên từng GPU. Để chạy nhiều
-method đồng thời, khởi tạo một process cho mỗi GPU và đảm bảo danh sách method
-không trùng nhau. Ví dụ với bốn GPU:
+`--num-gpus` có thể lớn hơn hai nếu có đủ workload. GPU vật lý được chọn bằng
+`CUDA_VISIBLE_DEVICES`; bên trong process chúng được đánh số lại từ `cuda:0`.
+Ví dụ với bốn GPU:
 
 ```bash
-mkdir -p logs/inference
-
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_two_stage.py \
-  --methods teacher_lora,sft,fkl \
-  > logs/inference/gpu0.log 2>&1 &
-pid0=$!
-
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_two_stage.py \
-  --methods rkl,sfkl,srkl,csd \
-  > logs/inference/gpu1.log 2>&1 &
-pid1=$!
-
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_two_stage.py \
-  --methods hpd,amid,fdd_sfkl \
-  > logs/inference/gpu2.log 2>&1 &
-pid2=$!
-
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_two_stage.py \
-  --methods fdd_srkl,distillm_adaptive_sfkl,distillm_adaptive_srkl \
-  > logs/inference/gpu3.log 2>&1 &
-pid3=$!
-
-wait "$pid0" "$pid1" "$pid2" "$pid3"
+CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/infer_two_stage.py \
+  --num-gpus 4 \
+  --methods all
 ```
 
-Theo dõi log:
-
-```bash
-tail -f logs/inference/gpu0.log
-```
-
-Mỗi process nhìn GPU được gán qua `CUDA_VISIBLE_DEVICES` như `cuda:0`, vì vậy
-giữ `--device cuda` hoặc bỏ tham số này.
+Các output directory vẫn tách theo seed/method/dataset, nên resume và
+`--overwrite` giữ nguyên hành vi. Không chạy thêm process thủ công trên cùng
+output directory.
 
 ### 6. Resume
 

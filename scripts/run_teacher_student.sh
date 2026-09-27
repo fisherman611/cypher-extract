@@ -15,6 +15,7 @@ RUN_SETTINGS="${RUN_SETTINGS:-all}"
 RUN_PHASE="${RUN_PHASE:-all}"
 INFERENCE_SEEDS="${INFERENCE_SEEDS:-42}"
 INFERENCE_DATASETS="${INFERENCE_DATASETS:-}"
+INFERENCE_NUM_GPUS="${INFERENCE_NUM_GPUS:-2}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 RETRAIN="${RETRAIN:-0}"
 REINFER="${REINFER:-0}"
@@ -63,6 +64,7 @@ Options:
   --phase VALUE           train, infer, or all (default: all)
   --seeds CSV             Inference seeds (default: 42)
   --datasets CSV          Optional inference dataset selection
+  --inference-gpus N      Parallel inference GPU workers (default: 2)
   --skip-completed        Skip completed training/inference work (default)
   --retrain               Delete each selected model's training output_dir and
                           train it from scratch; implies --reinfer because old
@@ -125,6 +127,12 @@ while (( $# > 0 )); do
       shift 2
       ;;
     --datasets=*) INFERENCE_DATASETS="${1#*=}"; shift ;;
+    --inference-gpus | --num-gpus)
+      [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+      INFERENCE_NUM_GPUS="$2"
+      shift 2
+      ;;
+    --inference-gpus=* | --num-gpus=*) INFERENCE_NUM_GPUS="${1#*=}"; shift ;;
     --skip-completed)
       SKIP_COMPLETED=1
       RETRAIN=0
@@ -159,6 +167,11 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+
+if [[ ! "${INFERENCE_NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Unsupported INFERENCE_NUM_GPUS=${INFERENCE_NUM_GPUS}; expected a positive integer." >&2
+  exit 2
+fi
 
 case "${RUN_PHASE}" in
   all | train | infer) ;;
@@ -471,6 +484,7 @@ run_inference() {
   local inference_args=(
     --methods "${methods}"
     --seeds "${INFERENCE_SEEDS}"
+    --num-gpus "${INFERENCE_NUM_GPUS}"
   )
 
   if [[ -n "${INFERENCE_DATASETS}" ]]; then
@@ -485,6 +499,7 @@ run_inference() {
   echo "Running ${model_family} inference: ${setting}"
   echo "Methods: ${methods}"
   echo "Seeds: ${INFERENCE_SEEDS}"
+  echo "GPU workers: ${INFERENCE_NUM_GPUS}"
   echo "============================================================"
   bash scripts/infer_all.sh "${model_family}" "${setting}" "${inference_args[@]}"
 }
