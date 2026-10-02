@@ -6,7 +6,8 @@ param(
     [string[]]$Methods = @(),
     [string[]]$Datasets = @("cypherbench", "mind_the_query", "neo4j_text2cypher"),
     [string[]]$Metrics = @("execution_accuracy", "psjs", "executable"),
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [switch]$SkipExisting
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,6 +76,10 @@ foreach ($seed in $Seeds) {
             }
 
             $datasetOutput = Join-Path $EvaluationRoot "seed$seed/$method/$dataset"
+            if ($SkipExisting -and (Test-Path -LiteralPath (Join-Path $datasetOutput "all_graphs_summary.json") -PathType Leaf)) {
+                Write-Host "[seed$seed/$method/$dataset] already evaluated, skipping"
+                continue
+            }
             foreach ($graph in $DatasetGraphs[$dataset]) {
                 $outputPath = Join-Path $datasetOutput "$graph/cypher_scores.jsonl"
                 $evalArgs = @(
