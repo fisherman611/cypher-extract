@@ -5,9 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Default first run: all four teachers and only the full-SFT plus normalized
-# full-SFT students for every model family. With --phase all, each model is
-# inferred with seed 42 immediately after its training finishes.
+# Default first run: the LoRA and normalized LoRA teachers (the full-finetune
+# settings reuse them) and only the full-SFT plus normalized full-SFT students
+# for every model family. With --phase all, each model is inferred with seed 42
+# immediately after its training finishes.
 MODEL_FAMILIES="${MODEL_FAMILIES:-llama3,qwen3,qwen2.5_coder}"
 STUDENT_METHODS="${STUDENT_METHODS:-sft}"
 STUDENT_SETTINGS="${STUDENT_SETTINGS:-full_finetune,full_finetune_normalized}"
@@ -320,21 +321,27 @@ setting_paths() {
       fi
       TEACHER_CONFIG="teacher_lora_${model_family}.yaml"
       TEACHER_METHOD="teacher_lora"
+      SHARED_TEACHER=0
       ;;
     lora_normalized)
       CONFIG_DIRECTORY="${config_family}_normalized_loss"
       TEACHER_CONFIG="teacher_lora_${model_family}_normalized_loss.yaml"
       TEACHER_METHOD="teacher_lora"
+      SHARED_TEACHER=0
       ;;
+    # Full-finetune students distill from the lora / lora_normalized teacher. That
+    # teacher is only trained here when missing, and is inferred under its own setting.
     full_finetune)
       CONFIG_DIRECTORY="${config_family}_full_finetune"
-      TEACHER_CONFIG="teacher_full_${model_family}.yaml"
-      TEACHER_METHOD="teacher_full"
+      TEACHER_CONFIG="teacher_lora_${model_family}.yaml"
+      TEACHER_METHOD="teacher_lora"
+      SHARED_TEACHER=1
       ;;
     full_finetune_normalized)
       CONFIG_DIRECTORY="${config_family}_full_finetune_normalized_loss"
-      TEACHER_CONFIG="teacher_full_${model_family}_normalized_loss.yaml"
-      TEACHER_METHOD="teacher_full"
+      TEACHER_CONFIG="teacher_lora_${model_family}_normalized_loss.yaml"
+      TEACHER_METHOD="teacher_lora"
+      SHARED_TEACHER=1
       ;;
   esac
 }
@@ -462,10 +469,16 @@ remove_training_output() {
 run_training() {
   local label="$1"
   local config_path="$2"
+  local shared="${3:-0}"
   local output_dir
 
   output_dir="$(training_output_dir "${config_path}")"
-  if [[ "${RETRAIN}" == "1" ]]; then
+  if [[ "${shared}" == "1" ]] && training_is_complete "${output_dir}"; then
+    # Never retrain a teacher shared with another setting: its students depend on it.
+    echo "Reusing shared ${label} (retrain it through its own lora setting)"
+    echo "Output: ${output_dir}"
+    return 0
+  elif [[ "${RETRAIN}" == "1" ]]; then
     # Fresh training refuses an output_dir that still holds old checkpoints.
     remove_training_output "${label}" "${output_dir}"
   elif training_is_complete "${output_dir}"; then
@@ -516,8 +529,9 @@ if [[ "${RUN_PHASE}" == "all" || "${RUN_PHASE}" == "train" ]]; then
       echo "============================================================"
       run_training \
         "${model_family} teacher: ${setting}" \
-        "configs/distillation/${TEACHER_CONFIG}"
-      if [[ "${RUN_PHASE}" == "all" ]]; then
+        "configs/distillation/${TEACHER_CONFIG}" \
+        "${SHARED_TEACHER}"
+      if [[ "${RUN_PHASE}" == "all" && "${SHARED_TEACHER}" != "1" ]]; then
         run_inference "${model_family}" "${setting}" "${TEACHER_METHOD}"
       fi
 
@@ -544,14 +558,19 @@ if [[ "${RUN_PHASE}" == "infer" ]]; then
   for model_family in "${SELECTED_MODEL_FAMILIES[@]}"; do
     for setting in "${SELECTED_SETTINGS[@]}"; do
       setting_paths "${model_family}" "${setting}"
-      inference_methods="${TEACHER_METHOD}"
+      inference_methods=""
+      if [[ "${SHARED_TEACHER}" != "1" ]]; then
+        inference_methods="${TEACHER_METHOD}"
+      fi
       if has_student_setting "${setting}"; then
         for method in "${SELECTED_METHODS[@]}"; do
-          inference_methods+=",${method}"
+          inference_methods+="${inference_methods:+,}${method}"
         done
       fi
 
-      run_inference "${model_family}" "${setting}" "${inference_methods}"
+      if [[ -n "${inference_methods}" ]]; then
+        run_inference "${model_family}" "${setting}" "${inference_methods}"
+      fi
     done
   done
 fi

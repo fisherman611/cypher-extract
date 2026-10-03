@@ -970,7 +970,9 @@ hoặc `qwen2_5_coder`; `setting` là `lora`, `lora_normalized`,
 
 Inference dùng convention tương ứng
 `scripts/infer_all_<family>_<setting>.sh`. Mỗi setting tự chọn đúng checkpoint
-root, output root và loại teacher (`teacher_lora` hoặc `teacher_full`).
+root và output root. Các setting full finetune dùng chung teacher LoRA (thường
+hoặc normalized) nên chỉ suy luận student; teacher được suy luận ở setting LoRA
+tương ứng.
 
 ### Training logs and per-epoch evaluation artifacts
 

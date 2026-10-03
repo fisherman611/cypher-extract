@@ -23,6 +23,7 @@ from schema_grounding.inference.outputs import ResumableJsonl
 from schema_grounding.inference.parsing import parse_selector_label
 from schema_grounding.inference.pipeline import (
     InferenceOptions,
+    _StageProgress,
     compute_inference_metrics,
     inference_run_complete,
     model_runner_required,
@@ -993,6 +994,71 @@ def test_pipeline_rejects_stale_outputs_after_prompt_changes(tmp_path: Path) -> 
             output_directory=tmp_path / "output",
             options=InferenceOptions(selector_batch_size=2, generator_batch_size=1),
         )
+
+
+def test_pipeline_resumes_with_a_different_selector_batch_size(tmp_path: Path) -> None:
+    test_end_to_end_pipeline_with_fake_model(tmp_path)
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
+
+    manifest = run_dataset_pipeline(
+        method="sft",
+        checkpoint=checkpoint,
+        spec=DatasetSpec("fixture", tmp_path / "benchmark"),
+        runner=None,
+        templates=PromptTemplates.from_repository(REPOSITORY_ROOT),
+        output_directory=tmp_path / "output",
+        options=InferenceOptions(selector_batch_size=512, generator_batch_size=1),
+    )
+
+    assert all(stage["status"] == "reused" for stage in manifest["stages"].values())
+
+
+def test_pipeline_still_rejects_a_different_generator_batch_size(tmp_path: Path) -> None:
+    test_end_to_end_pipeline_with_fake_model(tmp_path)
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
+
+    with pytest.raises(ValueError, match="different configuration"):
+        run_dataset_pipeline(
+            method="sft",
+            checkpoint=checkpoint,
+            spec=DatasetSpec("fixture", tmp_path / "benchmark"),
+            runner=FakeRunner(),
+            templates=PromptTemplates.from_repository(REPOSITORY_ROOT),
+            output_directory=tmp_path / "output",
+            options=InferenceOptions(selector_batch_size=2, generator_batch_size=4),
+        )
+
+
+def test_pipeline_logs_stage_progress(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    test_end_to_end_pipeline_with_fake_model(tmp_path)
+    out = capsys.readouterr().out
+
+    assert "[fixture/selector] start: " in out
+    assert "[fixture/generator] start: 1 queries, batch size 1" in out
+    assert "(100.0%)" in out and "| selected " in out and "| invalid 0" in out
+    assert "| empty_cypher 0" in out
+
+
+def test_stage_progress_throttles_and_reports_eta(capsys: pytest.CaptureFixture[str]) -> None:
+    ticks = iter([0.0, 10.0, 40.0, 50.0])
+    progress = _StageProgress(
+        "ds/selector", total=40, done=10, unit="units", batch_size=10, interval=30.0, clock=lambda: next(ticks)
+    )
+    progress.update(10, invalid=0)  # t=10: inside the interval, silent
+    progress.update(10, invalid=1)  # t=40: logs 20 new units in 40 s
+    progress.update(10, invalid=1)  # t=50: final row always logs
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[0] == "[ds/selector] start: 40 units, batch size 10, resuming after 10"
+    assert lines[1] == (
+        "[ds/selector] 30/40 units (75.0%) | 0.5 units/s | elapsed 0:00:40 | ETA 0:00:20 | invalid 1"
+    )
+    assert lines[2].startswith("[ds/selector] 40/40 units (100.0%)")
+    assert len(lines) == 3
+
+
+def test_selector_batch_size_default_is_larger() -> None:
+    assert InferenceOptions().selector_batch_size == 256
 
 
 def test_invalid_selector_predictions_are_not_counted_as_true_negatives(tmp_path: Path) -> None:

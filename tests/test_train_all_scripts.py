@@ -56,10 +56,14 @@ def test_shared_train_all_runner_maps_every_config_family_and_teacher_type() -> 
     assert 'CONFIG_DIRECTORY="${CONFIG_FAMILY}_full_finetune_normalized_loss"' in script
     assert 'CONFIG_DIRECTORY="qwen2.5_coder"' in script
 
+    # Every setting distills from a LoRA teacher; full-finetune settings share the
+    # lora / lora_normalized teacher instead of training a full one.
     assert 'TEACHER_KIND="teacher_lora"' in script
-    assert 'TEACHER_KIND="teacher_full"' in script
+    assert 'TEACHER_KIND="teacher_full"' not in script
     assert 'TEACHER_OVERRIDE_KEY="ref_model_adapters"' in script
-    assert 'TEACHER_OVERRIDE_KEY="ref_model"' in script
+    assert 'TEACHER_OVERRIDE_KEY="ref_model"' not in script
+    assert 'DEFAULT_TEACHER_RESULTS_SUBDIR="results/lora"' in script
+    assert 'DEFAULT_TEACHER_RESULTS_SUBDIR="results/lora_normalized"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/lora"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/lora_normalized"' in script
     assert 'DEFAULT_RESULTS_SUBDIR="results/full_finetune"' in script
@@ -71,7 +75,9 @@ def test_shared_train_all_runner_preserves_safety_and_output_routing() -> None:
 
     assert 'if [[ "${override}" == resume_from_checkpoint=* ]]; then' in script
     assert "one checkpoint cannot be applied to every method" in script
-    assert 'fresh_outputs=("${TEACHER_OUTPUT}")' in script
+    assert 'if [[ "${REUSE_TEACHER}" != "1" ]]; then\n  fresh_outputs+=("${TEACHER_OUTPUT}")' in script
+    assert 'TEACHER_RESULTS_ROOT="${TEACHER_RESULTS_ROOT:-${PROJECT_ROOT}/${DEFAULT_TEACHER_RESULTS_SUBDIR}}"' in script
+    assert "Reusing existing ${TEACHER_KIND}" in script
     assert 'for checkpoint in "${output_dir}"/checkpoint-*; do' in script
     assert "Choose a new RESULTS_ROOT" in script
     assert 'method_overrides=("output_dir=${output_dir}")' in script

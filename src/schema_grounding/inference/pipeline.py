@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -54,7 +54,7 @@ class GenerationRunner(Protocol):
 
 @dataclass(frozen=True)
 class InferenceOptions:
-    selector_batch_size: int = 100
+    selector_batch_size: int = 256
     generator_batch_size: int = 100
     selector_max_new_tokens: int = 16
     generator_max_new_tokens: int = 256
@@ -95,6 +95,72 @@ def _generator_generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
         "top_k": options.top_k,
         "num_beams": options.num_beams,
     }
+
+
+PROGRESS_LOG_INTERVAL_SECONDS = 30.0
+# Greedy selector decoding consumes no RNG, so its batch size only affects throughput.
+# It is ignored when an existing run_config.json is compared on resume.
+_THROUGHPUT_ONLY_OPTIONS = ("selector_batch_size",)
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds != seconds or seconds == float("inf"):
+        return "?"
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def _count_rows(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+class _StageProgress:
+    """Throttled progress line with rate and ETA for one inference stage."""
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        total: int,
+        done: int,
+        unit: str,
+        batch_size: int,
+        interval: float = PROGRESS_LOG_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.label = label
+        self.total = total
+        self.done = done
+        self.resumed = done
+        self.unit = unit
+        self.interval = interval
+        self.clock = clock
+        self.started = clock()
+        self.last_logged = self.started
+        resumed = f", resuming after {done}" if done else ""
+        print(f"[{label}] start: {total} {unit}, batch size {batch_size}{resumed}", flush=True)
+
+    def update(self, count: int, **extra: Any) -> None:
+        self.done += count
+        now = self.clock()
+        if self.done >= self.total or now - self.last_logged >= self.interval:
+            self.last_logged = now
+            print(self._line(now, extra), flush=True)
+
+    def _line(self, now: float, extra: dict[str, Any]) -> str:
+        elapsed = now - self.started
+        rate = (self.done - self.resumed) / elapsed if elapsed > 0 else 0.0
+        remaining = max(self.total - self.done, 0)
+        eta = remaining / rate if rate > 0 else float("nan")
+        percent = 100.0 * self.done / self.total if self.total else 100.0
+        details = "".join(f" | {key} {value}" for key, value in extra.items())
+        return (
+            f"[{self.label}] {self.done}/{self.total} {self.unit} ({percent:.1f}%) | {rate:.1f} {self.unit}/s"
+            f" | elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}{details}"
+        )
 
 
 def _batches(rows: Iterable[dict[str, Any]], batch_size: int) -> Iterator[list[dict[str, Any]]]:
@@ -151,6 +217,14 @@ def run_selector_stage(
     started = time.monotonic()
     generated_rows = 0
     invalid_rows = 0
+    positive_rows = 0
+    progress = _StageProgress(
+        f"{spec.name}/selector",
+        total=_count_rows(spec.selection_test),
+        done=completed_rows,
+        unit="units",
+        batch_size=options.selector_batch_size,
+    )
     with output.open_append() as handle:
         source = _rows_after_progress(spec.selection_test, completed_rows, last_id)
         for batch in _batches(source, options.selector_batch_size):
@@ -165,6 +239,7 @@ def run_selector_stage(
             for row, raw_output in zip(batch, raw_outputs, strict=True):
                 parsed = parse_selector_label(raw_output)
                 invalid_rows += parsed is None
+                positive_rows += parsed == POSITIVE_SELECTOR_LABEL
                 write_json_line(
                     handle,
                     {
@@ -184,8 +259,11 @@ def run_selector_stage(
                 completed_rows + generated_rows,
                 str(batch[-1]["id"]),
             )
-            if generated_rows and generated_rows % (options.selector_batch_size * 100) == 0:
-                print(f"[{spec.name}/selector] generated {completed_rows + generated_rows} unit labels", flush=True)
+            progress.update(
+                len(batch),
+                selected=f"{100.0 * positive_rows / generated_rows:.1f}%",
+                invalid=invalid_rows,
+            )
     output.publish()
     return {
         "status": "completed",
@@ -289,7 +367,15 @@ def run_generator_stage(
     started = time.monotonic()
     generated_rows = 0
     max_prompt_length = 0
+    empty_rows = 0
     context_limit = _context_limit(runner)
+    progress = _StageProgress(
+        f"{spec.name}/generator",
+        total=_count_rows(sub_schema_path),
+        done=completed_rows,
+        unit="queries",
+        batch_size=options.generator_batch_size,
+    )
     with output.open_append() as handle:
         source = _rows_after_progress(sub_schema_path, completed_rows, last_id)
         for batch in _batches(source, options.generator_batch_size):
@@ -329,6 +415,7 @@ def run_generator_stage(
                 }
                 if "sub_schema" in reference:
                     prediction["reference_sub_schema"] = reference["sub_schema"]
+                empty_rows += not prediction["predicted_cypher"].strip()
                 write_json_line(handle, prediction)
                 generated_rows += 1
             output.checkpoint_rng_progress(
@@ -336,11 +423,7 @@ def run_generator_stage(
                 completed_rows + generated_rows,
                 str(batch[-1]["id"]),
             )
-            if generated_rows and generated_rows % (options.generator_batch_size * 25) == 0:
-                print(
-                    f"[{spec.name}/generator] generated {completed_rows + generated_rows} Cypher queries",
-                    flush=True,
-                )
+            progress.update(len(batch), max_prompt_tokens=max_prompt_length, empty_cypher=empty_rows)
     output.publish()
     return {
         "status": "completed",
@@ -544,7 +627,7 @@ def prepare_run_directory(
     }
     if run_config_path.is_file():
         existing_config = json.loads(run_config_path.read_text(encoding="utf-8"))
-        if existing_config != run_config:
+        if _comparable_run_config(existing_config) != _comparable_run_config(run_config):
             raise ValueError(
                 f"Existing inference outputs in {output_directory} were created with a different configuration "
                 "or with different input/prompt contents. Choose a new --output-dir or remove that method/dataset "
@@ -553,6 +636,18 @@ def prepare_run_directory(
     else:
         write_json_atomic(run_config_path, run_config)
     return run_config
+
+
+def _comparable_run_config(run_config: dict[str, Any]) -> dict[str, Any]:
+    """Drop throughput-only options so resuming with a new selector batch size is allowed."""
+
+    options = run_config.get("options")
+    if not isinstance(options, dict):
+        return run_config
+    return {
+        **run_config,
+        "options": {key: value for key, value in options.items() if key not in _THROUGHPUT_ONLY_OPTIONS},
+    }
 
 
 def model_runner_required(output_directory: Path) -> bool:

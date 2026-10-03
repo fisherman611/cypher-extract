@@ -103,7 +103,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--dtype", choices=("auto", "bfloat16", "float16", "float32"), default="bfloat16")
-    parser.add_argument("--selector-batch-size", type=int, default=100)
+    parser.add_argument(
+        "--selector-batch-size",
+        type=int,
+        default=InferenceOptions.selector_batch_size,
+        help="Selector prompts per generate() call; halved automatically on CUDA OOM.",
+    )
     parser.add_argument("--generator-batch-size", type=int, default=100)
     parser.add_argument("--generator-max-new-tokens", type=int, default=256)
     parser.add_argument(

@@ -154,12 +154,8 @@ def test_full_finetune_configs_match_base_presets(full_directory: str, base_fami
         assert full_config.pop("learning_rate") == 2e-5
         base_config.pop("learning_rate")
         if "ref_model_adapters" in base_config:
-            assert full_config.pop("ref_model") == f"results/full_finetune/{base_family}/teacher_full"
-            base_config.pop("ref_model")
-            base_config.pop("ref_model_revision")
-            base_config.pop("ref_model_adapters")
-            assert "ref_model_revision" not in full_config
-            assert "ref_model_adapters" not in full_config
+            # Full-finetune students distill from the same LoRA teacher as the lora preset.
+            assert full_config["ref_model_adapters"] == f"results/lora/{base_family}/teacher_lora"
         assert full_config == base_config
 
 
@@ -190,11 +186,11 @@ def test_full_normalized_configs_match_full_finetune_presets(
             f"results/full_finetune_normalized/{base_family}/{normalized_path.stem}"
         )
         full_config.pop("output_dir")
-        if "ref_model" in full_config:
-            assert normalized_config.pop("ref_model") == (
-                f"results/full_finetune_normalized/{base_family}/teacher_full"
+        if "ref_model_adapters" in full_config:
+            assert normalized_config.pop("ref_model_adapters") == (
+                f"results/lora_normalized/{base_family}/teacher_lora"
             )
-            full_config.pop("ref_model")
+            full_config.pop("ref_model_adapters")
         assert normalized_config == full_config
 
 
@@ -277,7 +273,7 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
     assert teacher["dataset"] == kd["dataset"]
     assert teacher["eval_dataset"] == kd["eval_dataset"]
     assert teacher["dataset_dir"] == kd["dataset_dir"]
-    assert teacher["learning_rate"] == 1e-5
+    assert teacher["learning_rate"] == 1e-4
     assert teacher["lr_scheduler_type"] == "cosine"
     assert teacher["warmup_ratio"] == 0.1
     assert "warmup_steps" not in teacher
@@ -287,31 +283,31 @@ def test_teacher_lora_output_is_wired_into_family_kd_configs(teacher_path: str, 
 @pytest.mark.parametrize(
     ("teacher_path", "kd_path", "selector_weight"),
     [
-        ("configs/distillation/teacher_full_qwen3.yaml", "configs/qwen3_full_finetune/fkl.yaml", None),
-        ("configs/distillation/teacher_full_llama3.yaml", "configs/llama3_full_finetune/fkl.yaml", None),
+        ("configs/distillation/teacher_lora_qwen3.yaml", "configs/qwen3_full_finetune/fkl.yaml", None),
+        ("configs/distillation/teacher_lora_llama3.yaml", "configs/llama3_full_finetune/fkl.yaml", None),
         (
-            "configs/distillation/teacher_full_qwen2.5_coder.yaml",
+            "configs/distillation/teacher_lora_qwen2.5_coder.yaml",
             "configs/qwen2.5_full_finetune/fkl.yaml",
             None,
         ),
         (
-            "configs/distillation/teacher_full_qwen3_normalized_loss.yaml",
+            "configs/distillation/teacher_lora_qwen3_normalized_loss.yaml",
             "configs/qwen3_full_finetune_normalized_loss/fkl.yaml",
             0.5,
         ),
         (
-            "configs/distillation/teacher_full_llama3_normalized_loss.yaml",
+            "configs/distillation/teacher_lora_llama3_normalized_loss.yaml",
             "configs/llama3_full_finetune_normalized_loss/fkl.yaml",
             0.5,
         ),
         (
-            "configs/distillation/teacher_full_qwen2.5_coder_normalized_loss.yaml",
+            "configs/distillation/teacher_lora_qwen2.5_coder_normalized_loss.yaml",
             "configs/qwen2.5_full_finetune_normalized_loss/fkl.yaml",
             0.5,
         ),
     ],
 )
-def test_teacher_full_output_is_wired_into_full_finetune_configs(
+def test_lora_teacher_output_is_wired_into_full_finetune_configs(
     teacher_path: str,
     kd_path: str,
     selector_weight: float | None,
@@ -321,13 +317,13 @@ def test_teacher_full_output_is_wired_into_full_finetune_configs(
 
     assert teacher["distill_method"] == "sft"
     assert teacher["kd_ratio"] == 0.0
-    assert teacher["finetuning_type"] == "full"
-    assert not any(key.startswith("lora_") for key in teacher)
+    assert teacher["finetuning_type"] == "lora"
+    assert kd["finetuning_type"] == "full"
     assert "ref_model" not in teacher
     assert "ref_model_adapters" not in teacher
-    assert teacher["output_dir"] == kd["ref_model"]
-    assert "ref_model_revision" not in kd
-    assert "ref_model_adapters" not in kd
+    assert teacher["model_name_or_path"] == kd["ref_model"]
+    assert teacher["model_revision"] == kd["ref_model_revision"]
+    assert teacher["output_dir"] == kd["ref_model_adapters"]
     assert teacher["dataset"] == kd["dataset"]
     assert teacher["eval_dataset"] == kd["eval_dataset"]
     assert teacher["dataset_dir"] == kd["dataset_dir"]

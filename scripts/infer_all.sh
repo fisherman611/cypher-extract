@@ -24,7 +24,9 @@ case "${MODEL_FAMILY}" in
     ;;
 esac
 
-FULL_METHODS="teacher_full,sft,fkl,rkl,sfkl,srkl,csd,hpd,amid,fdd_sfkl,fdd_srkl,distillm_adaptive_sfkl,distillm_adaptive_srkl"
+# Full-finetune students distill from the lora / lora_normalized teacher, which is
+# inferred under its own setting; teacher_full can still be requested via --methods.
+FULL_METHODS="sft,fkl,rkl,sfkl,srkl,csd,hpd,amid,fdd_sfkl,fdd_srkl,distillm_adaptive_sfkl,distillm_adaptive_srkl"
 case "${SETTING}" in
   lora)
     DEFAULT_CHECKPOINT_ROOT="results/lora"

@@ -46,6 +46,7 @@ case "${SETTING}" in
     TEACHER_CONFIG_NAME="teacher_lora_${MODEL_FAMILY}.yaml"
     TEACHER_OVERRIDE_KEY="ref_model_adapters"
     DEFAULT_RESULTS_SUBDIR="results/lora"
+    DEFAULT_TEACHER_RESULTS_SUBDIR=""
     ;;
   lora_normalized)
     CONFIG_DIRECTORY="${CONFIG_FAMILY}_normalized_loss"
@@ -53,20 +54,25 @@ case "${SETTING}" in
     TEACHER_CONFIG_NAME="teacher_lora_${MODEL_FAMILY}_normalized_loss.yaml"
     TEACHER_OVERRIDE_KEY="ref_model_adapters"
     DEFAULT_RESULTS_SUBDIR="results/lora_normalized"
+    DEFAULT_TEACHER_RESULTS_SUBDIR=""
     ;;
   full_finetune)
+    # Full-finetune students distill from the same LoRA teacher as the lora setting,
+    # reusing results/lora/<family>/teacher_lora when it already exists.
     CONFIG_DIRECTORY="${CONFIG_FAMILY}_full_finetune"
-    TEACHER_KIND="teacher_full"
-    TEACHER_CONFIG_NAME="teacher_full_${MODEL_FAMILY}.yaml"
-    TEACHER_OVERRIDE_KEY="ref_model"
+    TEACHER_KIND="teacher_lora"
+    TEACHER_CONFIG_NAME="teacher_lora_${MODEL_FAMILY}.yaml"
+    TEACHER_OVERRIDE_KEY="ref_model_adapters"
     DEFAULT_RESULTS_SUBDIR="results/full_finetune"
+    DEFAULT_TEACHER_RESULTS_SUBDIR="results/lora"
     ;;
   full_finetune_normalized)
     CONFIG_DIRECTORY="${CONFIG_FAMILY}_full_finetune_normalized_loss"
-    TEACHER_KIND="teacher_full"
-    TEACHER_CONFIG_NAME="teacher_full_${MODEL_FAMILY}_normalized_loss.yaml"
-    TEACHER_OVERRIDE_KEY="ref_model"
+    TEACHER_KIND="teacher_lora"
+    TEACHER_CONFIG_NAME="teacher_lora_${MODEL_FAMILY}_normalized_loss.yaml"
+    TEACHER_OVERRIDE_KEY="ref_model_adapters"
     DEFAULT_RESULTS_SUBDIR="results/full_finetune_normalized"
+    DEFAULT_TEACHER_RESULTS_SUBDIR="results/lora_normalized"
     ;;
   *)
     echo "Unsupported training setting: ${SETTING}" >&2
@@ -81,7 +87,26 @@ if [[ "${RESULTS_ROOT}" != /* ]]; then
   RESULTS_ROOT="${PROJECT_ROOT}/${RESULTS_ROOT}"
 fi
 FAMILY_RESULTS="${RESULTS_ROOT}/${MODEL_FAMILY}"
-TEACHER_OUTPUT="${FAMILY_RESULTS}/${TEACHER_KIND}"
+if [[ -n "${DEFAULT_TEACHER_RESULTS_SUBDIR}" ]]; then
+  # Shared teacher: reuse it when present, otherwise train it in its own results root.
+  TEACHER_RESULTS_ROOT="${TEACHER_RESULTS_ROOT:-${PROJECT_ROOT}/${DEFAULT_TEACHER_RESULTS_SUBDIR}}"
+  if [[ "${TEACHER_RESULTS_ROOT}" != /* ]]; then
+    TEACHER_RESULTS_ROOT="${PROJECT_ROOT}/${TEACHER_RESULTS_ROOT}"
+  fi
+  TEACHER_OUTPUT="${TEACHER_RESULTS_ROOT}/${MODEL_FAMILY}/${TEACHER_KIND}"
+else
+  TEACHER_OUTPUT="${FAMILY_RESULTS}/${TEACHER_KIND}"
+fi
+
+has_lora_teacher_weights() {
+  [[ -f "${TEACHER_OUTPUT}/adapter_config.json" ]] && \
+    [[ -f "${TEACHER_OUTPUT}/adapter_model.safetensors" || -f "${TEACHER_OUTPUT}/adapter_model.bin" ]]
+}
+
+REUSE_TEACHER=0
+if [[ -n "${DEFAULT_TEACHER_RESULTS_SUBDIR}" ]] && has_lora_teacher_weights; then
+  REUSE_TEACHER=1
+fi
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${TRAIN_ALL_LOG_DIR:-${FAMILY_RESULTS}/run_all_logs/${RUN_ID}}"
 
@@ -119,7 +144,10 @@ for config_name in "${CONFIG_NAMES[@]}"; do
   fi
 done
 
-fresh_outputs=("${TEACHER_OUTPUT}")
+fresh_outputs=()
+if [[ "${REUSE_TEACHER}" != "1" ]]; then
+  fresh_outputs+=("${TEACHER_OUTPUT}")
+fi
 for config_name in "${CONFIG_NAMES[@]}"; do
   fresh_outputs+=("${FAMILY_RESULTS}/${config_name%.yaml}")
 done
@@ -138,20 +166,25 @@ cd "${PROJECT_ROOT}"
 
 teacher_config_path="configs/distillation/${TEACHER_CONFIG_NAME}"
 teacher_log_path="${LOG_DIR}/${TEACHER_CONFIG_NAME%.yaml}.log"
-echo
-echo "============================================================"
-echo "Running ${teacher_config_path}"
-echo "Output: ${TEACHER_OUTPUT}"
-echo "Log: ${teacher_log_path}"
-echo "============================================================"
-
-if bash scripts/train.sh "${teacher_config_path}" "$@" \
-  "output_dir=${TEACHER_OUTPUT}" 2>&1 | tee "${teacher_log_path}"; then
-  echo "Completed: ${TEACHER_CONFIG_NAME%.yaml}"
+if [[ "${REUSE_TEACHER}" == "1" ]]; then
+  echo
+  echo "Reusing existing ${TEACHER_KIND} at ${TEACHER_OUTPUT} (set TEACHER_RESULTS_ROOT to use another one)."
 else
-  status=${PIPESTATUS[0]}
-  echo "Failed: ${TEACHER_CONFIG_NAME%.yaml} (exit ${status}); dependent runs were not started." >&2
-  exit "${status}"
+  echo
+  echo "============================================================"
+  echo "Running ${teacher_config_path}"
+  echo "Output: ${TEACHER_OUTPUT}"
+  echo "Log: ${teacher_log_path}"
+  echo "============================================================"
+
+  if bash scripts/train.sh "${teacher_config_path}" "$@" \
+    "output_dir=${TEACHER_OUTPUT}" 2>&1 | tee "${teacher_log_path}"; then
+    echo "Completed: ${TEACHER_CONFIG_NAME%.yaml}"
+  else
+    status=${PIPESTATUS[0]}
+    echo "Failed: ${TEACHER_CONFIG_NAME%.yaml} (exit ${status}); dependent runs were not started." >&2
+    exit "${status}"
+  fi
 fi
 
 has_full_model_weights() {
@@ -160,8 +193,7 @@ has_full_model_weights() {
 }
 
 if [[ "${TEACHER_KIND}" == "teacher_lora" ]]; then
-  if [[ ! -f "${TEACHER_OUTPUT}/adapter_config.json" ]] || \
-     [[ ! -f "${TEACHER_OUTPUT}/adapter_model.safetensors" && ! -f "${TEACHER_OUTPUT}/adapter_model.bin" ]]; then
+  if ! has_lora_teacher_weights; then
     echo "Teacher run completed but did not create LoRA adapter weights in ${TEACHER_OUTPUT}" >&2
     exit 1
   fi

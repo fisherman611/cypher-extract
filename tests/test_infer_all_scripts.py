@@ -69,9 +69,11 @@ def test_shared_infer_all_runner_maps_checkpoint_and_output_roots() -> None:
         assert f'DEFAULT_OUTPUT_ROOT="{output_root}"' in script
 
 
-def test_full_inference_matrix_replaces_only_the_teacher_method() -> None:
+def test_full_inference_matrix_runs_only_the_students() -> None:
     script = Path("scripts/infer_all.sh").read_text(encoding="utf-8")
-    expected = ",".join(("teacher_full", *DEFAULT_METHODS[1:]))
+    # The shared LoRA teacher is inferred under its own lora/lora_normalized setting.
+    assert DEFAULT_METHODS[0] == "teacher_lora"
+    expected = ",".join(DEFAULT_METHODS[1:])
 
     assert f'FULL_METHODS="{expected}"' in script
     assert 'METHODS="all"' in script

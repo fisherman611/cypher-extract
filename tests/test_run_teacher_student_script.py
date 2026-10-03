@@ -29,6 +29,18 @@ def test_teacher_student_runner_can_force_retraining_and_reinference() -> None:
     assert "inference_args+=(--overwrite)" in script
 
 
+def test_full_finetune_settings_share_the_lora_teacher() -> None:
+    script = Path("scripts/run_teacher_student.sh").read_text(encoding="utf-8")
+
+    assert "teacher_full" not in script
+    assert script.count('TEACHER_CONFIG="teacher_lora_${model_family}.yaml"') == 2
+    assert script.count('TEACHER_CONFIG="teacher_lora_${model_family}_normalized_loss.yaml"') == 2
+    assert script.count("SHARED_TEACHER=1") == 2
+    # A shared teacher is never deleted by --retrain and is not re-inferred under full roots.
+    assert 'if [[ "${shared}" == "1" ]] && training_is_complete "${output_dir}"; then' in script
+    assert 'if [[ "${RUN_PHASE}" == "all" && "${SHARED_TEACHER}" != "1" ]]; then' in script
+
+
 def test_teacher_student_runner_uses_two_inference_gpus_by_default() -> None:
     script = Path("scripts/run_teacher_student.sh").read_text(encoding="utf-8")
 
