@@ -145,6 +145,8 @@ negative-only row. Hai thành viên
 của mỗi pair nằm liền nhau và mọi question chỉ được chọn một lần. Quota
 node/relation vẫn lấy theo phân phối gộp của ba tập test. Có thể dùng
 `--target-rows` hoặc đổi `--target-positive-ratio` để chạy ablation khác.
+Lệnh trên chỉ dùng 4.779/6.827 question train; `--cover-all-questions` (dùng
+cho v3) dùng mọi question đúng một lần, xem mục "Dữ liệu v3".
 
 ### Chuẩn bị prompt multitask
 
@@ -154,15 +156,21 @@ selector cùng question được xếp trước, sau đó là các negative-only
 `batch-size=2`, hai thành viên của một pair nằm trong hai mixed batch liên tiếp
 (`generator + selector`); với `batch-size=4`, `8`, ... pair được giữ nguyên trong
 prepared batch khi có đủ selector capacity. Batch còn lại chỉ chứa generator.
+Nếu selector nhiều row hơn generator (v3), batch nơi generator hết được bù bằng
+selector row và phần selector dư tạo thành các batch chỉ chứa selector ở cuối;
+mọi contrast pair phải nằm trong các mixed batch (script báo lỗi nếu không).
 Test generator và selector được ghi thành hai file riêng. Không bật shuffle từng
 row ở data loader vì sẽ phá task mix và contrast pairing. Trainer tự suy ra số
 batch chứa contrast pair, vùng negative-only có thể drop và kích thước block
 shuffle từ `batch_size` trong layout. Khi train 2 GPU với
 `batch-size=2`, hai selector row `YES/NO` của cùng question đi vào cùng một
 global micro-step, còn mỗi GPU vẫn nhận một mixed batch `generator + selector`.
-Với CypherBench final hiện tại (`6,827` generator, `6,827` selector) và
+Với CypherBench final (`6,827` generator, `6,827` selector) và
 `batch-size=2`, train có `6,827` mixed batch (`1 generator + 1 selector`), không
-còn batch generator-only; mọi mẫu nguồn chỉ xuất hiện một lần.
+còn batch generator-only; mọi mẫu nguồn chỉ xuất hiện một lần. Với v3
+(`6,827` generator, `9,753` selector), train có `6,827` mixed batch và `1,463`
+batch selector-only (16.580 row, khoảng 518 bước/epoch ở batch hiệu dụng 32 so
+với 427 trước đây).
 
 Generative eval giữ nguyên metrics hỗn hợp hiện tại nhưng dùng decoding theo
 đúng task inference: selector chạy greedy, tối đa 16 token để trả JSON
@@ -212,15 +220,17 @@ chế này cho dataset tự quản lý. Có thể đổi nguồn grounding bằn
 Mỗi `dataset_dir` được quản lý gắn với đúng một nguồn grounding
 (`MANAGED_DATA_SOURCES` trong `src/distillation/auto_prepare.py`, tra theo tên
 thư mục; nguồn grounding/prepared là thư mục cùng cấp). Các config mặc định
-dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2.2`, tức
-`data/llamafactory_distractor_v2.2` khi không đặt `CYPHER_DATA_ROOT`, được build từ
-`data/cypherbench_schema_grounding_distractor_v2` (tạo bởi
-`scripts/augment_generator_schema.py` với
-`--hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3`).
-Các bản cùng dùng dữ liệu và nhãn của v2, chỉ khác prompt:
+dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v3`, tức
+`data/llamafactory_distractor_v3` khi không đặt `CYPHER_DATA_ROOT`, được build từ
+`data/cypherbench_schema_grounding_distractor_v3` (cách tạo ở mục "Dữ liệu v3"
+bên dưới). Các bản cũ vẫn chọn được bằng cách override `dataset_dir`:
 
-- v2.1: prompt selector có `RELATED SCHEMA CONTEXT` (cache `data/prepared_distractor_v2.1`).
-- v2.2 (mặc định): thêm prompt generator tách `CANDIDATE SCHEMA` (sub-schema
+- v2 (`llamafactory_distractor_v2`): grounding `..._distractor_v2` tạo bằng
+  `augment_generator_schema.py --hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3`
+  từ `..._full_final`; bộ lọc selector lúc đó không tất định nên không tái lập
+  được từ đầu, chỉ dùng lại thư mục đã có.
+- v2.1: dữ liệu v2, prompt selector có `RELATED SCHEMA CONTEXT` (cache `data/prepared_distractor_v2.1`).
+- v2.2: dữ liệu v2, thêm prompt generator tách `CANDIDATE SCHEMA` (sub-schema
   selector chọn) và `OTHER SCHEMA` (phần còn lại của schema). Ở 10% dòng
   generator train (`--generator-miss-ratio`), một unit gold bị chuyển từ
   candidate sang other để mô phỏng selector bỏ sót; dev/test giữ nguyên. Cần
@@ -228,6 +238,85 @@ Các bản cùng dùng dữ liệu và nhãn của v2, chỉ khác prompt:
 
 Thư mục v2.1 đã build vẫn dùng được, nhưng build lại v2.1 bằng code hiện tại sẽ
 ra prompt generator của v2.2.
+
+### Dữ liệu v3 (`llamafactory_distractor_v3`, mặc định)
+
+v3 giữ prompt của v2.2 và dựng lại phần grounding bằng bốn thay đổi:
+
+- Selector phủ mọi question train (`--cover-all-questions`): mỗi question
+  generator train xuất hiện đúng một lần trong selector, dưới dạng một cặp
+  YES/NO hoặc một dòng NO. Giữ YES 30% nên số cặp mỗi graph là
+  `round(question × 0.3 / 0.7)`: 2.926 cặp + 3.901 NO riêng = 9.753 dòng
+  selector cho 6.827 question (trước đây 6.827 dòng từ 4.779 question). Selector
+  vì vậy nhiều dòng hơn generator; phần dư nằm trong các batch selector-only ở
+  cuối (xem "Chuẩn bị prompt multitask").
+- Selector: `filter_selector_stage1.py --pair-strategy hard-competitor` đổi các
+  hàng cùng loại trong mỗi cặp YES/NO để NO cạnh tranh với YES (cùng cặp label,
+  cùng tên relation, hoặc node có property giống, theo `competing_unit_ids`),
+  giữ nguyên mọi số lượng graph × nhãn × loại unit và phủ schema-unit × nhãn.
+  Cặp có NO cạnh tranh: 544/2.926 (bản v2 chỉ có 73/2.048).
+- Generator: `augment_generator_schema.py` thêm `--relation-share` (ưu tiên
+  relation nối các node đã có) và `--count-weights` (phân phối số distractor).
+  Vì selector phủ mọi question nên được kỳ vọng chọn chính xác hơn, v3 dùng
+  mức nhiễu nhẹ theo selector teacher (seed 42, cypherbench test: 61% câu không
+  thừa unit, 6% câu thừa từ 6 unit trở lên) thay vì mức trung bình của teacher,
+  hpd và sft: `--gold-ratio 0.40 --full-ratio 0.05` (mặc định 0.15 / 0.10),
+  `--max-distractors 6`, `--count-weights 1:0.34,2:0.33,3:0.13,4:0.06,5:0.08,6:0.06`
+  (phân phối số unit thừa của teacher khi có thừa). Kết quả trên 6.827 dòng
+  generator: 40.5% gold, 54.3% noisy, 5.1% full schema; vẫn hơi nhiễu hơn
+  teacher ở mọi mức để chừa biên cho selector yếu hơn. Khi báo cáo cần nêu thống
+  kê tổng trên test này đã dùng để chỉnh dữ liệu train.
+  Tỉ lệ relation trong distractor chỉ nhích từ 44% lên 46%: 4 schema train có số relation và node
+  xấp xỉ nhau nên không thể lên 57–69% như nhiễu thật.
+- Bộ lọc selector trước đây không tất định (kết quả phụ thuộc `PYTHONHASHSEED`);
+  nay đã sửa nên cùng `--seed` luôn cho cùng `selection_train.jsonl`. Dữ liệu v2
+  không tái lập được, nên v3 là một mẫu mới chứ không phải v2.2 cộng một thay đổi.
+
+Cách tạo v3 từ đầu (chỉ dùng dữ liệu CypherBench; mọi bước dùng `--seed 42`
+và cho cùng đầu ra khi chạy lại). Bước 1 là pool đầy đủ ở mục "CypherBench
+(Train, Dev, Test)" phía trên:
+
+```powershell
+# 1. Pool: mọi (question, schema unit) của train/dev/test, kèm gold sub-schema.
+python scripts\build_schema_grounding_data.py `
+  --benchmarks-root benchmarks --sources cypherbench --splits train,dev,test `
+  --output-dir data\cypherbench_schema_grounding_full --overwrite
+
+# 2. Selector: mọi question train đúng một lần: 2.926 cặp YES/NO + 3.901 NO riêng
+#    (9.753 dòng, 30% YES); NO trong cặp ưu tiên unit cạnh tranh với YES.
+python scripts\filter_selector_stage1.py `
+  --input-dir data\cypherbench_schema_grounding_full `
+  --output-dir data\cypherbench_schema_grounding_full_final_v3 `
+  --target-positive-ratio 0.30 --seed 42 --pair-strategy hard-competitor `
+  --cover-all-questions --overwrite
+
+# 3. Generator: thêm unit nhiễu vào sub-schema train (dev/test giữ nguyên):
+#    40% gold, 5% full schema, 55% thêm 1-6 unit thừa theo mức của teacher.
+python scripts\augment_generator_schema.py `
+  --input-dir data\cypherbench_schema_grounding_full_final_v3 `
+  --output-dir data\cypherbench_schema_grounding_distractor_v3 `
+  --gold-ratio 0.40 --full-ratio 0.05 `
+  --hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3 `
+  --max-distractors 6 --relation-share 0.9 `
+  --count-weights "1:0.34,2:0.33,3:0.13,4:0.06,5:0.08,6:0.06" `
+  --seed 42 --overwrite
+
+# 4. Prompt multitask (ghép generator + selector theo batch; 10% dòng generator
+#    train giả lập selector bỏ sót) rồi chuyển sang định dạng LlamaFactory.
+python scripts\prepare_multitask_prompts.py `
+  --input-dir data\cypherbench_schema_grounding_distractor_v3 `
+  --output-dir data\prepared_distractor_v3 --batch-size 2 --overwrite
+python scripts\prepare_llamafactory_data.py `
+  --input-dir data\prepared_distractor_v3 `
+  --output-dir data\llamafactory_distractor_v3 --overwrite
+```
+
+Ba bước đầu tạo dữ liệu grounding. Bước 4 không bắt buộc chạy tay:
+`train.sh` và `train_all.sh` tự build khi gặp
+`dataset_dir=data/llamafactory_distractor_v3` (auto-prepare, xem phần trên).
+
+Cache dùng `dataset_dir=data/llamafactory_distractor_v3` (nguồn
+`cypherbench_schema_grounding_distractor_v3`, cache `prepared_distractor_v3`).
 Để chạy baseline gold sub-schema, override `dataset_dir=data/llamafactory`; để
 dùng bản nhiễu v1 (tham số mặc định của script), override
 `dataset_dir=data/llamafactory_distractor_v1`. Auto-prepare từ chối ghi đè một

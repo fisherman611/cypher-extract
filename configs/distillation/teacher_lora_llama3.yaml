@@ -7,7 +7,7 @@ model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
 model_revision: 8afb486c1db24fe5011ec46dfbe5b5dccdb575c2
 dataset: cypher_prepared_train
 eval_dataset: cypher_prepared_eval
-dataset_dir: ${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2.2
+dataset_dir: ${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v3
 template: llama3
 cutoff_len: 1024
 packing: false

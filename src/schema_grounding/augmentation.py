@@ -56,6 +56,13 @@ class AugmentationConfig:
     lexical_weight: float = 0.25
     random_weight: float = 0.25
     seed: int = 42
+    # Probability that a sampled distractor is a relationship (rather than a node) when
+    # its pool offers both kinds; relationships whose endpoints are already selected are
+    # preferred. None keeps the original uniform-over-pool sampling.
+    relation_share: float | None = None
+    # Weights for the number of added units 1..len(count_weights) of a noisy row. None
+    # keeps the original uniform draw over 1..max_distractors.
+    count_weights: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.gold_ratio < 0 or self.full_ratio < 0 or self.gold_ratio + self.full_ratio > 1:
@@ -64,6 +71,13 @@ class AugmentationConfig:
             raise ValueError("max_distractors must be at least 1.")
         if any(weight < 0 for weight in self.pool_weights) or sum(self.pool_weights) <= 0:
             raise ValueError("Distractor pool weights must be non-negative with a positive sum.")
+        if self.relation_share is not None and not 0.0 <= self.relation_share <= 1.0:
+            raise ValueError("relation_share must be in [0, 1].")
+        if self.count_weights is not None:
+            if not self.count_weights or any(weight < 0 for weight in self.count_weights):
+                raise ValueError("count_weights must be a non-empty sequence of non-negative weights.")
+            if self.count_weights[0] <= 0:
+                raise ValueError("count_weights[0] (the weight of one added unit) must be positive.")
 
     @property
     def pool_weights(self) -> tuple[float, float, float, float]:
@@ -197,6 +211,15 @@ def distractor_pools(
     }
 
 
+def _draw_distractor_count(config: AugmentationConfig, cap: int, rng: random.Random) -> int:
+    """Draw how many units a noisy row adds, at most ``cap``."""
+
+    if config.count_weights is None:
+        return rng.randint(1, cap)
+    weights = list(config.count_weights[:cap])
+    return rng.choices(range(1, len(weights) + 1), weights=weights)[0]
+
+
 def example_rng(seed: int, example_id: str) -> random.Random:
     """Derive an order-independent, process-stable RNG for one example."""
 
@@ -224,7 +247,26 @@ def sample_distractors(
         if not available:
             break
         pool = rng.choices(available, weights=[weights[name] for name in available])[0]
-        unit_id = remaining[pool].pop(rng.randrange(len(remaining[pool])))
+        if config.relation_share is None:
+            index = rng.randrange(len(remaining[pool]))
+        else:
+            kinds = {"relation": [], "node": []}
+            for position, candidate in enumerate(remaining[pool]):
+                kinds[units_by_id[candidate]["kind"]].append(position)
+            if kinds["relation"] and kinds["node"]:
+                positions = kinds["relation"] if rng.random() < config.relation_share else kinds["node"]
+            else:
+                positions = kinds["relation"] or kinds["node"]
+            # Prefer relationships between nodes that are already selected: they add no closure
+            # nodes, like the relationships real selectors add around the gold nodes.
+            attached = [
+                position
+                for position in positions
+                if _endpoint_ids(units_by_id[remaining[pool][position]]) <= selected
+            ]
+            positions = attached or positions
+            index = positions[rng.randrange(len(positions))]
+        unit_id = remaining[pool].pop(index)
         if unit_id in selected:
             continue
         closure = [node_id for node_id in sorted(_endpoint_ids(units_by_id[unit_id])) if node_id not in selected]
@@ -256,7 +298,7 @@ def augment_generation_row(
         mode, added = FULL_MODE, non_gold
     else:
         mode = NOISY_MODE
-        target = rng.randint(1, min(config.max_distractors, len(non_gold)))
+        target = _draw_distractor_count(config, min(config.max_distractors, len(non_gold)), rng)
         pools = distractor_pools(units, gold_ids, str(row["question"]))
         added = sample_distractors(units, gold_ids, pools, target, config, rng)
 

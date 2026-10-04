@@ -243,3 +243,84 @@ def test_script_rewrites_only_generator_train_rows(tmp_path, monkeypatch) -> Non
     manifest = json.loads((output_dir / "augmentation_manifest.json").read_text(encoding="utf-8"))
     assert manifest["train"]["rows"] == 10
     assert manifest["rewritten_files"] == ["generation_train.jsonl"]
+
+
+def _added_kinds(config: AugmentationConfig, rows: int = 300) -> tuple[int, int]:
+    relations = nodes = 0
+    for index in range(rows):
+        augmented = augment_generation_row(_row(index), SCHEMA, config)
+        for unit_id in augmented["schema_augmentation"]["distractor_unit_ids"]:
+            if unit_id.startswith("relation:"):
+                relations += 1
+            else:
+                nodes += 1
+    return relations, nodes
+
+
+def test_new_options_default_to_the_original_sampling() -> None:
+    legacy = AugmentationConfig(hard_weight=0.5, neighbor_weight=0.0, lexical_weight=0.2, random_weight=0.3)
+    explicit = AugmentationConfig(
+        hard_weight=0.5,
+        neighbor_weight=0.0,
+        lexical_weight=0.2,
+        random_weight=0.3,
+        relation_share=None,
+        count_weights=None,
+    )
+    rows = [_row(index) for index in range(60)]
+
+    assert [augment_generation_row(row, SCHEMA, legacy) for row in rows] == [
+        augment_generation_row(row, SCHEMA, explicit) for row in rows
+    ]
+
+
+def test_relation_share_shifts_distractors_toward_relationships() -> None:
+    base = {"gold_ratio": 0.0, "full_ratio": 0.0, "max_distractors": 4, "seed": 11}
+    relations_default, nodes_default = _added_kinds(AugmentationConfig(**base))
+    relations_biased, nodes_biased = _added_kinds(AugmentationConfig(relation_share=0.9, **base))
+
+    share_default = relations_default / (relations_default + nodes_default)
+    share_biased = relations_biased / (relations_biased + nodes_biased)
+    assert share_biased > share_default
+    only_nodes = _added_kinds(AugmentationConfig(relation_share=0.0, **base))
+    assert only_nodes[1] > only_nodes[0]
+
+
+def test_count_weights_control_the_number_of_added_units() -> None:
+    config = AugmentationConfig(
+        gold_ratio=0.0, full_ratio=0.0, max_distractors=6, count_weights=(1.0, 0.0, 0.0, 0.0), seed=3
+    )
+
+    for index in range(80):
+        augmented = augment_generation_row(_row(index), SCHEMA, config)
+        assert len(augmented["schema_augmentation"]["distractor_unit_ids"]) == 1
+
+    heavy_tail = AugmentationConfig(
+        gold_ratio=0.0, full_ratio=0.0, max_distractors=8, count_weights=(1, 1, 1, 1, 1, 1, 1, 1), seed=3
+    )
+    sizes = {
+        len(augment_generation_row(_row(index), SCHEMA, heavy_tail)["schema_augmentation"]["distractor_unit_ids"])
+        for index in range(200)
+    }
+    # The schema only has 12 other units, so counts above that are impossible; several sizes occur.
+    assert max(sizes) >= 5 and min(sizes) <= 2
+
+
+def test_new_options_are_validated() -> None:
+    invalid = (
+        {"relation_share": 1.5},
+        {"count_weights": ()},
+        {"count_weights": (0.0, 1.0)},
+        {"count_weights": (1.0, -1.0)},
+    )
+    for bad in invalid:
+        with pytest.raises(ValueError):
+            AugmentationConfig(**bad)
+
+
+def test_count_weights_cli_parser_requires_consecutive_counts() -> None:
+    assert augment_generator_schema.parse_count_weights("1:0.5,2:0.3,3:0.2") == (0.5, 0.3, 0.2)
+    with pytest.raises(Exception, match="consecutive"):
+        augment_generator_schema.parse_count_weights("1:0.5,3:0.5")
+    with pytest.raises(Exception, match="count:weight"):
+        augment_generator_schema.parse_count_weights("1")

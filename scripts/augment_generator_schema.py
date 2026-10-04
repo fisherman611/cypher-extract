@@ -60,9 +60,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--neighbor-weight", type=float, default=defaults.neighbor_weight)
     parser.add_argument("--lexical-weight", type=float, default=defaults.lexical_weight)
     parser.add_argument("--random-weight", type=float, default=defaults.random_weight)
+    parser.add_argument(
+        "--relation-share",
+        type=float,
+        default=None,
+        help=(
+            "Probability that a distractor drawn from a pool is a relationship rather than a node, when the pool "
+            "has both. Default: sample uniformly over each pool."
+        ),
+    )
+    parser.add_argument(
+        "--count-weights",
+        type=parse_count_weights,
+        default=None,
+        help=(
+            "Weights for the number of units a noisy row adds, as 'k:weight' pairs for k = 1, 2, ... "
+            "(for example '1:0.33,2:0.28,3:0.12,4:0.07,5:0.06,6:0.06,7:0.05,8:0.03'). "
+            "Default: uniform over 1..--max-distractors."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
+
+
+def parse_count_weights(value: str) -> tuple[float, ...]:
+    """Parse '1:0.3,2:0.2,...' into weights for 1, 2, ... added units."""
+
+    weights: dict[int, float] = {}
+    for item in value.split(","):
+        key, separator, weight = item.partition(":")
+        if not separator:
+            raise argparse.ArgumentTypeError(f"expected 'count:weight', got {item!r}")
+        weights[int(key)] = float(weight)
+    expected = list(range(1, len(weights) + 1))
+    if sorted(weights) != expected:
+        raise argparse.ArgumentTypeError("counts must be consecutive integers starting at 1")
+    return tuple(weights[count] for count in expected)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -127,6 +161,8 @@ def main() -> None:
         lexical_weight=args.lexical_weight,
         random_weight=args.random_weight,
         seed=args.seed,
+        relation_share=args.relation_share,
+        count_weights=args.count_weights,
     )
     input_dir = args.input_dir.resolve()
     output_dir = args.output_dir.resolve()

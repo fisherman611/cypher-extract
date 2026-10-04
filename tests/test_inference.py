@@ -1448,3 +1448,27 @@ def test_selector_stage_resumes_a_contiguous_partial_file(tmp_path: Path) -> Non
     assert runner.generated == 2
     assert len(list(iter_jsonl(output))) == 3
     assert not partial.exists()
+
+
+def test_competing_unit_ids_match_the_selector_context_sections() -> None:
+    from schema_grounding.inference.prompting import competing_unit_ids
+
+    units = schema_units(CONTEXT_SCHEMA)
+    for unit in units:
+        context = selector_schema_context(unit, units)
+        listed = set()
+        section = None
+        for line in context.split("\n"):
+            if not line.startswith("- "):
+                section = line
+                continue
+            item = line[2:]
+            if item == "none" or section == "Relationships connected to this node label:":
+                continue
+            if item.startswith("(:") and "-[:" not in item:
+                listed.add(f"node:{item[2:-1]}")
+            else:
+                source, rest = item[2:].split(")-[:", 1)
+                relation_type, target = rest.split("]->(:", 1)
+                listed.add(f"relation:{source}|{relation_type}|{target[:-1]}")
+        assert competing_unit_ids(unit, units) == listed

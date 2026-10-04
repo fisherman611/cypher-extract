@@ -13,12 +13,18 @@ import argparse
 import json
 import random
 import shutil
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from schema_grounding.inference.prompting import competing_unit_ids  # noqa: E402
+
+PAIR_STRATEGIES = ("random-coverage", "hard-competitor")
 DEFAULT_TEST_MANIFESTS = (
     ROOT / "data" / "cypherbench_schema_grounding_full" / "manifest.json",
     ROOT / "data" / "mind_the_query_schema_grounding_full" / "manifest.json",
@@ -58,9 +64,33 @@ def parse_args() -> argparse.Namespace:
             "--test-manifests."
         ),
     )
+    parser.add_argument(
+        "--pair-strategy",
+        choices=PAIR_STRATEGIES,
+        default="random-coverage",
+        help=(
+            "How the NO row of each same-question contrast is chosen. random-coverage keeps the original "
+            "rare-unit coverage preference; hard-competitor additionally swaps same-type rows inside pairs so "
+            "the NO unit competes with the YES unit (same node labels or relationship type, or similar "
+            "node properties) whenever the question offers such a unit, preserving every label x unit-type "
+            "count and the schema-unit coverage."
+        ),
+    )
+    parser.add_argument(
+        "--cover-all-questions",
+        action="store_true",
+        help=(
+            "Use every source question exactly once (a contrast pair or one negative), so the selector sees "
+            "every generator-train question. The row count becomes questions + contrast pairs, which exceeds "
+            "generation_train.jsonl; incompatible with --target-rows."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.cover_all_questions and args.target_rows is not None:
+        parser.error("--cover-all-questions derives the row count; do not pass --target-rows")
+    return args
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -308,7 +338,7 @@ def _rebalance_selected_unit_types(
                 needed = quota[unit_type] - graph_counts[(unit_type, label)]
                 candidates = [
                     question_id
-                    for question_id in remaining_questions
+                    for question_id in sorted(remaining_questions)
                     if any(
                         _unit_type(row) == unit_type
                         for row in source_by_question[question_id][label]
@@ -383,14 +413,122 @@ def _rebalance_selected_unit_types(
     return rebalanced_pairs, rebalanced_negatives, type_summaries
 
 
+def _row_key(row: dict[str, Any]) -> tuple[str, str, int]:
+    return (str(row["schema_id"]), str(row["unit_id"]), int(row["label"]))
+
+
+def _competitor_ids(
+    question_rows: list[dict[str, Any]], row: dict[str, Any], cache: dict[tuple[str, str], set[str]]
+) -> set[str]:
+    """Ids of the units of ``row``'s question that compete with ``row``'s unit."""
+
+    cache_key = (str(row["example_id"]), str(row["unit_id"]))
+    if cache_key not in cache:
+        units = [
+            {**item["unit"], "id": str(item["unit_id"])}
+            for item in question_rows
+            if isinstance(item.get("unit"), dict) and "schema" in item["unit"]
+        ]
+        unit = row.get("unit")
+        cache[cache_key] = (
+            competing_unit_ids({**unit, "id": str(row["unit_id"])}, units)
+            if isinstance(unit, dict) and "schema" in unit
+            else set()
+        )
+    return cache[cache_key]
+
+
+def apply_competitor_pairing(
+    pair_groups: list[list[dict[str, Any]]],
+    unpaired_negative_rows: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+    rng: random.Random,
+) -> tuple[list[list[dict[str, Any]]], dict[str, int]]:
+    """Make the NO row of each contrast pair compete with its YES row when possible.
+
+    Only same-type swaps inside a pair's own question are made, so every
+    graph x label x unit-type count is unchanged. A swap must also leave every
+    schema-unit x label combination covered at least once. Pairs whose question
+    offers no suitable competing negative keep their rows.
+    """
+
+    by_question: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(lambda: {0: [], 1: []})
+    all_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_rows:
+        by_question[str(row["example_id"])][int(row["label"])].append(row)
+        all_rows[str(row["example_id"])].append(row)
+    coverage = Counter(_row_key(row) for pair in pair_groups for row in pair)
+    coverage.update(_row_key(row) for row in unpaired_negative_rows)
+    cache: dict[tuple[str, str], set[str]] = {}
+    stats = {"pairs": len(pair_groups), "already_competing": 0, "swapped": 0, "no_option": 0}
+
+    result: list[list[dict[str, Any]]] = []
+    for pair in pair_groups:
+        question_id = str(pair[0]["example_id"])
+        yes_index = next(index for index, row in enumerate(pair) if int(row["label"]) == 1)
+        yes, no = pair[yes_index], pair[1 - yes_index]
+        if str(no["unit_id"]) in _competitor_ids(all_rows[question_id], yes, cache):
+            stats["already_competing"] += 1
+            result.append(pair)
+            continue
+        options = [
+            (candidate_yes, candidate_no)
+            for candidate_yes in by_question[question_id][1]
+            if _unit_type(candidate_yes) == _unit_type(yes)
+            for candidate_no in by_question[question_id][0]
+            if _unit_type(candidate_no) == _unit_type(no)
+            and str(candidate_no["unit_id"]) in _competitor_ids(all_rows[question_id], candidate_yes, cache)
+        ]
+        if not options:
+            stats["no_option"] += 1
+            result.append(pair)
+            continue
+        rng.shuffle(options)
+        # Prefer keeping the YES row: it changes the least coverage.
+        options.sort(key=lambda option: _row_key(option[0]) != _row_key(yes))
+        old_keys = (_row_key(yes), _row_key(no))
+        for candidate_yes, candidate_no in options:
+            new_keys = (_row_key(candidate_yes), _row_key(candidate_no))
+            delta: Counter[tuple[str, str, int]] = Counter()
+            for old, new in zip(old_keys, new_keys, strict=True):
+                if old != new:
+                    delta[old] -= 1
+                    delta[new] += 1
+            if any(coverage[key] + change <= 0 for key, change in delta.items() if change < 0):
+                continue
+            coverage.update(delta)
+            rebuilt = [dict(candidate_yes), dict(candidate_no)]
+            for row in rebuilt:
+                row["contrast_pair_id"] = question_id
+            result.append(rebuilt if yes_index == 0 else rebuilt[::-1])
+            stats["swapped"] += 1
+            break
+        else:
+            stats["no_option"] += 1
+            result.append(pair)
+    stats["competing_pairs"] = stats["already_competing"] + stats["swapped"]
+    return result, stats
+
+
 def select_stage_one_rows(
     rows: list[dict[str, Any]],
     target_rows: int,
     seed: int,
     positive_ratio: float = 0.5,
     label_type_ratios: dict[int, dict[str, float]] | None = None,
+    pair_strategy: str = "random-coverage",
+    cover_all_questions: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Select contrast pairs plus unique-question negatives with full coverage."""
+    """Select contrast pairs plus unique-question negatives with full coverage.
+
+    With ``cover_all_questions`` every question contributes exactly once (a
+    contrast pair or one negative). ``target_rows`` is then ignored: each graph
+    gets ``round(questions * ratio / (1 - ratio))`` pairs, so the row count is
+    the question count plus the pair count.
+    """
+
+    if pair_strategy not in PAIR_STRATEGIES:
+        raise ValueError(f"pair_strategy must be one of {PAIR_STRATEGIES}: {pair_strategy!r}")
 
     by_graph: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -414,11 +552,20 @@ def select_stage_one_rows(
         graph: len({str(row["example_id"]) for row in by_graph[graph]})
         for graph in graph_names
     }
-    target_positive = round(target_rows * positive_ratio)
-    if target_positive < len(graph_names):
-        raise ValueError("Positive quota is too small to retain every graph")
-    row_quotas = _proportional_quotas(target_rows, question_counts)
-    positive_quotas = _proportional_quotas(target_positive, row_quotas)
+    if cover_all_questions:
+        positive_quotas = {
+            graph: round(question_counts[graph] * positive_ratio / (1 - positive_ratio))
+            for graph in graph_names
+        }
+        row_quotas = {graph: question_counts[graph] + positive_quotas[graph] for graph in graph_names}
+        if min(positive_quotas.values()) < 1:
+            raise ValueError("Positive quota is too small to retain every graph")
+    else:
+        target_positive = round(target_rows * positive_ratio)
+        if target_positive < len(graph_names):
+            raise ValueError("Positive quota is too small to retain every graph")
+        row_quotas = _proportional_quotas(target_rows, question_counts)
+        positive_quotas = _proportional_quotas(target_positive, row_quotas)
     for graph in graph_names:
         if positive_quotas[graph] * 2 > row_quotas[graph]:
             raise ValueError(f"{graph}: positive quota leaves no room for contrast negatives")
@@ -532,7 +679,7 @@ def select_stage_one_rows(
                 for row in contrast
             )
 
-        remaining_questions = list(eligible_questions.difference(used_questions))
+        remaining_questions = sorted(eligible_questions.difference(used_questions))
         rng.shuffle(remaining_questions)
         needed_pairs = pairs_per_graph - len(selected_pairs)
         if len(remaining_questions) < needed_pairs:
@@ -617,6 +764,8 @@ def select_stage_one_rows(
             raise AssertionError(f"{graph}: unit-label coverage validation failed")
         if len(used_questions) != len(selected_pairs) + len(selected_negatives):
             raise AssertionError(f"{graph}: selected-question uniqueness validation failed")
+        if cover_all_questions and used_questions != set(by_question):
+            raise AssertionError(f"{graph}: question coverage validation failed")
         if any(
             first["contrast_pair_id"] != second["contrast_pair_id"]
             or {int(first["label"]), int(second["label"])} != {0, 1}
@@ -661,6 +810,23 @@ def select_stage_one_rows(
         }
         for row in selected_negative_rows:
             type_summaries[str(row["graph"])][(_unit_type(row), 0)] += 1
+    if pair_strategy == "hard-competitor":
+        before_coverage = {_row_key(row) for contrast in selected_pair_groups for row in contrast}
+        before_coverage.update(_row_key(row) for row in selected_negative_rows)
+        before_types = Counter(
+            (str(row["graph"]), _unit_type(row), int(row["label"]))
+            for row in [row for contrast in selected_pair_groups for row in contrast] + selected_negative_rows
+        )
+        selected_pair_groups, _ = apply_competitor_pairing(
+            selected_pair_groups, selected_negative_rows, rows, rng
+        )
+        paired = [row for contrast in selected_pair_groups for row in contrast]
+        after_coverage = {_row_key(row) for row in paired + selected_negative_rows}
+        after_types = Counter(
+            (str(row["graph"]), _unit_type(row), int(row["label"])) for row in paired + selected_negative_rows
+        )
+        if after_coverage != before_coverage or after_types != before_types:
+            raise AssertionError("Competitor pairing changed schema-unit coverage or label x unit-type counts")
     for graph in graph_names:
         summaries[graph]["unit_type_labels"] = {
             f"{unit_type}:{label}": type_summaries[graph][(unit_type, label)]
@@ -673,6 +839,36 @@ def select_stage_one_rows(
     if len({str(row["example_id"]) for row in flattened}) != expected_unique_questions:
         raise AssertionError("Selected questions overlap across graph groups or sampling roles")
     return flattened, summaries
+
+
+def pairing_summary(
+    filtered_rows: list[dict[str, Any]], source_rows: list[dict[str, Any]]
+) -> dict[str, int]:
+    """Count contrast pairs whose NO unit competes with the YES unit, and YES units with any competitor."""
+
+    all_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_rows:
+        all_rows[str(row["example_id"])].append(row)
+    cache: dict[tuple[str, str], set[str]] = {}
+    pairs: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in filtered_rows:
+        if "contrast_pair_id" in row:
+            pairs[str(row["contrast_pair_id"])].append(row)
+    competing = 0
+    for members in pairs.values():
+        yes = next(row for row in members if int(row["label"]) == 1)
+        no = next(row for row in members if int(row["label"]) == 0)
+        competing += str(no["unit_id"]) in _competitor_ids(all_rows[str(yes["example_id"])], yes, cache)
+    yes_with_competitor = sum(
+        1
+        for row in filtered_rows
+        if int(row["label"]) == 1 and _competitor_ids(all_rows[str(row["example_id"])], row, cache)
+    )
+    return {
+        "contrast_pairs": len(pairs),
+        "pairs_with_competing_no": competing,
+        "yes_rows_with_any_competing_unit_in_question": yes_with_competitor,
+    }
 
 
 def prepare_output_directory(input_dir: Path, output_dir: Path, overwrite: bool) -> None:
@@ -769,6 +965,8 @@ def main() -> None:
         args.seed,
         target_positive_ratio,
         label_type_ratios,
+        pair_strategy=args.pair_strategy,
+        cover_all_questions=args.cover_all_questions,
     )
     prepare_output_directory(input_dir, output_dir, args.overwrite)
 
@@ -789,10 +987,13 @@ def main() -> None:
         "sampling_seed": args.seed,
         "rows": len(filtered_rows),
         "target_rows_source": (
-            "explicit --target-rows"
+            "every source question once (--cover-all-questions)"
+            if args.cover_all_questions
+            else "explicit --target-rows"
             if args.target_rows is not None
             else "generation_train.jsonl row count"
         ),
+        "cover_all_questions": args.cover_all_questions,
         "unique_questions": len({str(row["example_id"]) for row in filtered_rows}),
         "contrast_pairs": contrast_pairs,
         "unpaired_negative_rows": len(filtered_rows) - 2 * contrast_pairs,
@@ -806,6 +1007,8 @@ def main() -> None:
             for label in (0, 1)
             for unit_type in ("node", "relation")
         },
+        "pair_strategy": args.pair_strategy,
+        "pairing": pairing_summary(filtered_rows, selection_rows),
         "test_distribution_weighting": "row_weighted",
         "test_distributions": test_distributions,
         "policy": (

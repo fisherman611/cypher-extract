@@ -49,6 +49,13 @@ MANAGED_DATA_SOURCES = {
         "cypherbench_schema_grounding_distractor_v2",
         "prepared_distractor_v2.2",
     ),
+    # v2.2 prompts on regenerated grounding data: contrast pairs whose NO unit competes with the
+    # YES unit (selector) and generator distractors with a count profile closer to real selector
+    # extras (see README, "Dữ liệu v3").
+    "llamafactory_distractor_v3": (
+        "cypherbench_schema_grounding_distractor_v3",
+        "prepared_distractor_v3",
+    ),
 }
 
 

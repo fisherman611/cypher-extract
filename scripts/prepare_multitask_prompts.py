@@ -300,15 +300,16 @@ def interleave_without_replacement(
     At batch size two, each contrast pair spans two consecutive mixed batches;
     at larger batch sizes, multiple selector rows share a batch. Remaining
     selector rows form negative-only mixed batches, followed by generator-only
-    batches. No source row is duplicated.
+    batches. When selector rows outnumber generator rows, the batch where the
+    generators run out is topped up with selector rows and the remaining
+    selector rows form full selector-only batches; every contrast pair must
+    still fit in the mixed batches. No source row is duplicated.
     """
 
     if batch_size < 2 or batch_size % 2:
         raise ValueError("batch-size must be a positive even number")
     if not generator_rows or not selector_rows:
         raise ValueError("Both generator and selector datasets must be non-empty")
-    if len(generator_rows) < len(selector_rows):
-        raise ValueError("This preparation policy expects generator rows to be at least as numerous as selector rows")
 
     by_contrast: dict[str, list[dict[str, Any]]] = {}
     unpaired_negatives: list[dict[str, Any]] = []
@@ -342,6 +343,24 @@ def interleave_without_replacement(
     generator_offset = 0
     result: list[dict[str, Any]] = []
     selector_capacity = batch_size // 2
+    if len(selectors) > len(generators):
+        contrast_rows = 2 * len(contrast_pairs)
+        if contrast_rows > (len(generators) // selector_capacity) * selector_capacity:
+            raise ValueError(
+                "Selector contrast pairs must fit in the mixed batches; add generator rows or reduce pairs"
+            )
+        mixed_selectors = (len(generators) // selector_capacity) * selector_capacity
+        for selector_offset in range(0, mixed_selectors, selector_capacity):
+            result.extend(generators[generator_offset : generator_offset + selector_capacity])
+            result.extend(selectors[selector_offset : selector_offset + selector_capacity])
+            generator_offset += selector_capacity
+        # Leftover generators open the first selector-only batch, so every
+        # batch except possibly the last is full.
+        result.extend(generators[generator_offset:])
+        result.extend(selectors[mixed_selectors:])
+        if len(result) != len(generator_rows) + len(selector_rows):
+            raise AssertionError("Interleaving did not consume every source row exactly once")
+        return result
     for selector_offset in range(0, len(selectors), selector_capacity):
         selector_chunk = selectors[selector_offset : selector_offset + selector_capacity]
         generator_count = min(

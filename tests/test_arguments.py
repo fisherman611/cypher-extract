@@ -378,7 +378,7 @@ def test_qwen_configs_follow_template_defaults(config_path: Path) -> None:
         assert config["ref_model"] == "Qwen/Qwen3-4B-Instruct-2507"
         assert config["ref_model_revision"] == MODEL_REVISIONS["qwen3"]["teacher"]
     assert config["template"] == "qwen3_nothink"
-    # Longest v2.2 train row: 963 tokens (CANDIDATE + OTHER generator schema).
+    # Longest v3 train row: 963 tokens (CANDIDATE + OTHER generator schema).
     assert config["cutoff_len"] == 1024
     assert config["per_device_train_batch_size"] == 2
     assert config["per_device_eval_batch_size"] == 16
@@ -397,7 +397,7 @@ def test_qwen2_5_coder_configs_follow_architecture_defaults(config_path: Path) -
         assert config["ref_model"] == "Qwen/Qwen2.5-Coder-7B-Instruct"
         assert config["ref_model_revision"] == MODEL_REVISIONS["qwen2.5_coder"]["teacher"]
     assert config["template"] == "qwen"
-    # Longest v2.2 train row: 963 tokens (CANDIDATE + OTHER generator schema).
+    # Longest v3 train row: 963 tokens (CANDIDATE + OTHER generator schema).
     assert config["cutoff_len"] == 1024
     assert config["per_device_train_batch_size"] == 2
     assert config["per_device_eval_batch_size"] == 16
@@ -554,7 +554,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
         assert "ref_model_adapters" not in config
     assert config["dataset"] == "cypher_prepared_train"
     assert config["eval_dataset"] == "cypher_prepared_eval"
-    assert config["dataset_dir"] == "${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2.2"
+    assert config["dataset_dir"] == "${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v3"
     expected_template = {
         "qwen3": "qwen3_nothink",
         "llama3": "llama3",

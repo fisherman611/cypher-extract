@@ -99,19 +99,48 @@ def _context_section(header: str, lines: Iterable[str]) -> str:
     return f"{header}\n{body}"
 
 
-def _similar_node_labels(node: Mapping[str, Any], nodes: Iterable[Mapping[str, Any]]) -> list[str]:
+def _is_similar_node(node: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
+    if other["label"] == node["label"]:
+        return False
     properties = set(node.get("properties", {}))
-    similar = []
-    for other in nodes:
-        if other["label"] == node["label"]:
-            continue
-        other_properties = set(other.get("properties", {}))
-        shared = len(properties & other_properties)
-        if shared >= _SIMILAR_NODE_MIN_SHARED_PROPERTIES and (
-            shared / len(properties | other_properties) >= _SIMILAR_NODE_MIN_PROPERTY_JACCARD
-        ):
-            similar.append(f"(:{other['label']})")
-    return similar
+    other_properties = set(other.get("properties", {}))
+    shared = len(properties & other_properties)
+    return shared >= _SIMILAR_NODE_MIN_SHARED_PROPERTIES and (
+        shared / len(properties | other_properties) >= _SIMILAR_NODE_MIN_PROPERTY_JACCARD
+    )
+
+
+def _similar_node_labels(node: Mapping[str, Any], nodes: Iterable[Mapping[str, Any]]) -> list[str]:
+    return [f"(:{other['label']})" for other in nodes if _is_similar_node(node, other)]
+
+
+def competing_unit_ids(unit: Mapping[str, Any], schema_units: Iterable[Mapping[str, Any]]) -> set[str]:
+    """Return the ids of the units a selector could confuse with ``unit``.
+
+    These are exactly the units listed in the comparison sections of
+    :func:`selector_schema_context`: relationships joining the same two labels
+    (either direction) or sharing the relationship type, and nodes with similar
+    properties. Training-data sampling uses it to find hard negatives.
+    """
+
+    units = list(schema_units)
+    own_id = str(unit["id"])
+    schema = unit["schema"]
+    competitors: set[str] = set()
+    if unit.get("kind") == "relation":
+        pair = sorted((schema["source"], schema["target"]))
+        for other in units:
+            if other.get("kind") != "relation" or str(other["id"]) == own_id:
+                continue
+            other_schema = other["schema"]
+            same_labels = sorted((other_schema["source"], other_schema["target"])) == pair
+            if same_labels or other_schema["type"] == schema["type"]:
+                competitors.add(str(other["id"]))
+        return competitors
+    for other in units:
+        if other.get("kind") == "node" and _is_similar_node(schema, other["schema"]):
+            competitors.add(str(other["id"]))
+    return competitors
 
 
 def selector_schema_context(unit: Mapping[str, Any], schema_units: Iterable[Mapping[str, Any]]) -> str:

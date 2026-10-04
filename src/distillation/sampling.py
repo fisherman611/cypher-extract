@@ -42,6 +42,9 @@ def selector_droppable_batch_range(
     Preparation assigns half of each mixed batch to selector rows. Contrast
     rows precede unpaired negatives, so a boundary batch containing both is
     protected and only the subsequent negative-only batches are droppable.
+    When selector rows outnumber generator rows, the mixed batches are followed
+    by full batches of leftover generators and selector rows (see
+    ``interleave_without_replacement``); those hold no contrast rows either.
     """
 
     if batch_size < 2 or batch_size % 2:
@@ -53,6 +56,14 @@ def selector_droppable_batch_range(
     selector_rows = contrast_rows + unpaired_negatives
     if total_rows < selector_rows:
         raise ValueError("Prepared row count cannot be smaller than its selector row count.")
+    generator_rows = total_rows - selector_rows
+    if selector_rows > generator_rows:
+        mixed_batches = generator_rows // selector_capacity
+        if contrast_rows > mixed_batches * selector_capacity:
+            raise ValueError("Selector contrast pairs must fit in the mixed batches.")
+        first_negative_only_batch = (contrast_rows + selector_capacity - 1) // selector_capacity
+        full_batch_count = total_rows // batch_size
+        return first_negative_only_batch, max(0, full_batch_count - first_negative_only_batch)
     first_negative_only_batch = (contrast_rows + selector_capacity - 1) // selector_capacity
     selector_batch_count = (selector_rows + selector_capacity - 1) // selector_capacity
     # The final mixed chunk can be a partial dataloader batch when generator

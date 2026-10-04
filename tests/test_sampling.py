@@ -38,6 +38,22 @@ def test_current_equal_task_layout_excludes_partial_tail_from_droppable_batches(
     ) == expected
 
 
+@pytest.mark.parametrize(
+    ("batch_size", "expected"),
+    [(2, (5852, 2438)), (4, (2926, 1219)), (8, (1463, 609))],
+)
+def test_selector_surplus_layout_makes_every_post_contrast_batch_droppable(
+    batch_size: int, expected: tuple[int, int]
+) -> None:
+    # v3 --cover-all-questions: 6,827 generator rows, 2,926 pairs + 3,901 negatives.
+    assert selector_droppable_batch_range(
+        batch_size=batch_size,
+        contrast_pairs=2926,
+        unpaired_negatives=3901,
+        total_rows=6827 + 9753,
+    ) == expected
+
+
 def test_distributed_batches_preserve_contiguous_groups_without_duplicates() -> None:
     dataset = range(11)
     world_size = 2
