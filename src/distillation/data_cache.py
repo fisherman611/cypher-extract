@@ -5,10 +5,14 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-GROUNDING_FILENAMES = tuple(
-    f"{task}_{split}.jsonl"
-    for task in ("generation", "selection")
-    for split in ("train", "dev", "test")
+GROUNDING_FILENAMES = (
+    *(
+        f"{task}_{split}.jsonl"
+        for task in ("generation", "selection")
+        for split in ("train", "dev", "test")
+    ),
+    # Selector prompts include schema context built from the full schema.
+    "schemas.jsonl",
 )
 PROMPT_FILENAMES = (
     "generator/system_prompt.txt",

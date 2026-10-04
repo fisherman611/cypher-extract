@@ -552,7 +552,7 @@ def test_baseline_config_student_generation_matrix(config_path: Path) -> None:
         assert "ref_model_adapters" not in config
     assert config["dataset"] == "cypher_prepared_train"
     assert config["eval_dataset"] == "cypher_prepared_eval"
-    assert config["dataset_dir"] == "${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2"
+    assert config["dataset_dir"] == "${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2.1"
     expected_template = {
         "qwen3": "qwen3_nothink",
         "llama3": "llama3",

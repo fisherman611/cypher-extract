@@ -16,7 +16,8 @@ from transformers import AutoTokenizer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from schema_grounding.inference.prompting import render_qwen3_nothink  # noqa: E402
+from schema_grounding.augmentation import schema_units  # noqa: E402
+from schema_grounding.inference.prompting import render_qwen3_nothink, selector_schema_context  # noqa: E402
 
 DEFAULT_DATASETS = {
     "cypherbench": ROOT / "data" / "cypherbench_schema_grounding_full_final",
@@ -67,7 +68,18 @@ def load_prompt(relative_path: str) -> str:
     return (ROOT / "prompts" / relative_path).read_text(encoding="utf-8").strip()
 
 
-def build_messages(row: dict[str, Any], task: str) -> list[dict[str, str]]:
+def load_schema_units(directory: Path) -> dict[str, list[dict[str, Any]]]:
+    return {
+        schema["schema_id"]: schema_units(schema)
+        for _, schema in iter_jsonl(directory / "schemas.jsonl")
+    }
+
+
+def build_messages(
+    row: dict[str, Any],
+    task: str,
+    units_by_schema: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, str]]:
     if task == "generator":
         system = load_prompt("generator/system_prompt.txt")
         user_template = load_prompt("generator/user_prompt.txt")
@@ -79,7 +91,13 @@ def build_messages(row: dict[str, Any], task: str) -> list[dict[str, str]]:
     elif task == "selector":
         system = load_prompt("selector/system_prompt.txt")
         user_template = load_prompt("selector/user_prompt.txt")
-        user = user_template.format(question=row["question"], schema_unit=row["unit"]["text"])
+        if units_by_schema is None:
+            raise ValueError("Selector prompts need the schema units for their context.")
+        user = user_template.format(
+            question=row["question"],
+            schema_unit=row["unit"]["text"],
+            schema_context=selector_schema_context(row["unit"], units_by_schema[row["schema_id"]]),
+        )
         response = json.dumps({"label": "YES" if row["label"] == 1 else "NO"})
     else:
         raise ValueError(f"Unsupported task: {task}")
@@ -125,9 +143,10 @@ def analyze_file(path: Path, task: str, tokenizer: Any, max_rows: int | None) ->
             maxima["max_target_length"] = max(maxima["max_target_length"], target_length)
         pending.clear()
 
+    units_by_schema = load_schema_units(path.parent) if task == "selector" else None
     for line_number, row in iter_jsonl(path, max_rows):
         try:
-            messages = build_messages(row, task)
+            messages = build_messages(row, task, units_by_schema)
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Invalid {task} row at {path}:{line_number}: {error}") from error
         pending.append((line_number, messages))

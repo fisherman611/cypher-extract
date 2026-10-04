@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -82,6 +83,87 @@ def render_llama3(
     return "".join(rendered)
 
 
+def _relationship_pattern(relationship: Mapping[str, Any]) -> str:
+    return f"(:{relationship['source']})-[:{relationship['type']}]->(:{relationship['target']})"
+
+
+# Same similarity rule as hard node distractors in schema_grounding.augmentation.
+_SIMILAR_NODE_MIN_SHARED_PROPERTIES = 2
+_SIMILAR_NODE_MIN_PROPERTY_JACCARD = 0.5
+
+
+def _context_section(header: str, lines: Iterable[str]) -> str:
+    body = "\n".join(f"- {line}" for line in sorted(set(lines))) or "- none"
+    return f"{header}\n{body}"
+
+
+def _similar_node_labels(node: Mapping[str, Any], nodes: Iterable[Mapping[str, Any]]) -> list[str]:
+    properties = set(node.get("properties", {}))
+    similar = []
+    for other in nodes:
+        if other["label"] == node["label"]:
+            continue
+        other_properties = set(other.get("properties", {}))
+        shared = len(properties & other_properties)
+        if shared >= _SIMILAR_NODE_MIN_SHARED_PROPERTIES and (
+            shared / len(properties | other_properties) >= _SIMILAR_NODE_MIN_PROPERTY_JACCARD
+        ):
+            similar.append(f"(:{other['label']})")
+    return similar
+
+
+def selector_schema_context(unit: Mapping[str, Any], schema_units: Iterable[Mapping[str, Any]]) -> str:
+    """Render the comparison context shown next to one selector unit.
+
+    The context lists the schema units a selector could confuse with ``unit``
+    (the hard-distractor rules of ``schema_grounding.augmentation``):
+
+    * relationship ``(A)-[:R]->(B)``: other relationships joining the same two
+      labels in either direction, and relationships of the same type ``R``
+      between other labels;
+    * node ``L``: the relationships connected to ``L`` (how it enters a query),
+      and node labels whose properties largely duplicate ``L``'s.
+
+    Lines are sorted so the text does not depend on unit order: training reads
+    ``schemas.jsonl`` while inference reads the example's unit rows, and both
+    must render the same prompt.
+    """
+
+    units = list(schema_units)
+    relationships = [other["schema"] for other in units if other.get("kind") == "relation"]
+    schema = unit["schema"]
+    if unit.get("kind") == "relation":
+        own = _relationship_pattern(schema)
+        pair = sorted((schema["source"], schema["target"]))
+        same_labels = [
+            _relationship_pattern(other)
+            for other in relationships
+            if sorted((other["source"], other["target"])) == pair and _relationship_pattern(other) != own
+        ]
+        same_type = [
+            _relationship_pattern(other)
+            for other in relationships
+            if other["type"] == schema["type"] and _relationship_pattern(other) != own
+        ]
+        return "\n".join(
+            (
+                _context_section("Other relationships between the same node labels:", same_labels),
+                _context_section("Other relationships with the same type:", same_type),
+            )
+        )
+    label = schema["label"]
+    connected = [
+        _relationship_pattern(other) for other in relationships if label in (other["source"], other["target"])
+    ]
+    nodes = [other["schema"] for other in units if other.get("kind") == "node"]
+    return "\n".join(
+        (
+            _context_section("Relationships connected to this node label:", connected),
+            _context_section("Node labels with similar properties:", _similar_node_labels(schema, nodes)),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class PromptTemplates:
     generator_system: str
@@ -116,12 +198,16 @@ class PromptTemplates:
             selector_user=read("selector/user_prompt.txt"),
         )
 
-    def selector_messages(self, question: str, schema_unit: str) -> list[Message]:
+    def selector_messages(self, question: str, schema_unit: str, schema_context: str) -> list[Message]:
         return [
             {"role": "system", "content": self.selector_system},
             {
                 "role": "user",
-                "content": self.selector_user.format(question=question, schema_unit=schema_unit),
+                "content": self.selector_user.format(
+                    question=question,
+                    schema_unit=schema_unit,
+                    schema_context=schema_context,
+                ),
             },
         ]
 

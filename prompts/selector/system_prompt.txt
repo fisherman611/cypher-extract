@@ -1,12 +1,26 @@
 You are a graph-schema relevance classifier.
 
 Decide whether the provided schema unit is required by a Cypher query that
-answers the question. A unit is required when it is used as a filter, traversal
-endpoint, aggregation context, returned entity, or relationship in the query.
+answers the question. A unit is required when the query uses it as a filter,
+traversal endpoint, aggregation context, returned entity, or relationship.
+
+Schema patterns follow Cypher direction: (:A)-[:REL]->(:B) means an A node is
+connected to a B node through REL, read from A to B. Two node labels can be
+joined by several relationships, and a relationship can join a label to itself.
+
+Match the question to the schema by meaning, not only by exact words: synonyms,
+plural forms, and passive or inverse phrasing can refer to the same unit. Do not
+assume schema elements that are not listed.
+
+The related schema context lists schema units that are easy to confuse with the
+provided unit: for a relationship, other relationships joining the same node
+labels and relationships with the same type between other labels; for a node,
+the relationships connected to it and node labels with similar properties. Use
+it only for comparison: a relationship that merely connects the right node
+labels is not required unless the question refers to its meaning. Answer only
+for the provided schema unit.
 
 Use label YES when the schema unit is required. Use label NO when it is not required.
-Use only the question and the provided schema unit. Do not invent schema elements
-or infer facts not stated by the input.
 
 Output exactly one JSON object in one of these forms:
 {"label": "YES"}

@@ -7,6 +7,7 @@ import torch
 import yaml
 
 from distillation.utils import seed_everything
+from schema_grounding.augmentation import schema_units
 from schema_grounding.inference import model as inference_model
 from schema_grounding.inference.checkpoints import (
     DEFAULT_METHODS,
@@ -43,6 +44,7 @@ from schema_grounding.inference.prompting import (
     qwen_template_metadata,
     render_llama3,
     render_qwen3_nothink,
+    selector_schema_context,
 )
 from schema_grounding.selector_labels import format_selector_response
 from scripts.infer_two_stage import (
@@ -436,7 +438,11 @@ def test_prompt_messages_match_training_format() -> None:
     generator = templates.generator_messages(
         "Who?", {"nodes": [{"label": "Person", "properties": {}}], "relationships": []}
     )
-    selector = templates.selector_messages("Who?", "(:Person)")
+    selector = templates.selector_messages(
+        "Who?",
+        "(:Person)",
+        "Relationships connected to this node label:\n- none\nNode labels with similar properties:\n- none",
+    )
     assert (
         generator[0]["content"]
         == (REPOSITORY_ROOT / "prompts/generator/system_prompt.txt").read_text(encoding="utf-8").strip()
@@ -448,9 +454,142 @@ def test_prompt_messages_match_training_format() -> None:
         == (REPOSITORY_ROOT / "prompts/selector/system_prompt.txt").read_text(encoding="utf-8").strip()
     )
     assert "SCHEMA UNIT:\n(:Person)" in selector[1]["content"]
+    assert (
+        "RELATED SCHEMA CONTEXT:\nRelationships connected to this node label:\n- none\n"
+        "Node labels with similar properties:\n- none"
+    ) in selector[1]["content"]
     assert selector[1]["content"].endswith("Classify the schema unit and return only the required JSON object.")
     assert '{"label": "YES"}' in selector[0]["content"]
     assert "`" not in selector[0]["content"]
+
+
+CONTEXT_SCHEMA = {
+    "schema_id": "fixture:movie",
+    "nodes": [
+        {"label": "Person", "properties": {"name": "STRING", "date_of_birth": "DATE", "gender": "STRING"}},
+        {
+            "label": "Actor",
+            "properties": {"name": "STRING", "date_of_birth": "DATE", "gender": "STRING", "agency": "STRING"},
+        },
+        {"label": "Movie", "properties": {"name": "STRING", "runtime": "INTEGER"}},
+        {"label": "Book", "properties": {"name": "STRING"}},
+        {"label": "Genre", "properties": {"name": "STRING"}},
+    ],
+    "relationships": [
+        {"source": "Movie", "type": "directedBy", "target": "Person", "properties": {}},
+        {"source": "Movie", "type": "hasCastMember", "target": "Person", "properties": {}},
+        {"source": "Person", "type": "reviewed", "target": "Movie", "properties": {}},
+        {"source": "Movie", "type": "hasGenre", "target": "Genre", "properties": {}},
+        {"source": "Book", "type": "hasGenre", "target": "Genre", "properties": {}},
+        {"source": "Person", "type": "hasSpouse", "target": "Person", "properties": {}},
+    ],
+}
+
+
+def test_selector_context_lists_competing_relationships_in_both_directions() -> None:
+    units = schema_units(CONTEXT_SCHEMA)
+    by_id = {unit["id"]: unit for unit in units}
+
+    context = selector_schema_context(by_id["relation:Movie|directedBy|Person"], units)
+
+    assert context == (
+        "Other relationships between the same node labels:\n"
+        "- (:Movie)-[:hasCastMember]->(:Person)\n"
+        "- (:Person)-[:reviewed]->(:Movie)\n"
+        "Other relationships with the same type:\n"
+        "- none"
+    )
+    # A self-typed relationship only competes with other self-typed relationships of that label.
+    assert selector_schema_context(by_id["relation:Person|hasSpouse|Person"], units) == (
+        "Other relationships between the same node labels:\n- none\n"
+        "Other relationships with the same type:\n- none"
+    )
+
+
+def test_selector_context_lists_same_type_relationships_between_other_labels() -> None:
+    units = schema_units(CONTEXT_SCHEMA)
+    has_genre = next(unit for unit in units if unit["id"] == "relation:Movie|hasGenre|Genre")
+
+    assert selector_schema_context(has_genre, units) == (
+        "Other relationships between the same node labels:\n- none\n"
+        "Other relationships with the same type:\n- (:Book)-[:hasGenre]->(:Genre)"
+    )
+
+
+def test_selector_context_lists_connected_relationships_and_similar_nodes() -> None:
+    units = schema_units(CONTEXT_SCHEMA)
+    by_id = {unit["id"]: unit for unit in units}
+
+    # Actor shares 3 of 4 properties with Person (Jaccard 0.75); Movie shares only `name`.
+    assert selector_schema_context(by_id["node:Person"], units) == (
+        "Relationships connected to this node label:\n"
+        "- (:Movie)-[:directedBy]->(:Person)\n"
+        "- (:Movie)-[:hasCastMember]->(:Person)\n"
+        "- (:Person)-[:hasSpouse]->(:Person)\n"
+        "- (:Person)-[:reviewed]->(:Movie)\n"
+        "Node labels with similar properties:\n"
+        "- (:Actor)"
+    )
+    assert selector_schema_context(by_id["node:Actor"], units) == (
+        "Relationships connected to this node label:\n- none\n"
+        "Node labels with similar properties:\n- (:Person)"
+    )
+
+
+def test_selector_similar_node_rule_matches_hard_distractor_thresholds() -> None:
+    from schema_grounding import augmentation
+    from schema_grounding.inference import prompting
+
+    assert prompting._SIMILAR_NODE_MIN_SHARED_PROPERTIES == augmentation._HARD_MIN_SHARED_PROPERTIES
+    assert prompting._SIMILAR_NODE_MIN_PROPERTY_JACCARD == augmentation._HARD_MIN_PROPERTY_JACCARD
+
+
+def test_selector_context_matches_between_training_and_inference_sources() -> None:
+    # Training builds context from schemas.jsonl; inference from the example's unit
+    # rows, which carry a text field and may arrive in any order.
+    training_units = schema_units(CONTEXT_SCHEMA)
+    inference_units = [{**unit, "text": f"text for {unit['id']}"} for unit in reversed(training_units)]
+
+    for train_unit, infer_unit in zip(training_units, reversed(inference_units), strict=True):
+        assert selector_schema_context(train_unit, training_units) == selector_schema_context(
+            infer_unit, inference_units
+        )
+
+
+def test_training_and_inference_render_identical_selector_prompts() -> None:
+    from scripts.prepare_multitask_prompts import format_selector_rows, load_prompt
+
+    units = schema_units(CONTEXT_SCHEMA)
+    unit = {
+        **next(unit for unit in units if unit["id"] == "relation:Movie|directedBy|Person"),
+        "text": "(:Movie)-[:directedBy]->(:Person)",
+    }
+    row = {
+        "question": "Which movies were directed by Martin Scorsese?",
+        "unit": unit,
+        "label": 1,
+        "example_id": "fixture:0",
+        "source": "fixture",
+        "split": "train",
+        "graph": "movie",
+        "schema_id": CONTEXT_SCHEMA["schema_id"],
+        "unit_id": unit["id"],
+    }
+    prepared = format_selector_rows(
+        [row],
+        load_prompt("selector/system_prompt.txt"),
+        load_prompt("selector/user_prompt.txt"),
+        {CONTEXT_SCHEMA["schema_id"]: units},
+    )[0]
+
+    inference_units = [{**other, "text": "unused"} for other in units]
+    messages = PromptTemplates.from_repository(REPOSITORY_ROOT).selector_messages(
+        row["question"], unit["text"], selector_schema_context(unit, inference_units)
+    )
+
+    assert prepared["system_prompt"] == messages[0]["content"]
+    assert prepared["user_prompt"] == messages[1]["content"]
+    assert "- (:Movie)-[:hasCastMember]->(:Person)" in prepared["user_prompt"]
 
 
 def test_qwen3_nothink_renderer_exactly_matches_llamafactory_chatml() -> None:
@@ -579,7 +718,9 @@ class FakeRunner:
             system = messages[0]["content"]
             user = messages[1]["content"]
             if "relevance classifier" in system:
-                label = "YES" if "(:A " in user or "[:LINKS]" in user else "NO"
+                # Judge only the unit itself; the context also mentions neighbouring units.
+                unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nRELATED SCHEMA CONTEXT:", 1)[0]
+                label = "YES" if "(:A " in unit or "[:LINKS]" in unit else "NO"
                 outputs.append(json.dumps({"label": label}))
             else:
                 # Deliberately omit the closing JSON brace to exercise the

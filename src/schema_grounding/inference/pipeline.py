@@ -25,6 +25,7 @@ from schema_grounding.inference.prompting import (
     Message,
     PromptTemplates,
     chat_template_metadata,
+    selector_schema_context,
 )
 from schema_grounding.selector_labels import (
     NEGATIVE_SELECTOR_LABEL,
@@ -218,9 +219,14 @@ def run_selector_stage(
     generated_rows = 0
     invalid_rows = 0
     positive_rows = 0
+    # Inference rows list every unit of the example's schema, so they provide
+    # the same selector context that training builds from schemas.jsonl.
+    example_units: dict[str, list[dict[str, Any]]] = {}
+    for row in iter_jsonl(spec.selection_test):
+        example_units.setdefault(str(row["example_id"]), []).append(row["unit"])
     progress = _StageProgress(
         f"{spec.name}/selector",
-        total=_count_rows(spec.selection_test),
+        total=sum(len(units) for units in example_units.values()),
         done=completed_rows,
         unit="units",
         batch_size=options.selector_batch_size,
@@ -229,7 +235,12 @@ def run_selector_stage(
         source = _rows_after_progress(spec.selection_test, completed_rows, last_id)
         for batch in _batches(source, options.selector_batch_size):
             conversations = [
-                templates.selector_messages(str(row["question"]), str(row["unit"]["text"])) for row in batch
+                templates.selector_messages(
+                    str(row["question"]),
+                    str(row["unit"]["text"]),
+                    selector_schema_context(row["unit"], example_units[str(row["example_id"])]),
+                )
+                for row in batch
             ]
             selector_kwargs = selector_generation_kwargs()
             selector_kwargs["max_new_tokens"] = options.selector_max_new_tokens

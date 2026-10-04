@@ -212,11 +212,14 @@ chế này cho dataset tự quản lý. Có thể đổi nguồn grounding bằn
 Mỗi `dataset_dir` được quản lý gắn với đúng một nguồn grounding
 (`MANAGED_DATA_SOURCES` trong `src/distillation/auto_prepare.py`, tra theo tên
 thư mục; nguồn grounding/prepared là thư mục cùng cấp). Các config mặc định
-dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2`, tức
-`data/llamafactory_distractor_v2` khi không đặt `CYPHER_DATA_ROOT`, được build từ
+dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v2.1`, tức
+`data/llamafactory_distractor_v2.1` khi không đặt `CYPHER_DATA_ROOT`, được build từ
 `data/cypherbench_schema_grounding_distractor_v2` (tạo bởi
 `scripts/augment_generator_schema.py` với
 `--hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3`).
+v2.1 dùng đúng dữ liệu và nhãn của v2, chỉ khác prompt selector (có
+`RELATED SCHEMA CONTEXT`); cache trung gian của nó nằm ở
+`data/prepared_distractor_v2.1`.
 Để chạy baseline gold sub-schema, override `dataset_dir=data/llamafactory`; để
 dùng bản nhiễu v1 (tham số mặc định của script), override
 `dataset_dir=data/llamafactory_distractor_v1`. Auto-prepare từ chối ghi đè một

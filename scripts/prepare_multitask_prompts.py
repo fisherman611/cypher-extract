@@ -23,6 +23,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cypher_extract.paths import get_data_root  # noqa: E402
 from distillation.data_cache import preparation_fingerprint  # noqa: E402
+from schema_grounding.augmentation import schema_units  # noqa: E402
+from schema_grounding.inference.prompting import selector_schema_context  # noqa: E402
 from schema_grounding.selector_labels import (  # noqa: E402
     NEGATIVE_SELECTOR_LABEL,
     POSITIVE_SELECTOR_LABEL,
@@ -90,18 +92,32 @@ def format_generator_rows(
     return prepared
 
 
+def load_schema_units(input_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """Map schema_id to every unit of that schema for selector context."""
+
+    return {schema["schema_id"]: schema_units(schema) for schema in read_jsonl(input_dir / "schemas.jsonl")}
+
+
 def format_selector_rows(
-    rows: Iterable[dict[str, Any]], system_prompt: str, user_template: str
+    rows: Iterable[dict[str, Any]],
+    system_prompt: str,
+    user_template: str,
+    units_by_schema: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for row in rows:
         classification_label = selector_label_from_binary(row["label"])
+        # Training rows are a filtered subset of units, so the context comes from
+        # the full schema rather than from the other rows of the same question.
+        schema_context = selector_schema_context(row["unit"], units_by_schema[row["schema_id"]])
         prepared.append(
             {
                 "task": "selector",
                 "system_prompt": system_prompt,
                 "user_prompt": user_template.format(
-                    question=row["question"], schema_unit=row["unit"]["text"]
+                    question=row["question"],
+                    schema_unit=row["unit"]["text"],
+                    schema_context=schema_context,
                 ),
                 "response": format_selector_response(classification_label),
                 "example_id": row["example_id"],
@@ -255,6 +271,7 @@ def main() -> None:
     required = [
         "generation_train.jsonl", "generation_dev.jsonl", "generation_test.jsonl",
         "selection_train.jsonl", "selection_dev.jsonl", "selection_test.jsonl",
+        "schemas.jsonl",
     ]
     missing = [name for name in required if not (input_dir / name).exists()]
     if missing:
@@ -264,25 +281,26 @@ def main() -> None:
     generator_user = load_prompt("generator/user_prompt.txt")
     selector_system = load_prompt("selector/system_prompt.txt")
     selector_user = load_prompt("selector/user_prompt.txt")
+    units_by_schema = load_schema_units(input_dir)
     rng = random.Random(args.seed)
 
     generator_train = format_generator_rows(
         read_jsonl(input_dir / "generation_train.jsonl"), generator_system, generator_user
     )
     selector_train = format_selector_rows(
-        read_jsonl(input_dir / "selection_train.jsonl"), selector_system, selector_user
+        read_jsonl(input_dir / "selection_train.jsonl"), selector_system, selector_user, units_by_schema
     )
     generator_eval = format_generator_rows(
         read_jsonl(input_dir / "generation_dev.jsonl"), generator_system, generator_user
     )
     selector_eval_full = format_selector_rows(
-        read_jsonl(input_dir / "selection_dev.jsonl"), selector_system, selector_user
+        read_jsonl(input_dir / "selection_dev.jsonl"), selector_system, selector_user, units_by_schema
     )
     generator_test = format_generator_rows(
         read_jsonl(input_dir / "generation_test.jsonl"), generator_system, generator_user
     )
     selector_test = format_selector_rows(
-        read_jsonl(input_dir / "selection_test.jsonl"), selector_system, selector_user
+        read_jsonl(input_dir / "selection_test.jsonl"), selector_system, selector_user, units_by_schema
     )
 
     eval_selector_balanced = sample_eval_selector_rows(selector_eval_full, len(generator_eval), rng)

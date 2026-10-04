@@ -37,6 +37,12 @@ MANAGED_DATA_SOURCES = {
         "cypherbench_schema_grounding_distractor_v2",
         "prepared_distractor_v2",
     ),
+    # Same grounding data and labels as v2, prepared with the selector prompt
+    # that adds RELATED SCHEMA CONTEXT.
+    "llamafactory_distractor_v2.1": (
+        "cypherbench_schema_grounding_distractor_v2",
+        "prepared_distractor_v2.1",
+    ),
 }
 
 

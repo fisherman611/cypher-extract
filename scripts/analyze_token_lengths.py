@@ -38,6 +38,7 @@ from schema_grounding.inference.prompting import (  # noqa: E402
     PromptTemplates,
     render_llama3,
     render_qwen3_nothink,
+    selector_schema_context,
 )
 
 # Tokenizer used to represent each family. Within a family the student and
@@ -219,9 +220,13 @@ def analyze_inference(
                 raise FileNotFoundError(f"Missing inference data: {path}")
 
         def selector_entries(spec=spec) -> Iterator[tuple[str, str | None]]:
-            for row in iter_jsonl(spec.selection_test, max_rows):
-                messages = templates.selector_messages(str(row["question"]), str(row["unit"]["text"]))
-                yield render(messages, add_generation_prompt=True), None
+            # Same context as the inference pipeline: the example's own unit rows.
+            for _, question, units in _grouped_units(spec.selection_test, max_rows):
+                for unit in units:
+                    messages = templates.selector_messages(
+                        question, str(unit["text"]), selector_schema_context(unit, units)
+                    )
+                    yield render(messages, add_generation_prompt=True), None
 
         def generator_entries(spec=spec) -> Iterator[tuple[str, str | None]]:
             # Worst case: the selector marks every unit of the example as

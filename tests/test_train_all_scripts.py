@@ -76,7 +76,8 @@ def test_shared_train_all_runner_preserves_safety_and_output_routing() -> None:
     assert 'if [[ "${override}" == resume_from_checkpoint=* ]]; then' in script
     assert "one checkpoint cannot be applied to every method" in script
     assert 'if [[ "${REUSE_TEACHER}" != "1" ]]; then\n  fresh_outputs+=("${TEACHER_OUTPUT}")' in script
-    assert 'TEACHER_RESULTS_ROOT="${TEACHER_RESULTS_ROOT:-${PROJECT_ROOT}/${DEFAULT_TEACHER_RESULTS_SUBDIR}}"' in script
+    teacher_root = 'TEACHER_RESULTS_ROOT="${TEACHER_RESULTS_ROOT:-${PROJECT_ROOT}/${DEFAULT_TEACHER_RESULTS_SUBDIR}}"'
+    assert teacher_root in script
     assert "Reusing existing ${TEACHER_KIND}" in script
     assert 'for checkpoint in "${output_dir}"/checkpoint-*; do' in script
     assert "Choose a new RESULTS_ROOT" in script
