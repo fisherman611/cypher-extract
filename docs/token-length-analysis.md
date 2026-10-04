@@ -27,8 +27,12 @@ nằm trong `.gitignore`) — file này là bản chép lại kết quả để 
 | llama3 | train | 13654 | 521 | 605 | 110 |
 | llama3 | eval | 3414 | 516 | 609 | 108 |
 
-`cutoff_len` hiện tại là `892` (qwen3, qwen2.5_coder) và `899` (llama3), tức là
-dư khoảng 46% so với `max_total`. **Không có row nào bị truncate.**
+`cutoff_len` hiện tại là `1024` cho mọi family. Với dữ liệu mặc định
+`llamafactory_distractor_v2.2` (prompt generator gồm `CANDIDATE SCHEMA` và
+`OTHER SCHEMA`, tức luôn chứa toàn bộ schema), dòng train dài nhất là 963 token
+(qwen3, qwen2.5_coder) và 952 token (llama3); eval dài nhất 934 token.
+**Không có row nào bị truncate.** Bảng trên là số đo của bộ dữ liệu cũ, trước
+khi prompt generator chứa toàn bộ schema.
 
 ## Inference (`*_inference_test.jsonl`)
 

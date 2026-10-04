@@ -20,7 +20,8 @@ PROMPT_FILENAMES = (
     "selector/system_prompt.txt",
     "selector/user_prompt.txt",
 )
-FINGERPRINT_VERSION = 1
+# 2: generator prompts split CANDIDATE/OTHER schema and simulate selector misses.
+FINGERPRINT_VERSION = 2
 
 
 def preparation_fingerprint(

@@ -23,14 +23,19 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cypher_extract.paths import get_data_root  # noqa: E402
 from distillation.data_cache import preparation_fingerprint  # noqa: E402
-from schema_grounding.augmentation import schema_units  # noqa: E402
-from schema_grounding.inference.prompting import selector_schema_context  # noqa: E402
+from schema_grounding.augmentation import example_rng, gold_unit_ids, schema_units  # noqa: E402
+from schema_grounding.inference.merge import merge_schema_units  # noqa: E402
+from schema_grounding.inference.prompting import generator_other_schema, selector_schema_context  # noqa: E402
 from schema_grounding.selector_labels import (  # noqa: E402
     NEGATIVE_SELECTOR_LABEL,
     POSITIVE_SELECTOR_LABEL,
     format_selector_response,
     selector_label_from_binary,
 )
+
+# Real selectors miss a gold unit in roughly 4-6% of questions; training sees a
+# higher rate so the generator learns to use the OTHER schema at all.
+DEFAULT_GENERATOR_MISS_RATIO = 0.1
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +57,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--generator-miss-ratio",
+        type=float,
+        default=DEFAULT_GENERATOR_MISS_RATIO,
+        help=(
+            "Fraction of generator train rows whose candidate schema loses a gold unit to the OTHER "
+            "schema, simulating a selector miss. Dev/test rows are never changed. "
+            f"Default: {DEFAULT_GENERATOR_MISS_RATIO}."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not 0.0 <= args.generator_miss_ratio <= 1.0:
+        parser.error("--generator-miss-ratio must be in [0, 1]")
+    return args
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -71,25 +89,110 @@ def load_prompt(name: str) -> str:
     return (ROOT / "prompts" / name).read_text(encoding="utf-8").strip()
 
 
+def simulate_selector_miss(
+    candidate_ids: list[str],
+    gold_ids: list[str],
+    units_by_id: dict[str, dict[str, Any]],
+    rng: random.Random,
+) -> list[str]:
+    """Pick gold units a selector could have missed, keeping the candidate graph-valid.
+
+    A gold relationship is dropped together with its endpoint nodes that no
+    remaining candidate relationship uses (closure would not re-add them). A
+    question with only gold nodes loses one node that no candidate relationship
+    uses. At least one candidate unit always remains; ``[]`` means no miss.
+    """
+
+    candidates = set(candidate_ids)
+
+    def endpoint_ids(unit_id: str) -> set[str]:
+        schema = units_by_id[unit_id]["schema"]
+        return {f"node:{schema['source']}", f"node:{schema['target']}"}
+
+    def used_endpoints(relation_ids: Iterable[str]) -> set[str]:
+        used: set[str] = set()
+        for unit_id in relation_ids:
+            used |= endpoint_ids(unit_id)
+        return used
+
+    candidate_relations = sorted(unit_id for unit_id in candidates if unit_id.startswith("relation:"))
+    gold_relations = sorted(
+        unit_id for unit_id in gold_ids if unit_id in candidates and unit_id.startswith("relation:")
+    )
+    if gold_relations:
+        dropped = rng.choice(gold_relations)
+        still_used = used_endpoints(unit_id for unit_id in candidate_relations if unit_id != dropped)
+        removed = [dropped, *sorted(endpoint_ids(dropped) - still_used)]
+    else:
+        used = used_endpoints(candidate_relations)
+        droppable = sorted(unit_id for unit_id in gold_ids if unit_id in candidates and unit_id not in used)
+        if not droppable:
+            return []
+        removed = [rng.choice(droppable)]
+    if not candidates - set(removed):
+        return []
+    return removed
+
+
 def format_generator_rows(
-    rows: Iterable[dict[str, Any]], system_prompt: str, user_template: str
+    rows: Iterable[dict[str, Any]],
+    system_prompt: str,
+    user_template: str,
+    units_by_schema: dict[str, list[dict[str, Any]]],
+    *,
+    miss_ratio: float = 0.0,
+    seed: int = 42,
 ) -> list[dict[str, Any]]:
+    """Format generator rows as CANDIDATE schema (the row's sub-schema) plus OTHER schema.
+
+    With ``miss_ratio`` > 0, that fraction of rows moves a gold unit from the
+    candidates into OTHER so the generator learns to recover selector misses.
+    The choice is seeded per row id, independently of the interleaving RNG.
+    """
+
     prepared: list[dict[str, Any]] = []
     for row in rows:
-        schema = json.dumps(row["sub_schema"], ensure_ascii=False, indent=2)
+        units = units_by_schema[row["schema_id"]]
+        units_by_id = {unit["id"]: unit for unit in units}
+        candidate = row["sub_schema"]
+        missing: list[str] = []
+        if miss_ratio > 0:
+            rng = example_rng(seed, f"generator-miss|{row['id']}")
+            if rng.random() < miss_ratio:
+                # Augmented rows record their gold units; otherwise the sub-schema is the gold one.
+                augmentation = row.get("schema_augmentation") or {}
+                gold_ids = augmentation.get("gold_unit_ids") or gold_unit_ids(candidate, units_by_id)
+                candidate_set = _candidate_unit_ids(candidate)
+                candidate_ids = [unit["id"] for unit in units if unit["id"] in candidate_set]
+                missing = simulate_selector_miss(candidate_ids, list(gold_ids), units_by_id, rng)
+                if missing:
+                    kept = [unit_id for unit_id in candidate_ids if unit_id not in set(missing)]
+                    candidate = merge_schema_units(units, kept, close_relation_endpoints=True).sub_schema
+        other = generator_other_schema(candidate, units)
         prepared.append(
             {
                 "task": "generator",
                 "system_prompt": system_prompt,
-                "user_prompt": user_template.format(question=row["question"], schema=schema),
+                "user_prompt": user_template.format(
+                    question=row["question"],
+                    candidate_schema=json.dumps(candidate, ensure_ascii=False, indent=2),
+                    other_schema=json.dumps(other, ensure_ascii=False, indent=2),
+                ),
                 "response": json.dumps({"cypher": row["cypher"]}, ensure_ascii=False),
                 "example_id": row["id"],
                 "source": row["source"],
                 "split": row["split"],
                 "graph": row["graph"],
+                **({"candidate_missing_unit_ids": missing} if missing else {}),
             }
         )
     return prepared
+
+
+def _candidate_unit_ids(sub_schema: dict[str, Any]) -> set[str]:
+    ids = {f"node:{node['label']}" for node in sub_schema["nodes"]}
+    ids.update(f"relation:{rel['source']}|{rel['type']}|{rel['target']}" for rel in sub_schema["relationships"])
+    return ids
 
 
 def load_schema_units(input_dir: Path) -> dict[str, list[dict[str, Any]]]:
@@ -285,19 +388,24 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     generator_train = format_generator_rows(
-        read_jsonl(input_dir / "generation_train.jsonl"), generator_system, generator_user
+        read_jsonl(input_dir / "generation_train.jsonl"),
+        generator_system,
+        generator_user,
+        units_by_schema,
+        miss_ratio=args.generator_miss_ratio,
+        seed=args.seed,
     )
     selector_train = format_selector_rows(
         read_jsonl(input_dir / "selection_train.jsonl"), selector_system, selector_user, units_by_schema
     )
     generator_eval = format_generator_rows(
-        read_jsonl(input_dir / "generation_dev.jsonl"), generator_system, generator_user
+        read_jsonl(input_dir / "generation_dev.jsonl"), generator_system, generator_user, units_by_schema
     )
     selector_eval_full = format_selector_rows(
         read_jsonl(input_dir / "selection_dev.jsonl"), selector_system, selector_user, units_by_schema
     )
     generator_test = format_generator_rows(
-        read_jsonl(input_dir / "generation_test.jsonl"), generator_system, generator_user
+        read_jsonl(input_dir / "generation_test.jsonl"), generator_system, generator_user, units_by_schema
     )
     selector_test = format_selector_rows(
         read_jsonl(input_dir / "selection_test.jsonl"), selector_system, selector_user, units_by_schema
@@ -341,6 +449,11 @@ def main() -> None:
             },
             "test_generator": {"rows": len(generator_test)},
             "test_selector": {"rows": len(selector_test)},
+        },
+        "generator_schema_split": {
+            "format": "CANDIDATE schema (the row's sub-schema) + OTHER schema (rest of the full schema)",
+            "train_miss_ratio": args.generator_miss_ratio,
+            "train_rows_with_simulated_miss": sum(1 for row in generator_train if "candidate_missing_unit_ids" in row),
         },
         "eval_selector_labels": dict(Counter(row["label"] for row in eval_selector_balanced)),
         "train_selector_labels": dict(Counter(row["label"] for row in selector_train)),

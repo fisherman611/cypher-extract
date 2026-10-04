@@ -43,6 +43,12 @@ MANAGED_DATA_SOURCES = {
         "cypherbench_schema_grounding_distractor_v2",
         "prepared_distractor_v2.1",
     ),
+    # Same grounding data as v2; adds the CANDIDATE/OTHER generator schema and
+    # simulated selector misses on top of the v2.1 selector prompt.
+    "llamafactory_distractor_v2.2": (
+        "cypherbench_schema_grounding_distractor_v2",
+        "prepared_distractor_v2.2",
+    ),
 }
 
 

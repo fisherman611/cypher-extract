@@ -36,6 +36,7 @@ from schema_grounding.inference.data import default_dataset_specs  # noqa: E402
 from schema_grounding.inference.merge import merge_schema_units  # noqa: E402
 from schema_grounding.inference.prompting import (  # noqa: E402
     PromptTemplates,
+    generator_other_schema,
     render_llama3,
     render_qwen3_nothink,
     selector_schema_context,
@@ -229,18 +230,24 @@ def analyze_inference(
                     yield render(messages, add_generation_prompt=True), None
 
         def generator_entries(spec=spec) -> Iterator[tuple[str, str | None]]:
-            # Worst case: the selector marks every unit of the example as
-            # related, so the predicted sub-schema is the full schema.
+            # CANDIDATE + OTHER always spell out the full schema; the worst case
+            # is the selector marking every unit, leaving OTHER empty.
             for _, question, units in _grouped_units(spec.selection_test, max_rows):
                 merged = merge_schema_units(units, [str(unit["id"]) for unit in units])
-                messages = templates.generator_messages(question, merged.sub_schema)
+                messages = templates.generator_messages(
+                    question, merged.sub_schema, generator_other_schema(merged.sub_schema, units)
+                )
                 yield render(messages, add_generation_prompt=True), None
 
         def gold_entries(spec=spec) -> Iterator[tuple[str, str | None]]:
+            units_by_example = {
+                example_id: units for example_id, _, units in _grouped_units(spec.selection_test, None)
+            }
             for row in iter_jsonl(spec.generation_test, max_rows):
-                if "sub_schema" not in row:
+                if "sub_schema" not in row or row["id"] not in units_by_example:
                     continue
-                messages = templates.generator_messages(str(row["question"]), row["sub_schema"])
+                other = generator_other_schema(row["sub_schema"], units_by_example[row["id"]])
+                messages = templates.generator_messages(str(row["question"]), row["sub_schema"], other)
                 yield render(messages, add_generation_prompt=True), None
 
         dataset: dict[str, dict[str, int]] = {

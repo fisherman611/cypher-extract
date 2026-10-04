@@ -1,8 +1,11 @@
 QUESTION:
 {question}
 
-SCHEMA:
-{schema}
+CANDIDATE SCHEMA:
+{candidate_schema}
+
+OTHER SCHEMA:
+{other_schema}
 
 Generate a Cypher query that answers the question using only the provided schema.
 Return only the JSON object in the required format.

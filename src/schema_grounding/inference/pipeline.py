@@ -25,6 +25,7 @@ from schema_grounding.inference.prompting import (
     Message,
     PromptTemplates,
     chat_template_metadata,
+    generator_other_schema,
     selector_schema_context,
 )
 from schema_grounding.selector_labels import (
@@ -111,6 +112,20 @@ def _format_duration(seconds: float) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def _example_units(selection_path: Path) -> dict[str, list[dict[str, Any]]]:
+    """Map example_id to every schema unit of that example, in row order.
+
+    Inference rows list every unit of the example's schema, so they provide the
+    same selector context and generator OTHER schema that training builds from
+    schemas.jsonl.
+    """
+
+    example_units: dict[str, list[dict[str, Any]]] = {}
+    for row in iter_jsonl(selection_path):
+        example_units.setdefault(str(row["example_id"]), []).append(row["unit"])
+    return example_units
 
 
 def _count_rows(path: Path) -> int:
@@ -219,11 +234,7 @@ def run_selector_stage(
     generated_rows = 0
     invalid_rows = 0
     positive_rows = 0
-    # Inference rows list every unit of the example's schema, so they provide
-    # the same selector context that training builds from schemas.jsonl.
-    example_units: dict[str, list[dict[str, Any]]] = {}
-    for row in iter_jsonl(spec.selection_test):
-        example_units.setdefault(str(row["example_id"]), []).append(row["unit"])
+    example_units = _example_units(spec.selection_test)
     progress = _StageProgress(
         f"{spec.name}/selector",
         total=sum(len(units) for units in example_units.values()),
@@ -380,6 +391,7 @@ def run_generator_stage(
     max_prompt_length = 0
     empty_rows = 0
     context_limit = _context_limit(runner)
+    example_units = _example_units(spec.selection_test)
     progress = _StageProgress(
         f"{spec.name}/generator",
         total=_count_rows(sub_schema_path),
@@ -391,7 +403,12 @@ def run_generator_stage(
         source = _rows_after_progress(sub_schema_path, completed_rows, last_id)
         for batch in _batches(source, options.generator_batch_size):
             conversations = [
-                templates.generator_messages(str(row["question"]), row["predicted_sub_schema"]) for row in batch
+                templates.generator_messages(
+                    str(row["question"]),
+                    row["predicted_sub_schema"],
+                    generator_other_schema(row["predicted_sub_schema"], example_units[str(row["id"])]),
+                )
+                for row in batch
             ]
             prompt_lengths = [runner.prompt_length(messages) for messages in conversations]
             max_prompt_length = max(max_prompt_length, *prompt_lengths)

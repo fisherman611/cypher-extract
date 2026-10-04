@@ -17,7 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from schema_grounding.augmentation import schema_units  # noqa: E402
-from schema_grounding.inference.prompting import render_qwen3_nothink, selector_schema_context  # noqa: E402
+from schema_grounding.inference.prompting import (  # noqa: E402
+    generator_other_schema,
+    render_qwen3_nothink,
+    selector_schema_context,
+)
 
 DEFAULT_DATASETS = {
     "cypherbench": ROOT / "data" / "cypherbench_schema_grounding_full_final",
@@ -83,9 +87,16 @@ def build_messages(
     if task == "generator":
         system = load_prompt("generator/system_prompt.txt")
         user_template = load_prompt("generator/user_prompt.txt")
+        if units_by_schema is None:
+            raise ValueError("Generator prompts need the schema units for their OTHER schema.")
         user = user_template.format(
             question=row["question"],
-            schema=json.dumps(row["sub_schema"], ensure_ascii=False, indent=2),
+            candidate_schema=json.dumps(row["sub_schema"], ensure_ascii=False, indent=2),
+            other_schema=json.dumps(
+                generator_other_schema(row["sub_schema"], units_by_schema[row["schema_id"]]),
+                ensure_ascii=False,
+                indent=2,
+            ),
         )
         response = json.dumps({"cypher": row["cypher"]}, ensure_ascii=False)
     elif task == "selector":
@@ -143,7 +154,7 @@ def analyze_file(path: Path, task: str, tokenizer: Any, max_rows: int | None) ->
             maxima["max_target_length"] = max(maxima["max_target_length"], target_length)
         pending.clear()
 
-    units_by_schema = load_schema_units(path.parent) if task == "selector" else None
+    units_by_schema = load_schema_units(path.parent)
     for line_number, row in iter_jsonl(path, max_rows):
         try:
             messages = build_messages(row, task, units_by_schema)

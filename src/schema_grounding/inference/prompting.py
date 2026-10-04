@@ -7,6 +7,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from schema_grounding.inference.merge import merge_schema_units
+
 Message = dict[str, str]
 
 _QWEN3_NOTHINK_MESSAGE = "<|im_start|>{role}\n{content}<|im_end|>\n"
@@ -164,6 +166,31 @@ def selector_schema_context(unit: Mapping[str, Any], schema_units: Iterable[Mapp
     )
 
 
+def _sub_schema_unit_ids(sub_schema: Mapping[str, Any]) -> set[str]:
+    ids = {f"node:{node['label']}" for node in sub_schema["nodes"]}
+    ids.update(
+        f"relation:{relationship['source']}|{relationship['type']}|{relationship['target']}"
+        for relationship in sub_schema["relationships"]
+    )
+    return ids
+
+
+def generator_other_schema(
+    candidate_schema: Mapping[str, Any], schema_units: Iterable[Mapping[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Return the schema units that are not part of the candidate sub-schema.
+
+    Candidate and other schema together cover the full schema without overlap.
+    Units keep the order of ``schema_units`` (the canonical schema order used
+    by both ``schemas.jsonl`` and the inference unit rows).
+    """
+
+    units = [dict(unit) for unit in schema_units]
+    chosen = _sub_schema_unit_ids(candidate_schema)
+    rest = [str(unit["id"]) for unit in units if str(unit["id"]) not in chosen]
+    return merge_schema_units(units, rest, close_relation_endpoints=False).sub_schema
+
+
 @dataclass(frozen=True)
 class PromptTemplates:
     generator_system: str
@@ -211,12 +238,17 @@ class PromptTemplates:
             },
         ]
 
-    def generator_messages(self, question: str, sub_schema: dict[str, Any]) -> list[Message]:
-        schema = json.dumps(sub_schema, ensure_ascii=False, indent=2)
+    def generator_messages(
+        self, question: str, sub_schema: dict[str, Any], other_schema: dict[str, Any]
+    ) -> list[Message]:
         return [
             {"role": "system", "content": self.generator_system},
             {
                 "role": "user",
-                "content": self.generator_user.format(question=question, schema=schema),
+                "content": self.generator_user.format(
+                    question=question,
+                    candidate_schema=json.dumps(sub_schema, ensure_ascii=False, indent=2),
+                    other_schema=json.dumps(other_schema, ensure_ascii=False, indent=2),
+                ),
             },
         ]

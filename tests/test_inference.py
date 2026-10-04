@@ -41,6 +41,7 @@ from schema_grounding.inference.prompting import (
     QWEN3_NOTHINK_TEMPLATE_NAME,
     PromptTemplates,
     chat_template_metadata,
+    generator_other_schema,
     qwen_template_metadata,
     render_llama3,
     render_qwen3_nothink,
@@ -436,7 +437,9 @@ def test_local_checkpoint_accepts_full_model_weights(tmp_path: Path) -> None:
 def test_prompt_messages_match_training_format() -> None:
     templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
     generator = templates.generator_messages(
-        "Who?", {"nodes": [{"label": "Person", "properties": {}}], "relationships": []}
+        "Who?",
+        {"nodes": [{"label": "Person", "properties": {}}], "relationships": []},
+        {"nodes": [{"label": "Movie", "properties": {}}], "relationships": []},
     )
     selector = templates.selector_messages(
         "Who?",
@@ -449,6 +452,9 @@ def test_prompt_messages_match_training_format() -> None:
     )
     assert "QUESTION:\nWho?" in generator[1]["content"]
     assert '"relationships": []' in generator[1]["content"]
+    candidate_part, other_part = generator[1]["content"].split("OTHER SCHEMA:\n", 1)
+    assert "CANDIDATE SCHEMA:\n" in candidate_part and '"Person"' in candidate_part
+    assert '"Movie"' in other_part and '"Person"' not in other_part
     assert (
         selector[0]["content"]
         == (REPOSITORY_ROOT / "prompts/selector/system_prompt.txt").read_text(encoding="utf-8").strip()
@@ -590,6 +596,63 @@ def test_training_and_inference_render_identical_selector_prompts() -> None:
     assert prepared["system_prompt"] == messages[0]["content"]
     assert prepared["user_prompt"] == messages[1]["content"]
     assert "- (:Movie)-[:hasCastMember]->(:Person)" in prepared["user_prompt"]
+
+
+def test_generator_other_schema_is_the_complement_of_the_candidates() -> None:
+    units = schema_units(CONTEXT_SCHEMA)
+    candidate = merge_schema_units(
+        units, ["node:Movie", "node:Person", "relation:Movie|directedBy|Person"]
+    ).sub_schema
+
+    other = generator_other_schema(candidate, units)
+
+    assert [node["label"] for node in other["nodes"]] == ["Actor", "Book", "Genre"]
+    assert [rel["type"] for rel in other["relationships"]] == [
+        "hasCastMember",
+        "reviewed",
+        "hasGenre",
+        "hasGenre",
+        "hasSpouse",
+    ]
+    full = merge_schema_units(units, [unit["id"] for unit in units]).sub_schema
+    assert len(candidate["nodes"]) + len(other["nodes"]) == len(full["nodes"])
+    assert len(candidate["relationships"]) + len(other["relationships"]) == len(full["relationships"])
+
+
+def test_training_and_inference_render_identical_generator_prompts() -> None:
+    from scripts.prepare_multitask_prompts import format_generator_rows, load_prompt
+
+    units = schema_units(CONTEXT_SCHEMA)
+    gold = merge_schema_units(units, ["node:Movie", "node:Person", "relation:Movie|directedBy|Person"]).sub_schema
+    row = {
+        "id": "fixture:0",
+        "question": "Which movies were directed by Martin Scorsese?",
+        "cypher": "MATCH (m:Movie)-[:directedBy]->(p:Person {name: 'Martin Scorsese'}) RETURN m.name",
+        "sub_schema": gold,
+        "schema_id": CONTEXT_SCHEMA["schema_id"],
+        "source": "fixture",
+        "split": "test",
+        "graph": "movie",
+    }
+    prepared = format_generator_rows(
+        [row],
+        load_prompt("generator/system_prompt.txt"),
+        load_prompt("generator/user_prompt.txt"),
+        {CONTEXT_SCHEMA["schema_id"]: units},
+    )[0]
+
+    # Inference rows carry a text field and are merged by the pipeline's merge stage.
+    inference_units = [{**unit, "text": "unused"} for unit in units]
+    predicted = merge_schema_units(
+        inference_units, ["node:Movie", "node:Person", "relation:Movie|directedBy|Person"]
+    ).sub_schema
+    messages = PromptTemplates.from_repository(REPOSITORY_ROOT).generator_messages(
+        row["question"], predicted, generator_other_schema(predicted, inference_units)
+    )
+
+    assert prepared["system_prompt"] == messages[0]["content"]
+    assert prepared["user_prompt"] == messages[1]["content"]
+    assert "candidate_missing_unit_ids" not in prepared
 
 
 def test_qwen3_nothink_renderer_exactly_matches_llamafactory_chatml() -> None:
