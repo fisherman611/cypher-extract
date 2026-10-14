@@ -7,6 +7,7 @@ import argparse
 import gc
 import json
 import multiprocessing as mp
+import os
 import shutil
 import sys
 from dataclasses import replace
@@ -29,6 +30,7 @@ from schema_grounding.inference.checkpoints import (  # noqa: E402
     resolve_last_checkpoint,
 )
 from schema_grounding.inference.data import DatasetSpec, default_dataset_specs  # noqa: E402
+from schema_grounding.inference.hub import download_hf_checkpoints  # noqa: E402
 from schema_grounding.inference.model import ModelRunner  # noqa: E402
 from schema_grounding.inference.pipeline import (  # noqa: E402
     InferenceOptions,
@@ -71,6 +73,27 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_CHECKPOINT_ROOT,
         help="Local root containing <model-family>/<method>/checkpoint-N directories.",
+    )
+    parser.add_argument(
+        "--hf-checkpoint-repo",
+        default=os.environ.get("HF_CHECKPOINT_REPO") or None,
+        help=(
+            "Hugging Face model repo that mirrors results/ (<setting>/<model-family>/<method>/checkpoint-N). "
+            "Downloads only the newest checkpoint of each method, without training state, instead of "
+            "reading --checkpoint-root. The setting folder is the last part of --checkpoint-root "
+            "(results/lora -> lora). Defaults to $HF_CHECKPOINT_REPO."
+        ),
+    )
+    parser.add_argument(
+        "--hf-checkpoint-dir",
+        type=Path,
+        default=Path("checkpoints/hf"),
+        help="Where --hf-checkpoint-repo is downloaded (reused on later runs). Default: checkpoints/hf.",
+    )
+    parser.add_argument(
+        "--hf-revision",
+        default=None,
+        help="Branch, tag or commit of --hf-checkpoint-repo. Pin a commit for reproducible runs.",
     )
     parser.add_argument("--model-family", default=DEFAULT_MODEL_FAMILY)
     parser.add_argument(
@@ -414,6 +437,7 @@ def main() -> None:
         json.dumps(
             {
                 "checkpoint_root": str(args.checkpoint_root.resolve()),
+                "hf_checkpoint_repo": args.hf_checkpoint_repo,
                 "methods": methods,
                 "datasets": dataset_names,
                 "seeds": seeds,
@@ -440,6 +464,17 @@ def main() -> None:
             indent=2,
         )
     )
+    if args.hf_checkpoint_repo:
+        args.checkpoint_root = download_hf_checkpoints(
+            args.hf_checkpoint_repo,
+            subfolder=args.checkpoint_root.name,
+            model_family=args.model_family,
+            methods=methods,
+            local_dir=args.hf_checkpoint_dir / args.hf_checkpoint_repo.replace("/", "__"),
+            revision=args.hf_revision,
+            token=os.environ.get("HF_TOKEN") or os.environ.get("HF_READ_TOKEN") or None,
+        )
+        print(f"[hf] checkpoints from {args.hf_checkpoint_repo} are in {args.checkpoint_root.resolve()}")
     checkpoints = {}
     checkpoint_paths = {}
     for method in methods:

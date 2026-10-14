@@ -775,6 +775,27 @@ CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
   --generator-batch-size 16
 ```
 
+#### Tự tải checkpoint từ Hugging Face
+
+Không cần có sẵn `results/` trên máy chạy. Đặt `HF_CHECKPOINT_REPO` (hoặc truyền
+`--hf-checkpoint-repo`) tới repo mirror cấu trúc `results/`, tức
+`<setting>/<model-family>/<method>/checkpoint-N/`:
+
+```bash
+HF_CHECKPOINT_REPO=fisherman611/nothing-cp-ex-teacher-and-student-sft-3 \
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh --num-gpus 2
+```
+
+Script chỉ tải checkpoint có step cao nhất của từng method, bỏ optimizer state,
+`global_step*`, rng state (khoảng 50 MB cho mỗi student thay vì hơn 600 MB), vào
+`checkpoints/hf/<owner>__<repo>/` và dùng lại ở các lần sau. Thư mục setting lấy
+từ phần cuối của `--checkpoint-root` (`results/lora` -> `lora`,
+`results/lora_normalized` -> `lora_normalized`). Dùng `--hf-revision <commit>` để
+ghim phiên bản, `--hf-checkpoint-dir` để đổi nơi lưu. Repo private cần
+`HF_TOKEN` hoặc `HF_READ_TOKEN`. Base model (ví dụ `Qwen/Qwen3-0.6B`) được tải tự
+động từ Hub theo `adapter_config.json`. Nếu một method không có trên repo, script
+dừng và báo rõ method nào thiếu.
+
 #### Ngưỡng P(YES) của selector
 
 Selector luôn lưu `p_yes` (xác suất YES đã chuẩn hóa với NO) trong

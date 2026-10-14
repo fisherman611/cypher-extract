@@ -220,5 +220,6 @@ benchmarks/
 data/
 template/
 results/
+checkpoints/
 CypherKD_ref/
 /distillation/
