@@ -109,6 +109,21 @@ def parse_args() -> argparse.Namespace:
         default=InferenceOptions.selector_batch_size,
         help="Selector prompts per generate() call; halved automatically on CUDA OOM.",
     )
+    parser.add_argument(
+        "--selector-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Label a schema unit YES when P(YES) >= this value in (0, 1). Defaults to the greedy "
+            "label (equivalent to 0.5). P(YES) is always saved as p_yes in selector_predictions.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--split",
+        choices=("test", "dev"),
+        default="test",
+        help="Evaluation split. Use dev (with a separate --output-dir) to tune --selector-threshold.",
+    )
     parser.add_argument("--generator-batch-size", type=int, default=100)
     parser.add_argument("--generator-max-new-tokens", type=int, default=256)
     parser.add_argument(
@@ -371,8 +386,18 @@ def main() -> None:
     seeds = parse_seeds(args.seeds)
     devices = resolve_worker_devices(args.device, args.num_gpus)
     specs = default_dataset_specs(REPOSITORY_ROOT)
+    if args.split == "dev":
+        specs = {
+            name: replace(spec, generation_filename="generation_dev.jsonl", selection_filename="selection_dev.jsonl")
+            for name, spec in specs.items()
+        }
+        for dataset_name in dataset_names:
+            for path in (specs[dataset_name].generation_test, specs[dataset_name].selection_test):
+                if not path.is_file():
+                    raise FileNotFoundError(f"--split dev needs {path}, which does not exist")
     templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
     options = InferenceOptions(
+        selector_threshold=args.selector_threshold,
         selector_batch_size=args.selector_batch_size,
         generator_batch_size=args.generator_batch_size,
         generator_max_new_tokens=args.generator_max_new_tokens,
@@ -399,6 +424,7 @@ def main() -> None:
                     "do_sample": False,
                     "num_beams": 1,
                     "max_new_tokens": options.selector_max_new_tokens,
+                    "threshold": options.selector_threshold,
                 },
                 "generator_decoding": {
                     "do_sample": options.generator_do_sample,

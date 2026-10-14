@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 from peft import PeftConfig, PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessor, LogitsProcessorList
 
 from distillation.generation import generation_eos_value, resolve_eos_token_ids
 from distillation.utils import capture_rng_state, restore_rng_state
@@ -43,6 +43,49 @@ def _pinned_base_revision(checkpoint_path: Path, base_name: str, adapter_revisio
         )
     commit_hash = student_model.get("commit_hash")
     return commit_hash if isinstance(commit_hash, str) and commit_hash else adapter_revision
+class _LabelProbabilityRecorder(LogitsProcessor):
+    """Record the YES/NO first-token probability mass at each step without changing the scores."""
+
+    def __init__(self, yes_ids: frozenset[int], no_ids: frozenset[int]) -> None:
+        self.yes_ids = sorted(yes_ids)
+        self.no_ids = sorted(no_ids)
+        self.steps: list[torch.Tensor] = []
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        probabilities = torch.softmax(scores.float(), dim=-1)
+        self.steps.append(
+            torch.stack(
+                (probabilities[:, self.yes_ids].sum(dim=-1), probabilities[:, self.no_ids].sum(dim=-1)),
+                dim=-1,
+            )
+        )
+        return scores
+
+
+def label_probability(
+    generated_ids: Sequence[int],
+    steps: torch.Tensor | None,
+    row: int,
+    yes_ids: frozenset[int],
+    no_ids: frozenset[int],
+) -> float | None:
+    """Return P(YES) / (P(YES) + P(NO)) at the step where the label token was generated.
+
+    ``steps`` has shape ``(step, batch, 2)`` with the YES and NO probability mass of every
+    greedy step. None means no label token was generated or both masses are zero.
+    """
+
+    for position, token_id in enumerate(generated_ids):
+        if token_id not in yes_ids and token_id not in no_ids:
+            continue
+        if steps is None or position >= steps.shape[0]:
+            return None
+        yes_mass, no_mass = (float(value) for value in steps[position, row])
+        total = yes_mass + no_mass
+        return yes_mass / total if total > 0 else None
+    return None
+
+
 _TOKENIZER_ASSETS = (
     "tokenizer.json",
     "tokenizer.model",
@@ -59,6 +102,33 @@ class ModelRunner:
     device: torch.device
     model_family: str | None = None
     safe_batch_sizes: dict[int, int] = field(default_factory=dict, repr=False)
+    _label_ids: tuple[frozenset[int], frozenset[int]] | None = field(default=None, init=False, repr=False)
+
+    def _label_token_ids(self) -> tuple[frozenset[int], frozenset[int]]:
+        """First token ids of the YES and NO labels, with and without a leading space."""
+
+        if self._label_ids is None:
+
+            def first_tokens(label: str) -> frozenset[int]:
+                ids: set[int] = set()
+                for text in (label, f" {label}"):
+                    encoded = self.tokenizer.encode(text, add_special_tokens=False)
+                    if encoded:
+                        ids.add(int(encoded[0]))
+                return frozenset(ids)
+
+            yes_ids, no_ids = first_tokens("YES"), first_tokens("NO")
+            if not yes_ids or not no_ids or yes_ids & no_ids:
+                raise ValueError("The tokenizer does not give distinct first tokens for the YES and NO labels.")
+            self._label_ids = (yes_ids, no_ids)
+        return self._label_ids
+
+    def generate_with_label_probabilities(
+        self, conversations: Sequence[Sequence[Message]], **generation_kwargs: Any
+    ) -> list[tuple[str, float | None]]:
+        """Greedy generation that also returns P(YES) for each conversation."""
+
+        return self.generate(conversations, label_probabilities=True, **generation_kwargs)
 
     @classmethod
     def from_checkpoint(
@@ -188,12 +258,17 @@ class ModelRunner:
         top_p: float = 0.95,
         top_k: int = 0,
         num_beams: int = 1,
-    ) -> list[str]:
+        label_probabilities: bool = False,
+    ) -> list[str] | list[tuple[str, float | None]]:
+        """Generate completions; with ``label_probabilities`` return ``(text, P(YES))`` pairs."""
+
         if not conversations:
             return []
+        # Only forwarded when requested so plain generation calls keep their exact signature.
+        extra = {"label_probabilities": True} if label_probabilities else {}
         safe_batch_size = self.safe_batch_sizes.get(max_new_tokens)
         if safe_batch_size is not None and len(conversations) > safe_batch_size:
-            outputs: list[str] = []
+            outputs: list[Any] = []
             for start in range(0, len(conversations), safe_batch_size):
                 outputs.extend(
                     self.generate(
@@ -204,6 +279,7 @@ class ModelRunner:
                         top_p=top_p,
                         top_k=top_k,
                         num_beams=num_beams,
+                        **extra,
                     )
                 )
             return outputs
@@ -217,6 +293,7 @@ class ModelRunner:
                 top_p=top_p,
                 top_k=top_k,
                 num_beams=num_beams,
+                **extra,
             )
         except torch.cuda.OutOfMemoryError:
             if len(conversations) == 1:
@@ -235,6 +312,7 @@ class ModelRunner:
                     top_p=top_p,
                     top_k=top_k,
                     num_beams=num_beams,
+                    **extra,
                 ),
                 *self.generate(
                     conversations[middle:],
@@ -244,6 +322,7 @@ class ModelRunner:
                     top_p=top_p,
                     top_k=top_k,
                     num_beams=num_beams,
+                    **extra,
                 ),
             ]
 
@@ -257,7 +336,8 @@ class ModelRunner:
         top_p: float,
         top_k: int,
         num_beams: int,
-    ) -> list[str]:
+        label_probabilities: bool = False,
+    ) -> list[str] | list[tuple[str, float | None]]:
         features = []
         for messages in conversations:
             input_ids = self._tokenize_chat(messages)
@@ -276,6 +356,21 @@ class ModelRunner:
         }
         if do_sample:
             generation_kwargs.update(temperature=temperature, top_p=top_p, top_k=top_k)
+        recorder = None
+        if label_probabilities:
+            if do_sample or num_beams != 1:
+                raise ValueError("P(YES) is only defined for greedy decoding (do_sample=False, num_beams=1).")
+            yes_ids, no_ids = self._label_token_ids()
+            recorder = _LabelProbabilityRecorder(yes_ids, no_ids)
+            generation_kwargs["logits_processor"] = LogitsProcessorList([recorder])
         generated = self.model.generate(**batch, **generation_kwargs)
         prompt_width = batch["input_ids"].shape[1]
-        return self.tokenizer.batch_decode(generated[:, prompt_width:], skip_special_tokens=True)
+        texts = self.tokenizer.batch_decode(generated[:, prompt_width:], skip_special_tokens=True)
+        if recorder is None:
+            return texts
+        steps = torch.stack(recorder.steps).cpu() if recorder.steps else None
+        generated_rows = generated[:, prompt_width:].tolist()
+        return [
+            (text, label_probability(generated_rows[row], steps, row, yes_ids, no_ids))
+            for row, text in enumerate(texts)
+        ]

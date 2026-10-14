@@ -67,6 +67,8 @@ class InferenceOptions:
     top_k: int = 0
     num_beams: int = 1
     seed: int = 42
+    # Label a unit YES when P(YES) >= selector_threshold; None keeps the greedy label.
+    selector_threshold: float | None = None
 
     def validate(self) -> None:
         for name in (
@@ -87,6 +89,8 @@ class InferenceOptions:
             raise ValueError("temperature must be positive")
         if not 0 < self.top_p <= 1:
             raise ValueError("top_p must be in (0, 1]")
+        if self.selector_threshold is not None and not 0 < self.selector_threshold < 1:
+            raise ValueError("selector_threshold must be in (0, 1)")
 
 
 def _generator_generation_kwargs(options: InferenceOptions) -> dict[str, Any]:
@@ -255,11 +259,24 @@ def run_selector_stage(
             ]
             selector_kwargs = selector_generation_kwargs()
             selector_kwargs["max_new_tokens"] = options.selector_max_new_tokens
-            raw_outputs = runner.generate(conversations, **selector_kwargs)
+            label_probability_generate = getattr(runner, "generate_with_label_probabilities", None)
+            if label_probability_generate is not None:
+                results = label_probability_generate(conversations, **selector_kwargs)
+                raw_outputs = [text for text, _ in results]
+                p_yes_values = [p_yes for _, p_yes in results]
+            elif options.selector_threshold is not None:
+                raise RuntimeError("selector_threshold needs a runner that reports P(YES)")
+            else:
+                raw_outputs = runner.generate(conversations, **selector_kwargs)
+                p_yes_values = [None] * len(raw_outputs)
             if len(raw_outputs) != len(batch):
                 raise RuntimeError("Model returned the wrong number of selector outputs")
-            for row, raw_output in zip(batch, raw_outputs, strict=True):
+            for row, raw_output, p_yes in zip(batch, raw_outputs, p_yes_values, strict=True):
                 parsed = parse_selector_label(raw_output)
+                if options.selector_threshold is not None and parsed is not None and p_yes is not None:
+                    parsed = (
+                        POSITIVE_SELECTOR_LABEL if p_yes >= options.selector_threshold else NEGATIVE_SELECTOR_LABEL
+                    )
                 invalid_rows += parsed is None
                 positive_rows += parsed == POSITIVE_SELECTOR_LABEL
                 write_json_line(
@@ -273,6 +290,7 @@ def run_selector_stage(
                         "predicted_label": parsed or "INVALID",
                         "valid": parsed is not None,
                         "raw_output": raw_output,
+                        **({"p_yes": round(p_yes, 6)} if p_yes is not None else {}),
                     },
                 )
                 generated_rows += 1
@@ -674,7 +692,12 @@ def _comparable_run_config(run_config: dict[str, Any]) -> dict[str, Any]:
         return run_config
     return {
         **run_config,
-        "options": {key: value for key, value in options.items() if key not in _THROUGHPUT_ONLY_OPTIONS},
+        "options": {
+            key: value
+            for key, value in options.items()
+            # An unset threshold equals configs written before the option existed.
+            if key not in _THROUGHPUT_ONLY_OPTIONS and not (key == "selector_threshold" and value is None)
+        },
     }
 
 

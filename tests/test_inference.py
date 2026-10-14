@@ -1472,3 +1472,161 @@ def test_competing_unit_ids_match_the_selector_context_sections() -> None:
                 relation_type, target = rest.split("]->(:", 1)
                 listed.add(f"relation:{source}|{relation_type}|{target[:-1]}")
         assert competing_unit_ids(unit, units) == listed
+
+
+def _selector_fixture(tmp_path: Path) -> DatasetSpec:
+    data = tmp_path / "benchmark"
+    units = [node("A"), node("B"), relation("A", "LINKS", "B")]
+    selection = [
+        {
+            "id": f"example-1:{unit['id']}",
+            "example_id": "example-1",
+            "schema_id": "schema-1",
+            "unit_id": unit["id"],
+            "unit_type": unit["kind"],
+            "unit": unit,
+            "question": "Find A",
+            "label": int(unit["id"] != "node:B"),
+        }
+        for unit in units
+    ]
+    write_jsonl(data / "selection_test.jsonl", selection)
+    write_jsonl(data / "generation_test.jsonl", [{"id": "example-1"}])
+    return DatasetSpec("fixture", data)
+
+
+class ProbabilityRunner(FakeRunner):
+    """Greedy labels come from FakeRunner; P(YES) is fixed per unit."""
+
+    probabilities = {"node:A": 0.9, "node:B": 0.4, "relation:A|LINKS|B": 0.6}
+
+    def generate_with_label_probabilities(self, conversations, **kwargs):
+        texts = self.generate(conversations, **kwargs)
+        results = []
+        for messages, text in zip(conversations, texts, strict=True):
+            user = messages[1]["content"]
+            unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nRELATED SCHEMA CONTEXT:", 1)[0]
+            unit_id = "relation:A|LINKS|B" if "[:LINKS]" in unit else "node:A" if "(:A " in unit else "node:B"
+            results.append((text, self.probabilities[unit_id]))
+        return results
+
+
+def test_selector_stage_saves_p_yes_and_keeps_greedy_labels_without_threshold(tmp_path: Path) -> None:
+    output = tmp_path / "selector_predictions.jsonl"
+    run_selector_stage(
+        _selector_fixture(tmp_path),
+        ProbabilityRunner(),
+        PromptTemplates.from_repository(REPOSITORY_ROOT),
+        output,
+        InferenceOptions(selector_batch_size=2),
+    )
+    rows = list(iter_jsonl(output))
+    assert [row["p_yes"] for row in rows] == [0.9, 0.4, 0.6]
+    assert [row["predicted_label"] for row in rows] == ["YES", "NO", "YES"]
+
+
+def test_selector_stage_applies_threshold_to_p_yes(tmp_path: Path) -> None:
+    output = tmp_path / "selector_predictions.jsonl"
+    run_selector_stage(
+        _selector_fixture(tmp_path),
+        ProbabilityRunner(),
+        PromptTemplates.from_repository(REPOSITORY_ROOT),
+        output,
+        InferenceOptions(selector_batch_size=2, selector_threshold=0.7),
+    )
+    rows = list(iter_jsonl(output))
+    assert [row["predicted_label"] for row in rows] == ["YES", "NO", "NO"]
+    # raw_output keeps what the model actually generated.
+    assert [row["raw_output"] for row in rows] == [json.dumps({"label": label}) for label in ("YES", "NO", "YES")]
+
+
+def test_selector_stage_without_p_yes_support_omits_field_and_rejects_threshold(tmp_path: Path) -> None:
+    spec = _selector_fixture(tmp_path)
+    templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
+    plain = tmp_path / "plain.jsonl"
+    run_selector_stage(spec, FakeRunner(), templates, plain, InferenceOptions(selector_batch_size=2))
+    assert all("p_yes" not in row for row in iter_jsonl(plain))
+    with pytest.raises(RuntimeError, match="selector_threshold needs a runner that reports P"):
+        run_selector_stage(
+            spec,
+            FakeRunner(),
+            templates,
+            tmp_path / "thresholded.jsonl",
+            InferenceOptions(selector_batch_size=2, selector_threshold=0.7),
+        )
+
+
+@pytest.mark.parametrize("threshold", [0.0, 1.0, -0.1, 1.5])
+def test_inference_options_rejects_selector_threshold_outside_open_unit_interval(threshold: float) -> None:
+    with pytest.raises(ValueError, match="selector_threshold must be in"):
+        InferenceOptions(selector_threshold=threshold).validate()
+
+
+def test_unset_selector_threshold_matches_run_configs_written_before_the_option(tmp_path: Path) -> None:
+    spec = _selector_fixture(tmp_path)
+    checkpoint = LastCheckpoint("results", "qwen3", "sft", 7, "qwen3/sft/checkpoint-7")
+    templates = PromptTemplates.from_repository(REPOSITORY_ROOT)
+    output = tmp_path / "run"
+    common = {"method": "sft", "checkpoint": checkpoint, "spec": spec, "templates": templates}
+    prepare_run_directory(**common, output_directory=output, options=InferenceOptions())
+
+    config_path = output / "run_config.json"
+    legacy = json.loads(config_path.read_text(encoding="utf-8"))
+    del legacy["options"]["selector_threshold"]
+    config_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    prepare_run_directory(**common, output_directory=output, options=InferenceOptions())
+    with pytest.raises(ValueError, match="different configuration"):
+        prepare_run_directory(**common, output_directory=output, options=InferenceOptions(selector_threshold=0.7))
+
+
+def test_label_probability_reads_the_step_that_produced_the_label_token() -> None:
+    yes_ids, no_ids = frozenset({7}), frozenset({8})
+    # steps[position, row] = (P(YES) mass, P(NO) mass); row 1 emits NO at position 1.
+    steps = torch.tensor([[[0.1, 0.1], [0.2, 0.2]], [[0.6, 0.2], [0.1, 0.3]]])
+    assert inference_model.label_probability([5, 7, 9], steps, 0, yes_ids, no_ids) == pytest.approx(0.75)
+    assert inference_model.label_probability([5, 8, 9], steps, 1, yes_ids, no_ids) == pytest.approx(0.25)
+    assert inference_model.label_probability([5, 6, 9], steps, 0, yes_ids, no_ids) is None
+    assert inference_model.label_probability([5, 7], torch.zeros(1, 1, 2), 0, yes_ids, no_ids) is None
+
+
+def test_label_probability_recorder_does_not_change_scores() -> None:
+    recorder = inference_model._LabelProbabilityRecorder(frozenset({1}), frozenset({2, 3}))
+    scores = torch.tensor([[0.0, 2.0, 1.0, 1.0]])
+    assert recorder(torch.zeros(1, 1, dtype=torch.long), scores) is scores
+    probabilities = torch.softmax(scores, dim=-1)[0]
+    yes_mass, no_mass = recorder.steps[0][0].tolist()
+    assert yes_mass == pytest.approx(probabilities[1].item())
+    assert no_mass == pytest.approx((probabilities[2] + probabilities[3]).item())
+
+
+def test_model_runner_label_token_ids_cover_spaced_variants_and_reject_collisions() -> None:
+    class Tokenizer:
+        vocab = {"YES": [10], " YES": [11, 12], "NO": [20], " NO": [21]}
+
+        def encode(self, text, add_special_tokens):
+            assert add_special_tokens is False
+            return self.vocab[text]
+
+    runner = ModelRunner(model=None, tokenizer=Tokenizer(), device=torch.device("cpu"))
+    assert runner._label_token_ids() == (frozenset({10, 11}), frozenset({20, 21}))
+
+    Tokenizer.vocab = {"YES": [10], " YES": [10], "NO": [10], " NO": [21]}
+    colliding = ModelRunner(model=None, tokenizer=Tokenizer(), device=torch.device("cpu"))
+    with pytest.raises(ValueError, match="distinct first tokens"):
+        colliding._label_token_ids()
+
+
+def test_model_runner_forwards_label_probabilities_through_oom_split(monkeypatch) -> None:
+    runner = ModelRunner(model=None, tokenizer=None, device=torch.device("cpu"))
+
+    def fake_generate_batch(conversations, *, max_new_tokens, label_probabilities=False, **generation_kwargs):
+        assert label_probabilities is True
+        if len(conversations) > 2:
+            raise torch.cuda.OutOfMemoryError("simulated OOM")
+        return [(f"text-{messages[0]['content']}", 0.5) for messages in conversations]
+
+    monkeypatch.setattr(runner, "_generate_batch", fake_generate_batch)
+    conversations = [[{"role": "user", "content": str(index)}] for index in range(4)]
+    results = runner.generate_with_label_probabilities(conversations, max_new_tokens=16, do_sample=False)
+    assert results == [(f"text-{index}", 0.5) for index in range(4)]
