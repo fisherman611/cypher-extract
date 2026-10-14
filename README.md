@@ -775,6 +775,31 @@ CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
   --generator-batch-size 16
 ```
 
+#### Ngưỡng P(YES) của selector
+
+Selector luôn lưu `p_yes` (xác suất YES đã chuẩn hóa với NO) trong
+`selector_predictions.jsonl`. Mặc định nhãn lấy theo greedy, tương đương ngưỡng
+0,5 và cho kết quả giống hệt trước đây. Để chọn ngưỡng, chạy dev rồi quét ngưỡng
+trên CPU; không chỉnh ngưỡng trên test:
+
+```bash
+INFERENCE_SPLIT=dev CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
+  --datasets cypherbench --seeds 42 --num-gpus 2
+
+python scripts/sweep_selector_threshold.py \
+  --predictions results/inference/lora_dev/qwen3/seed42/csd/cypherbench/selector_predictions.jsonl \
+  --gold data/cypherbench_schema_grounding_full_final/selection_dev.jsonl
+
+SELECTOR_THRESHOLD=0.7 CUDA_VISIBLE_DEVICES=0,1 bash scripts/infer_all_qwen3_lora.sh \
+  --datasets cypherbench --seeds 42 --num-gpus 2
+```
+
+`INFERENCE_SPLIT` và `SELECTOR_THRESHOLD` mỗi tổ hợp ghi vào thư mục riêng
+(`results/inference/lora_dev`, `results/inference/lora_thr0.7`, ...) vì một run
+không thể resume với cấu hình selector khác. Đặt `INFERENCE_OUTPUT_ROOT` để đổi.
+Chấm Cypher cho các thư mục này dùng `-InferenceRoot` và `-EvaluationRoot` của
+`scripts/evaluate_cypher_all.ps1`. `--split dev` hiện chỉ có cho CypherBench.
+
 ### 4. Chạy một số method hoặc một benchmark
 
 Ví dụ chạy teacher, SFT và FKL trên CypherBench:

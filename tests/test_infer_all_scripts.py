@@ -79,3 +79,15 @@ def test_full_inference_matrix_runs_only_the_students() -> None:
     assert 'METHODS="all"' in script
     assert '--methods "${METHODS}"' in script
     assert '"$@"' in script
+
+
+def test_infer_all_exposes_selector_threshold_and_split_with_separate_output_roots() -> None:
+    script = Path("scripts/infer_all.sh").read_text(encoding="utf-8")
+
+    assert '--selector-threshold "${SELECTOR_THRESHOLD}"' in script
+    assert '--split "${INFERENCE_SPLIT}"' in script
+    # A run directory cannot be resumed under another selector config, so each gets its own root.
+    assert 'OUTPUT_SUFFIX+="_${INFERENCE_SPLIT}"' in script
+    assert 'OUTPUT_SUFFIX+="_thr${SELECTOR_THRESHOLD}"' in script
+    assert '"${INFERENCE_OUTPUT_ROOT:-${DEFAULT_OUTPUT_ROOT}${OUTPUT_SUFFIX}}"' in script
+    assert '"${EXTRA_ARGS[@]}"' in script

@@ -55,7 +55,25 @@ case "${SETTING}" in
 esac
 
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${DEFAULT_CHECKPOINT_ROOT}}"
-OUTPUT_ROOT="${INFERENCE_OUTPUT_ROOT:-${DEFAULT_OUTPUT_ROOT}}"
+
+# Optional selector settings (leave unset for the default greedy selector on the test split):
+#   SELECTOR_THRESHOLD=0.7   label a unit YES when P(YES) >= 0.7
+#   INFERENCE_SPLIT=dev      run the dev split, e.g. to tune the threshold
+# Each combination gets its own default output root because a run directory
+# cannot be resumed under a different selector configuration.
+EXTRA_ARGS=()
+OUTPUT_SUFFIX=""
+if [[ -n "${INFERENCE_SPLIT:-}" ]]; then
+  EXTRA_ARGS+=(--split "${INFERENCE_SPLIT}")
+  if [[ "${INFERENCE_SPLIT}" != "test" ]]; then
+    OUTPUT_SUFFIX+="_${INFERENCE_SPLIT}"
+  fi
+fi
+if [[ -n "${SELECTOR_THRESHOLD:-}" ]]; then
+  EXTRA_ARGS+=(--selector-threshold "${SELECTOR_THRESHOLD}")
+  OUTPUT_SUFFIX+="_thr${SELECTOR_THRESHOLD}"
+fi
+OUTPUT_ROOT="${INFERENCE_OUTPUT_ROOT:-${DEFAULT_OUTPUT_ROOT}${OUTPUT_SUFFIX}}"
 
 cd "${PROJECT_ROOT}"
 python scripts/infer_two_stage.py \
@@ -63,4 +81,5 @@ python scripts/infer_two_stage.py \
   --methods "${METHODS}" \
   --model-family "${MODEL_FAMILY}" \
   --output-dir "${OUTPUT_ROOT}/${MODEL_FAMILY}" \
+  "${EXTRA_ARGS[@]}" \
   "$@"
