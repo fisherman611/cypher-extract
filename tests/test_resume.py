@@ -205,6 +205,33 @@ def test_resume_manifest_ignores_checkpoint_path_revision_pins_and_retention_lim
     assert result == checkpoint.resolve()
 
 
+def test_resume_manifest_ignores_experiment_tracking_settings(tmp_path: Path) -> None:
+    checkpoint = _make_checkpoint(tmp_path)
+    write_resume_manifest(
+        checkpoint,
+        config={"distill_method": "fkl", "report_to": "none"},
+        runtime_identity={"dataset": "fingerprint-a"},
+        world_size=1,
+        global_step=10,
+    )
+
+    # Turning wandb on (or renaming the run) while resuming must not invalidate the checkpoint.
+    result = validate_resume_checkpoint(
+        checkpoint,
+        output_dir=tmp_path,
+        world_size=1,
+        deepspeed_enabled=False,
+        require_distillm_state=False,
+        train_batch_size=2,
+        expected_config=canonical_resume_config(
+            {"distill_method": "fkl", "report_to": "wandb", "run_name": "qwen3-fkl"}
+        ),
+        expected_runtime={"dataset": "fingerprint-a"},
+    )
+
+    assert result == checkpoint.resolve()
+
+
 def test_resume_manifest_rejects_changed_training_config(tmp_path: Path) -> None:
     checkpoint = _make_checkpoint(tmp_path)
     write_resume_manifest(

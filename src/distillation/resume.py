@@ -19,6 +19,9 @@ _RESUME_CONFIG_IGNORED_FIELDS = {
     "ref_model_revision",
     "resume_from_checkpoint",
     "save_total_limit",
+    # Experiment tracking does not change training, so toggling wandb must not block a resume.
+    "report_to",
+    "run_name",
 }
 _MODEL_STATE_NAMES = (
     "adapter_model.safetensors",

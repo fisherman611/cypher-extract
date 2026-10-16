@@ -37,10 +37,23 @@ if [[ "${AUTO_PREPARE_DATA:-1}" == "1" ]]; then
   fi
 fi
 
+# Optional Weights & Biases logging (off by default; configs keep report_to: none):
+#   USE_WANDB=1                 enable it (needs `pip install wandb` and `wandb login` or WANDB_API_KEY)
+#   WANDB_PROJECT=<name>        project, default cypher-extract
+#   WANDB_RUN_NAME=<name>       run name, default <config folder>-<config name>
+#   WANDB_MODE=offline          log locally and sync later with `wandb sync`
+# Explicit key=value arguments (for example report_to=none) still take precedence.
+WANDB_OVERRIDES=()
+if [[ "${USE_WANDB:-0}" == "1" ]]; then
+  export WANDB_PROJECT="${WANDB_PROJECT:-cypher-extract}"
+  WANDB_DEFAULT_RUN_NAME="$(basename "$(dirname "${CONFIG_PATH}")")-$(basename "${CONFIG_PATH}" .yaml)"
+  WANDB_OVERRIDES+=("report_to=wandb" "run_name=${WANDB_RUN_NAME:-${WANDB_DEFAULT_RUN_NAME}}")
+fi
+
 torchrun \
   --nproc_per_node "${NPROC_PER_NODE}" \
   --nnodes "${NNODES:-1}" \
   --node_rank "${NODE_RANK:-0}" \
   --master_addr "${RUN_MASTER_ADDR:-${MASTER_ADDR:-localhost}}" \
   --master_port "${RUN_MASTER_PORT:-${MASTER_PORT:-29500}}" \
-  -m distillation.cli "${CONFIG_PATH}" "$@" "${AUTO_DATA_OVERRIDES[@]}"
+  -m distillation.cli "${CONFIG_PATH}" "${WANDB_OVERRIDES[@]}" "$@" "${AUTO_DATA_OVERRIDES[@]}"

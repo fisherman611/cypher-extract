@@ -637,6 +637,25 @@ RUN_GPUS=2,3 bash scripts/train.sh configs/distillation/kd.yaml
 NPROC_PER_NODE=4 bash scripts/train.sh configs/distillation/kd.yaml
 ```
 
+Log lên Weights & Biases là tùy chọn, mặc định tắt (mọi config giữ `report_to: none`).
+Bật bằng biến môi trường, không cần sửa config; cũng dùng được với `train_all_*`:
+
+```bash
+python -m pip install wandb   # hoặc: pip install -r requirements-distillation.txt
+wandb login                   # hoặc export WANDB_API_KEY=...
+USE_WANDB=1 RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml
+USE_WANDB=1 WANDB_PROJECT=my-project WANDB_RUN_NAME=fkl-v3.1 \
+  RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml
+WANDB_MODE=offline USE_WANDB=1 RUN_GPUS=0,1 bash scripts/train.sh configs/qwen3/fkl.yaml
+```
+
+`USE_WANDB=1` thêm `report_to=wandb` và `run_name` (mặc định `<thư mục config>-<tên config>`,
+ví dụ `qwen3-fkl`) vào lệnh; project mặc định `cypher-extract`. `WANDB_MODE=offline`
+chỉ ghi local, đồng bộ sau bằng `wandb sync`. Trainer đã gom các thành phần loss KD vào
+log định kỳ nên wandb nhận cả loss tổng, từng thành phần KD và metric eval mỗi epoch.
+Tham số `key=value` truyền thêm (ví dụ `report_to=none`) luôn thắng. `report_to` và
+`run_name` không nằm trong điều kiện resume, nên bật/tắt wandb khi resume không bị từ chối.
+
 Resume chính xác một run từ checkpoint (không dùng `train_all_*`):
 
 ```bash
