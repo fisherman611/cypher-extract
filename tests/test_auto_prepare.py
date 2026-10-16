@@ -114,6 +114,18 @@ def test_distractor_v3_has_its_own_grounding_source_and_cache(tmp_path: Path) ->
     assert plan.dataset_dir == tmp_path / "data" / "llamafactory_distractor_v3"
 
 
+def test_distractor_v3_1_reuses_the_v3_grounding_with_its_own_prepared_cache(tmp_path: Path) -> None:
+    config = tmp_path / "train.yaml"
+    _write_config(config, batch_size=2, dataset_dir="data/llamafactory_distractor_v3.1")
+
+    plan = build_auto_prepare_plan(config, project_root=tmp_path)
+
+    assert plan is not None
+    assert plan.grounding_input_dir == tmp_path / "data" / "cypherbench_schema_grounding_distractor_v3"
+    assert plan.prepared_dir == tmp_path / "data" / "prepared_distractor_v3.1"
+    assert plan.dataset_dir == tmp_path / "data" / "llamafactory_distractor_v3.1"
+
+
 def test_explicit_grounding_and_prepared_overrides_win(tmp_path: Path) -> None:
     config = tmp_path / "train.yaml"
     _write_config(config, batch_size=8, dataset_dir="data/llamafactory_distractor_v1")

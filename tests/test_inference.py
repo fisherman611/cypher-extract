@@ -450,6 +450,9 @@ def test_prompt_messages_match_training_format() -> None:
         generator[0]["content"]
         == (REPOSITORY_ROOT / "prompts/generator/system_prompt.txt").read_text(encoding="utf-8").strip()
     )
+    # The candidate schema is described as an imperfect prediction, not as ground truth.
+    assert "may include elements the question does not need" in generator[0]["content"]
+    assert "may miss some that it does" in generator[0]["content"]
     assert "QUESTION:\nWho?" in generator[1]["content"]
     assert '"relationships": []' in generator[1]["content"]
     candidate_part, other_part = generator[1]["content"].split("OTHER SCHEMA:\n", 1)
@@ -460,10 +463,9 @@ def test_prompt_messages_match_training_format() -> None:
         == (REPOSITORY_ROOT / "prompts/selector/system_prompt.txt").read_text(encoding="utf-8").strip()
     )
     assert "SCHEMA UNIT:\n(:Person)" in selector[1]["content"]
-    assert (
-        "RELATED SCHEMA CONTEXT:\nRelationships connected to this node label:\n- none\n"
-        "Node labels with similar properties:\n- none"
-    ) in selector[1]["content"]
+    # The selector sees only the question and the unit, without any comparison context.
+    assert "RELATED SCHEMA CONTEXT" not in selector[1]["content"]
+    assert "RELATED SCHEMA CONTEXT" not in selector[0]["content"]
     assert selector[1]["content"].endswith("Classify the schema unit and return only the required JSON object.")
     assert '{"label": "YES"}' in selector[0]["content"]
     assert "`" not in selector[0]["content"]
@@ -595,7 +597,9 @@ def test_training_and_inference_render_identical_selector_prompts() -> None:
 
     assert prepared["system_prompt"] == messages[0]["content"]
     assert prepared["user_prompt"] == messages[1]["content"]
-    assert "- (:Movie)-[:hasCastMember]->(:Person)" in prepared["user_prompt"]
+    assert unit["text"] in prepared["user_prompt"]
+    # The context must not leak into the prompt even though callers still compute it.
+    assert "- (:Movie)-[:hasCastMember]->(:Person)" not in prepared["user_prompt"]
 
 
 def test_generator_other_schema_is_the_complement_of_the_candidates() -> None:
@@ -781,8 +785,8 @@ class FakeRunner:
             system = messages[0]["content"]
             user = messages[1]["content"]
             if "relevance classifier" in system:
-                # Judge only the unit itself; the context also mentions neighbouring units.
-                unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nRELATED SCHEMA CONTEXT:", 1)[0]
+                # Judge only the unit itself, which sits between the unit header and the closing instruction.
+                unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nClassify the schema unit", 1)[0]
                 label = "YES" if "(:A " in unit or "[:LINKS]" in unit else "NO"
                 outputs.append(json.dumps({"label": label}))
             else:
@@ -1505,7 +1509,7 @@ class ProbabilityRunner(FakeRunner):
         results = []
         for messages, text in zip(conversations, texts, strict=True):
             user = messages[1]["content"]
-            unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nRELATED SCHEMA CONTEXT:", 1)[0]
+            unit = user.split("SCHEMA UNIT:\n", 1)[1].split("\n\nClassify the schema unit", 1)[0]
             unit_id = "relation:A|LINKS|B" if "[:LINKS]" in unit else "node:A" if "(:A " in unit else "node:B"
             results.append((text, self.probabilities[unit_id]))
         return results

@@ -56,6 +56,13 @@ MANAGED_DATA_SOURCES = {
         "cypherbench_schema_grounding_distractor_v3",
         "prepared_distractor_v3",
     ),
+    # Same grounding data as v3, prepared with the shorter selector prompt (no RELATED SCHEMA
+    # CONTEXT) and the generator prompt that treats the candidate schema as an imperfect
+    # prediction. Prompts are baked into the prepared rows, so v3 and v3.1 need separate caches.
+    "llamafactory_distractor_v3.1": (
+        "cypherbench_schema_grounding_distractor_v3",
+        "prepared_distractor_v3.1",
+    ),
 }
 
 

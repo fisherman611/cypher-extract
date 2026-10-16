@@ -220,10 +220,11 @@ chế này cho dataset tự quản lý. Có thể đổi nguồn grounding bằn
 Mỗi `dataset_dir` được quản lý gắn với đúng một nguồn grounding
 (`MANAGED_DATA_SOURCES` trong `src/distillation/auto_prepare.py`, tra theo tên
 thư mục; nguồn grounding/prepared là thư mục cùng cấp). Các config mặc định
-dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v3`, tức
-`data/llamafactory_distractor_v3` khi không đặt `CYPHER_DATA_ROOT`, được build từ
-`data/cypherbench_schema_grounding_distractor_v3` (cách tạo ở mục "Dữ liệu v3"
-bên dưới). Các bản cũ vẫn chọn được bằng cách override `dataset_dir`:
+dùng `${oc.env:CYPHER_DATA_ROOT,data}/llamafactory_distractor_v3.1`, tức
+`data/llamafactory_distractor_v3.1` khi không đặt `CYPHER_DATA_ROOT`, được build từ
+`data/cypherbench_schema_grounding_distractor_v3` (cách tạo ở mục "Dữ liệu v3" và
+"Dữ liệu v3.1" bên dưới; v3.1 chỉ khác v3 ở prompt). Các bản cũ vẫn chọn được
+bằng cách override `dataset_dir`:
 
 - v2 (`llamafactory_distractor_v2`): grounding `..._distractor_v2` tạo bằng
   `augment_generator_schema.py --hard-weight 0.5 --neighbor-weight 0 --lexical-weight 0.2 --random-weight 0.3`
@@ -239,9 +240,10 @@ bên dưới). Các bản cũ vẫn chọn được bằng cách override `datas
 Thư mục v2.1 đã build vẫn dùng được, nhưng build lại v2.1 bằng code hiện tại sẽ
 ra prompt generator của v2.2.
 
-### Dữ liệu v3 (`llamafactory_distractor_v3`, mặc định)
+### Dữ liệu v3 (`llamafactory_distractor_v3`)
 
-v3 giữ prompt của v2.2 và dựng lại phần grounding bằng bốn thay đổi:
+v3 giữ prompt của v2.2 và dựng lại phần grounding bằng bốn thay đổi (v3.1 dùng lại
+đúng phần grounding này, xem mục "Dữ liệu v3.1" bên dưới):
 
 - Selector phủ mọi question train (`--cover-all-questions`): mỗi question
   generator train xuất hiện đúng một lần trong selector, dưới dạng một cặp
@@ -313,14 +315,58 @@ python scripts\prepare_llamafactory_data.py `
 
 Ba bước đầu tạo dữ liệu grounding. Bước 4 không bắt buộc chạy tay:
 `train.sh` và `train_all.sh` tự build khi gặp
-`dataset_dir=data/llamafactory_distractor_v3` (auto-prepare, xem phần trên).
+`dataset_dir=data/llamafactory_distractor_v3` hoặc `...v3.1` (auto-prepare, xem
+phần trên).
 
-Cache dùng `dataset_dir=data/llamafactory_distractor_v3` (nguồn
+Cache của v3 dùng `dataset_dir=data/llamafactory_distractor_v3` (nguồn
 `cypherbench_schema_grounding_distractor_v3`, cache `prepared_distractor_v3`).
 Để chạy baseline gold sub-schema, override `dataset_dir=data/llamafactory`; để
 dùng bản nhiễu v1 (tham số mặc định của script), override
 `dataset_dir=data/llamafactory_distractor_v1`. Auto-prepare từ chối ghi đè một
 cache đã build từ nguồn grounding khác, trừ khi đặt `AUTO_PREPARE_FORCE=1`.
+
+### Dữ liệu v3.1 (`llamafactory_distractor_v3.1`, mặc định)
+
+v3.1 **dùng lại nguyên grounding của v3** (`cypherbench_schema_grounding_distractor_v3`)
+và chỉ đổi prompt. Số dòng, thứ tự, đáp án (nhãn selector, Cypher), sub-schema,
+nhiễu generator và cặp contrast YES/NO đều giống hệt v3 (seed 42); đã kiểm tra từng
+dòng: 100% đáp án trùng, câu hỏi và schema unit của selector trùng, prompt user của
+generator trùng.
+
+| | v3 | v3.1 |
+| --- | --- | --- |
+| Grounding, số dòng, nhãn, Cypher | `..._distractor_v3` | giữ nguyên |
+| Selector system prompt | 319 token, có đoạn giải thích `RELATED SCHEMA CONTEXT` | 261 token: mô tả node `(:Label { property: TYPE })` và relationship `(:A)-[:REL]->(:B)` kèm `{ property: TYPE }` (property của relationship); unit chỉ liên quan hoặc giống unit required thì chưa required; nhắc synonym, plural, passive, inverse |
+| Selector user prompt | question + schema unit + `RELATED SCHEMA CONTEXT` | chỉ question + schema unit |
+| Selector prompt dài nhất (inference cypherbench) | 543 token | 390 token |
+| Generator system prompt | 239 token | 269 token: `CANDIDATE SCHEMA` là dự đoán có thể thừa hoặc thiếu, chỉ dùng phần câu hỏi cần; chiều quan hệ chuyển xuống `Rules`, gồm cả dạng ngược `(:B)<-[:REL]-(:A)`; tên phải đúng từng chữ; bỏ dòng "syntactically valid" |
+| Generator user prompt | không đổi | không đổi |
+| Train `max_total` (qwen / llama3) | 963 / 952 | 993 / 982 (biên `cutoff_len: 1024`: 31 / 42 token) |
+| Cache | `prepared_distractor_v3`, `llamafactory_distractor_v3` | `prepared_distractor_v3.1`, `llamafactory_distractor_v3.1` |
+| `cypher_prepared_layout.json` | | chỉ khác `preparation_fingerprint` (prompt nằm trong fingerprint) |
+
+Hàm `selector_schema_context` vẫn còn (dùng để chọn hard negative và trong test) và
+vẫn được tính ở train/infer, nhưng không còn đi vào prompt.
+
+Prompt được ghi cứng vào các row đã chuẩn bị và vào fingerprint của cache, nên v3 và
+v3.1 không dùng chung được: checkpoint train bằng prompt v3 phải được infer bằng
+prompt v3 (commit `f308602`, nên đánh tag), không dùng prompt hiện tại; train bằng
+v3.1 phải train lại cả teacher lẫn student. Tất cả config mặc định đã trỏ
+`dataset_dir` sang v3.1; muốn dùng lại v3 thì override
+`dataset_dir=data/llamafactory_distractor_v3` (kèm prompt ở commit `f308602`).
+
+Cách tạo (từ grounding v3 đã có; chỉ cần hai bước cuối của mục "Dữ liệu v3"):
+
+```powershell
+python scripts\prepare_multitask_prompts.py `
+  --input-dir data\cypherbench_schema_grounding_distractor_v3 `
+  --output-dir data\prepared_distractor_v3.1 --batch-size 2
+python scripts\prepare_llamafactory_data.py `
+  --input-dir data\prepared_distractor_v3.1 `
+  --output-dir data\llamafactory_distractor_v3.1
+```
+
+`train.sh` và `train_all.sh` tự build bước này khi `dataset_dir` trỏ v3.1.
 
 > **Lưu ý:**
 > - Pipeline mặc định từ chối ghi đè lên thư mục đã có dữ liệu. Hãy thêm `--overwrite` khi chủ động muốn tạo lại từ đầu.
