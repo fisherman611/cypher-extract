@@ -33,7 +33,8 @@ student_gen: true
 rollout_context_length: 810
 gen_top_p: 1.0
 init_threshold: 0.0
-loss_eps: 0.1
+# CypherKD uses 0.1 on its larger dev loss; this multitask dev loss is about 0.005-0.03, so 0.1 would never raise the threshold.
+loss_eps: 0.005
 capacity: 1000
 replay_ratio: decreasing
 
